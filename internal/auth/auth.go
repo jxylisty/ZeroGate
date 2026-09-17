@@ -353,12 +353,8 @@ func LoadZCodeDir(dir string) ([]*Auth, error) {
 }
 
 // LoadAutoClawDir 扫描 AutoClaw 凭证（autoclaw-*.json）。
-// 磁盘格式（autoclaw2api 落盘）：
-//
-//	{"accessToken":"Bearer <JWT>","refreshToken":"Bearer <JWT>","expiresAt":…,
-//	 "userId":"…","userName":"…","deviceId":"…","region":"cn"}
-//
-// access/refresh token 自带 "Bearer " 前缀，入池前剥离（请求时按通道要求重新拼装）。
+// 磁盘两种形态（嵌套形插件 OAuth 落盘 / 扁平形 autoclaw2api 落盘）由 Parse 统一兼容；
+// Bearer 前缀在请求侧由 autoclaw 客户端 rawToken 剥离，加载侧不再处理。
 func LoadAutoClawDir(dir string) ([]*Auth, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "autoclaw-*.json"))
 	if err != nil {
@@ -370,32 +366,9 @@ func LoadAutoClawDir(dir string) ([]*Auth, error) {
 		if err != nil {
 			continue
 		}
-		var fc struct {
-			AccessToken  string `json:"accessToken"`
-			RefreshToken string `json:"refreshToken"`
-			ExpiresAt    int64  `json:"expiresAt"`
-			UserID       string `json:"userId"`
-			UserName     string `json:"userName"`
-			DeviceID     string `json:"deviceId"`
-			Region       string `json:"region"`
-		}
-		if err := json.Unmarshal(raw, &fc); err != nil {
+		a, err := Parse(raw)
+		if err != nil {
 			continue
-		}
-		if strings.TrimSpace(fc.AccessToken) == "" {
-			continue
-		}
-		a := &Auth{
-			AccessToken:  strings.TrimPrefix(strings.TrimSpace(fc.AccessToken), "Bearer "),
-			RefreshToken: strings.TrimPrefix(strings.TrimSpace(fc.RefreshToken), "Bearer "),
-			ExpiresAt:    fc.ExpiresAt,
-			UID:          fc.UserID,
-			Nickname:     fc.UserName,
-			DeviceID:     fc.DeviceID,
-		}
-		if a.ExpiresAt <= 0 {
-			// 登录未返回 expires_in，保守 28 天；到期前由 RefreshToken 保活
-			a.ExpiresAt = time.Now().Add(28 * 24 * time.Hour).Unix()
 		}
 		a.Kind, a.FilePath = "autoclaw", f
 		out = append(out, a)
