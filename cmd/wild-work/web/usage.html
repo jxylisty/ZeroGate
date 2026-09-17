@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用量监控 · ZeroGate</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --border: #e4e7ec;
+  --text: #1f2329; --muted: #8a919f; --primary: #2563eb;
+  --danger: #dc2626; --ok: #16a34a; --warn: #d97706;
+  --radius: 10px; --shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5; padding-bottom: 60px;
+}
+#app { max-width: 1060px; margin: 0 auto; padding: 20px 16px; }
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 16px; gap: 12px;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand .title { font-size: 18px; font-weight: 700; }
+.brand .sub { font-size: 12px; color: var(--muted); }
+.top-right { display: flex; align-items: center; gap: 12px; }
+.top-right .updated { font-size: 12px; color: var(--muted); }
+.back-link { font-size: 13px; color: var(--primary); text-decoration: none; border: 1px solid var(--border); padding: 6px 12px; border-radius: 8px; background: var(--card); }
+.back-link:hover { background: #f0f2f5; }
+
+.summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px;
+}
+.sum-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.sum-card .label { font-size: 12px; color: var(--muted); }
+.sum-card .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.sum-card .value.ok { color: var(--ok); }
+.sum-card .value.warn { color: var(--warn); }
+.sum-card .value.danger { color: var(--danger); }
+
+.acct {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden;
+}
+.acct-head {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); gap: 10px;
+}
+.acct-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.acct-title .name { font-size: 15px; font-weight: 600; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: #eef1f6; color: var(--muted); }
+.tag.ok { background: #e7f6ec; color: var(--ok); }
+.tag.fail { background: #fdecec; color: var(--danger); }
+.acct-metrics { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.acct-metrics .m { display: flex; flex-direction: column; align-items: flex-end; }
+.acct-metrics .m .v { font-weight: 600; }
+.acct-metrics .m .l { font-size: 11px; color: var(--muted); }
+.pos { color: var(--danger); }
+.neg { color: var(--ok); }
+.v.warn { color: var(--warn); }
+.v.danger { color: var(--danger); }
+.exp-urgent { color: var(--danger); font-weight: 700; }
+.acct-body { padding: 10px 18px 18px; }
+.chart-wrap { position: relative; }
+.chart-title { font-size: 12px; color: var(--muted); margin: 14px 0 4px; }
+svg text { font-family: inherit; }
+.tooltip {
+  position: absolute; pointer-events: none; background: #1f2329; color: #fff;
+  font-size: 12px; padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+  transform: translate(-50%, -120%); display: none; z-index: 5;
+}
+.empty { text-align: center; padding: 60px 0; color: var(--muted); }
+.error { text-align: center; padding: 60px 0; color: var(--danger); }
+
+/* 渠道分组折叠 */
+.group { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
+.group > summary {
+  list-style: none; cursor: pointer; padding: 13px 18px; display: flex;
+  align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  font-weight: 600; font-size: 15px; user-select: none;
+}
+.group > summary::-webkit-details-marker { display: none; }
+.group > summary:hover { background: #fafbfc; }
+.group > summary .arrow { transition: transform .15s; color: var(--muted); font-size: 12px; margin-right: 6px; }
+.group[open] > summary .arrow { transform: rotate(90deg); }
+.group .gh-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.group .gh-meta { font-size: 12px; color: var(--muted); font-weight: 400; display: flex; gap: 14px; flex-wrap: wrap; }
+.group .gh-meta .v { font-weight: 600; color: var(--text); }
+.toggle-btn { font-size: 12px; color: var(--primary); cursor: pointer; border: 1px solid var(--border); background: var(--card); padding: 4px 10px; border-radius: 6px; }
+.toggle-btn:hover { background: #f0f2f5; }
+.group .acct { border: none; border-radius: 0; border-top: 1px solid var(--border); box-shadow: none; margin-bottom: 0; }
+.group .acct-head { border-bottom: none; background: #fafbfc; }
+
+/* 排行 / 日历 / 全局趋势 */
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
+.panel > summary {
+  list-style: none; cursor: pointer; padding: 13px 18px; display: flex;
+  align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  font-weight: 600; font-size: 15px; user-select: none;
+}
+.panel > summary::-webkit-details-marker { display: none; }
+.panel > summary:hover { background: #fafbfc; }
+.panel > summary .arrow { transition: transform .15s; color: var(--muted); font-size: 12px; margin-right: 6px; }
+.panel[open] > summary .arrow { transform: rotate(90deg); }
+.panel .pmeta { font-size: 12px; color: var(--muted); font-weight: 400; display: flex; gap: 14px; flex-wrap: wrap; }
+.panel .pbody { padding: 8px 18px 18px; }
+#rankTable { width: 100%; border-collapse: collapse; font-size: 13px; }
+#rankTable th, #rankTable td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+#rankTable th { font-size: 12px; color: var(--muted); font-weight: 500; }
+#rankTable tr:hover td { background: #fafbfc; }
+.rank-no { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: 50%; font-size: 12px; font-weight: 700; color: #fff; background: #c7ccd6; }
+.rank-no.top3 { background: #f59e0b; }
+.rank-no.top1 { background: #f43f5e; }
+.prog-wrap { min-width: 120px; }
+.prog { height: 8px; background: #eef1f6; border-radius: 4px; overflow: hidden; }
+.prog > i { display: block; height: 100%; border-radius: 4px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(38px, 1fr)); gap: 4px; font-size: 11px; }
+.cal-ok { width: 100%; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 6px; background: #f7f8fa; color: var(--muted); }
+.cal-ok .d { font-weight: 600; font-size: 12px; color: var(--text); }
+.cal-ok.hit { background: #fdecec; color: var(--danger); outline: 1px solid #f5c6c6; }
+.cal-ok.hit.soon { background: #fff4e5; color: var(--warn); outline: 1px solid #f6d9a8; }
+.cal-ok .who { font-size: 9px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 10px 0 0; flex-wrap: wrap; }
+.cal-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.legend-line { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-right: 14px; }
+.legend-line i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+
+.arsenal-grid { display: flex; flex-wrap: wrap; gap: 14px; padding: 6px 2px; }
+.ars-card { flex: 1 1 220px; max-width: 280px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; background: #fff; }
+.ars-top { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #111827; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot.on { background: #22c55e; box-shadow: 0 0 0 3px #dcfce7; }
+.dot.off { background: #ef4444; box-shadow: 0 0 0 3px #fee2e2; }
+.ars-num { font-size: 30px; font-weight: 700; color: #111827; margin: 8px 0 2px; line-height: 1.1; }
+.ars-num small { font-size: 13px; font-weight: 400; color: #6b7280; }
+.ars-sub { font-size: 13px; color: #374151; margin-bottom: 4px; }
+.ars-note { font-size: 12px; color: #6b7280; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div>
+        <div class="title">用量监控</div>
+        <div class="sub">余额趋势 · 每日消耗 · 签到状态</div>
+      </div>
+    </div>
+    <div class="top-right">
+      <span class="updated" id="updated"></span>
+      <span class="toggle-btn" id="btnToggle" onclick="window.__toggleAll()">全部收起</span>
+      <a class="back-link" href="./">← 返回主面板</a>
+    </div>
+  </header>
+
+  <div class="summary" id="summary"></div>
+
+  <details class="panel" id="panelArsenal" open>
+    <summary><span class="gh-head"><span class="arrow">▶</span><span>白嫖聚合总览</span></span><span class="pmeta">本地全渠道 · 全部零成本</span></summary>
+    <div class="pbody">
+      <div class="arsenal-grid" id="arsenalBody"><div class="ars-card">加载中…</div></div>
+    </div>
+  </details>
+
+
+  <details class="panel" id="panelGuide">
+    <summary><span class="gh-head"><span class="arrow">▶</span><span>接入指南（BaseURL / Key / 模型）</span></summary>
+    <div class="pbody">
+      <table id="guideTable">
+        <thead><tr><th>服务</th><th>BaseURL</th><th>API Key</th><th>模型名示例</th></tr></thead>
+        <tbody>
+          <tr><td>wild-work 池</td><td>http://127.0.0.1:7863/v1</td><td>WildWorkAPI</td><td>workbuddy/deepseek-v4.1-flash · traework/Doubao-Seed-2.1-Pro · autoclaw/zai_auto</td></tr>
+          <tr><td>GPT/Gemini 池</td><td>http://127.0.0.1:8317/v1</td><td>CodexAPI</td><td>gpt-5.6-terra · gemini-3-flash · gemini-3.1-pro</td></tr>
+          <tr><td>Copilot</td><td>http://127.0.0.1:4141/v1</td><td>sk-7199d8a2-72e9-4785-9904-a45aac9594dc</td><td>auto</td></tr>
+          <tr><td>豆包桥</td><td>http://127.0.0.1:7868/v1</td><td>DoubaoAPI</td><td>doubao/chat · doubao/chat-expert · doubao/vision-express</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="panel" id="panelTrend" open>
+    <summary><span class="gh-head"><span class="arrow">▶</span><span>全局趋势</span><span id="trendMeta" class="tag"></span></span>
+      <span class="pmeta" id="trendStats"></span></summary>
+    <div class="pbody">
+      <div class="legend-line"><i style="background:#2563eb"></i>总余额</div>
+      <div class="legend-line"><i style="background:#dc2626"></i>日消耗</div>
+      <div class="legend-line"><i style="background:#16a34a"></i>签到入库</div>
+      <div id="trendChart"></div>
+    </div>
+  </details>
+
+  <details class="panel" id="panelRank" open>
+    <summary><span class="gh-head"><span class="arrow">▶</span><span>积分排行</span></span><span class="pmeta">按当前剩余积分降序</span></summary>
+    <div class="pbody">
+      <table id="rankTable"><thead><tr><th>#</th><th>账号</th><th>剩余积分</th><th>占比</th><th>已用/总量</th><th>今日消耗</th><th>到期</th></tr></thead><tbody></tbody></table>
+    </div>
+  </details>
+
+  <details class="panel" id="panelCal" open>
+    <summary><span class="gh-head"><span class="arrow">▶</span><span>到期日历</span><span id="calMeta" class="tag"></span></span><span class="pmeta">未来 30 天将到期的账号</span></summary>
+    <div class="pbody"><div class="cal-grid" id="calGrid"></div>
+      <div class="cal-legend"><span><i style="background:#f5c6c6"></i>≤3 天到期</span><span><i style="background:#f6d9a8"></i>≤7 天到期</span><span><i style="background:#fdecec"></i>30 天内到期</span></div>
+    </div>
+  </details>
+
+  <details class="panel" id="panelHeat" open>
+    <summary><span class="gh-head"><span class="arrow">▶</span><span>Token 热力图</span><span id="heatMeta" class="tag"></span></span><span class="pmeta">近 14 天各账号 Token 消耗（含缓存命中占比）</span></summary>
+    <div class="pbody" id="heatBody"></div>
+  </details>
+
+  <div id="accounts"></div>
+  <div id="msg"></div>
+
+</div>
+
+<script>
+(async function () {
+  const $ = (id) => document.getElementById(id);
+  const PALETTE = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2'];
+
+  // 每 60s 自动刷新
+  async function load() {
+    try {
+      const res = await fetch('/api/usage', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      render(data);
+      $('updated').textContent = '更新于 ' + new Date(data.now).toLocaleString('zh-CN');
+      $('msg').innerHTML = '';
+    } catch (e) {
+      $('updated').textContent = '加载失败';
+      $('msg').className = 'error';
+      $('msg').textContent = '无法加载 /api/usage：' + e.message;
+    }
+  }
+
+  function fmt(n) {
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+    return String(n);
+  }
+
+  const KIND_LABEL = { traework: 'TraeWork', workbuddy: 'WorkBuddy', qoder: 'Qoder', codebuddy: 'CodeBuddy(国际)', wbintl: 'WorkBuddy(国际)', zcode: 'ZCode (Z.AI)', autoclaw: 'AutoClaw' };
+  let collapsedAll = false;
+
+  function render(data) {
+    const accounts = (data.accounts || []).slice();
+    accounts.sort((a, b) => (a.kind + a.nickname).localeCompare(b.kind + b.nickname));
+
+    // 汇总
+    let totalRemain = 0, totalToday = 0, usedAcc = 0, okCount = 0, todayNew = 0;
+    accounts.forEach(a => {
+      totalRemain += a.remain || 0; totalToday += a.today || 0; usedAcc += a.used || 0;
+      if (a.last_checkin_ok) okCount++;
+      if ((a.today || 0) < 0) todayNew += -a.today; // 负增量=签到/赠送入账
+    });
+    // 汇总：+应扣当次刷新前的滚动快照差异；今日新增仅统计负增量（签到入库）
+    $('summary').innerHTML = `
+      <div class="sum-card"><div class="label">账号数</div><div class="value">${accounts.length}</div></div>
+      <div class="sum-card"><div class="label">剩余积分</div><div class="value">${fmt(totalRemain)}</div></div>
+      <div class="sum-card"><div class="label">今日净消耗</div><div class="value ${totalToday > 0 ? 'danger' : 'ok'}">${totalToday > 0 ? '+' : ''}${totalToday}</div></div>
+      <div class="sum-card"><div class="label">今日新增积分</div><div class="value ok">+${fmt(todayNew)}</div></div>
+      <div class="sum-card"><div class="label">已用积分</div><div class="value">${fmt(usedAcc)}</div></div>
+      <div class="sum-card"><div class="label">今日已签到</div><div class="value ok">${okCount}/${accounts.length}</div></div>`;
+
+    // 按渠道分组
+    const byKind = {};
+    accounts.forEach(a => {
+      (byKind[a.kind || 'other'] = byKind[a.kind || 'other'] || []).push(a);
+    });
+    const groups = Object.keys(byKind).sort().map(kind => {
+      const list = byKind[kind];
+      let sumRemain = 0, sumToday = 0, ok = 0, minExpire = 0;
+      list.forEach(a => { sumRemain += a.remain || 0; sumToday += a.today || 0; if (a.last_checkin_ok) ok++; if ((a.expire_at || 0) > 0 && (minExpire === 0 || a.expire_at < minExpire)) minExpire = a.expire_at; });
+      const open = !collapsedAll ? ' open' : '';
+      const label = KIND_LABEL[kind] || kind;
+      const exp = expireText(minExpire);
+      return `
+      <details class="group"${open}>
+        <summary>
+          <span class="gh-head"><span class="arrow">▶</span><span>${esc(label)}</span><span class="tag">${list.length} 个账号</span></span>
+          <span class="gh-meta">
+            <span>剩余 <span class="v">${fmt(sumRemain)}</span></span>
+            <span>今日 <span class="v">${sumToday > 0 ? '＋' + sumToday : sumToday}</span></span>
+            <span>已签到 <span class="v">${ok}/${list.length}</span></span>
+            <span>最早到期 <span class="v ${exp.cls}">${exp.text}</span></span>
+          </span>
+        </summary>
+        ${list.map((a, i) => card(a, i)).join('')}
+      </details>`;
+    }).join('');
+    $('accounts').innerHTML = groups;
+
+    renderRank(accounts);
+    renderCalendar(accounts);
+    renderGlobalTrend(accounts);
+    renderHeatmap(accounts);
+  }
+
+  function card(a, idx) {
+    const color = PALETTE[idx % PALETTE.length];
+    const remain = a.remain || 0, total = a.total || 0;
+    const used = a.used || 0;
+    const pct = total > 0 ? Math.round(remain / total * 100) : 0;
+    const today = a.today || 0;
+    const delta = a.delta || 0;
+    const exp = expireText(a.expire_at || 0);
+    const tk = tokenAgg(a.tokens);
+    return `
+    <div class="acct">
+      <div class="acct-head">
+        <div class="acct-title">
+          <span class="name">${esc(a.nickname || a.uid)}</span>
+          ${a.last_checkin_ok ? '<span class="tag ok">今日已签到</span>' : (a.last_checkin_at ? '<span class="tag fail">未签到</span>' : '')}
+          <span class="tag">${pct}%</span>
+          ${exp.cls ? `<span class="tag ${exp.cls === 'danger' ? 'fail' : ''}">${exp.cls === 'danger' ? '快到期' : '临期'}</span>` : ''}
+        </div>
+        <div class="acct-metrics">
+          <div class="m"><span class="v">${fmt(remain)} / ${fmt(total)}</span><span class="l">剩余 / 总量</span></div>
+          <div class="m"><span class="v">${fmt(used)}</span><span class="l">累计已用</span></div>
+          <div class="m"><span class="v ${today > 0 ? 'pos' : 'neg'}">${today > 0 ? '+' : ''}${today}</span><span class="l">今日净消耗</span></div>
+          <div class="m"><span class="v ${delta > 0 ? 'pos' : 'neg'}">${delta > 0 ? '+' : ''}${delta}</span><span class="l">两快照间变化</span></div>
+          <div class="m"><span class="v ${exp.cls}" title="${exp.title}">${exp.text}</span><span class="l">积分到期</span></div>
+          <div class="m"><span class="v">${tokFmt(tk.today)}</span><span class="l">今日 Tokens</span></div>
+          <div class="m"><span class="v">${tokFmt(tk.total)}</span><span class="l">累计 Tokens</span></div>
+          <div class="m"><span class="v ${tk.hitRate !== null && tk.hitRate >= 30 ? 'pos' : ''}">${tk.hitRate !== null ? tk.hitRate + '%' : '—'}</span><span class="l">缓存命中率</span></div>
+        </div>
+      </div>
+      <div class="acct-body">
+        <div class="chart-wrap">
+          <div class="chart-title">余额趋势（近 14 天，30 分钟采样）</div>
+          ${lineChart(a.snapshots || [], color)}
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title">每日净消耗（正=消耗，负=签到入账）</div>
+          ${barChart(a.daily || [], color)}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // 到期时间 → 展示文本；expireAt 为 Unix 秒，0=长期有效。
+  // 返回 { text, cls, title }：cls ∈ ''(长期) | 'warn'(≤7天) | 'danger'(≤3天/已过期)
+  function expireText(expireAt) {
+    const none = { text: '长期', cls: '', title: '该账号积分套餐均为长期有效' };
+    if (!expireAt || expireAt <= 0) return none;
+    const t = new Date(expireAt * 1000);
+    const md = (t.getMonth() + 1) + '-' + String(t.getDate()).padStart(2, '0');
+    const full = t.toLocaleString('zh-CN');
+    const days = Math.ceil((expireAt * 1000 - Date.now()) / 86400e3);
+    if (days <= 0) return { text: '已过期 ' + md, cls: 'danger', title: '到期 ' + full };
+    if (days <= 3) return { text: md + ' · 剩' + days + '天', cls: 'danger', title: '到期 ' + full };
+    if (days <= 7) return { text: md + ' · 剩' + days + '天', cls: 'warn', title: '到期 ' + full };
+    return { text: md + ' · 剩' + days + '天', cls: '', title: '到期 ' + full };
+  }
+
+  // token 按天统计聚合：返回 {today, total, hitRate}（hitRate=缓存命中输入/输入，无数据为 null）
+  function tokenAgg(tokens) {
+    let today = 0, total = 0, input = 0, cacheRead = 0;
+    const d = new Date();
+    const ymd = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    (tokens || []).forEach(t => {
+      total += t.total || 0;
+      input += t.prompt || 0;
+      cacheRead += t.cache_read || 0;
+      if (t.day === ymd) today += t.total || 0;
+    });
+    const hitRate = input > 0 ? Math.round(cacheRead / input * 100) : null;
+    return { today, total, input, cacheRead, hitRate };
+  }
+
+  // 人类可读 token 数：1.2k / 3.4M
+  function tokFmt(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // 折线图：横轴时间，纵轴余额剩余
+  function lineChart(snaps, color) {
+    const W = 600, H = 150, PL = 8, PR = 8, PT = 10, PB = 22;
+    if (!snaps || snaps.length < 2) return '<div class="empty" style="padding:20px">采样点不足，稍后自动出现</div>';
+    const vals = snaps.map(s => s.remain);
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const lo = min === max ? min - 1 : min, hi = max === min ? max + 1 : max;
+    const t0 = new Date(snaps[0].ts).getTime(), t1 = new Date(snaps[snaps.length - 1].ts).getTime();
+    const X = (i) => PL + (t1 === t0 ? 0 : (new Date(snaps[i].ts).getTime() - t0) / (t1 - t0) * (W - PL - PR));
+    const Y = (v) => PT + (hi - lo === 0 ? 0 : (hi - v) / (hi - lo) * (H - PT - PB));
+    const pts = snaps.map((s, i) => `${X(i).toFixed(1)},${Y(s.remain).toFixed(1)}`);
+    const want = Math.min(5, snaps.length); // x 轴最多 5 个标签，避免重叠
+    const step = Math.max(1, Math.floor(snaps.length / want));
+    const longSpan = t1 - t0 > 6 * 3600e3;
+    // 同一自然日内 → 显示时刻（MM/DD HH:MM），跨天且点少 → 显示日期
+    const fd = new Date(snaps[0].ts), ld = new Date(snaps[snaps.length - 1].ts);
+    const sameDay = fd.getFullYear() === ld.getFullYear() && fd.getMonth() === ld.getMonth() && fd.getDate() === ld.getDate();
+    const withTime = sameDay || (longSpan && snaps.length < 24);
+    const xLabels = [];
+    // 采样点可能按时间扎堆（时间比例 x 轴），做碰撞跳过：间距 < 28px 的标签丢掉
+    const idxs = [0];
+    for (let i = step; i < snaps.length; i += step) idxs.push(i);
+    if (idxs[idxs.length - 1] !== snaps.length - 1) idxs.push(snaps.length - 1);
+    let lastLX = -1e9;
+    for (const i of idxs) {
+      const x = X(i);
+      if (x - lastLX < 28) continue;
+      lastLX = x;
+      xLabels.push(`<text x="${x.toFixed(1)}" y="${H - 7}" font-size="10" fill="#8a919f" text-anchor="middle">${fmtDate(snaps[i].ts, withTime)}</text>`);
+    }
+    const yLabels = [];
+    for (let n = 0; n <= 4; n++) {
+      const v = lo + (hi - lo) * n / 4;
+      yLabels.push(`<text x="${W - PR - 2}" y="${(Y(v) + 3).toFixed(1)}" font-size="10" fill="#8a919f" text-anchor="end">${fmt(v)}</text>`);
+      yLabels.push(`<line x1="${PL}" x2="${W - PR}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="#eef1f6" stroke-width="1"/>`);
+    }
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+      ${yLabels.join('')}
+      <polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
+      ${snaps.map((s, i) => `<circle cx="${X(i).toFixed(1)}" cy="${Y(s.remain).toFixed(1)}" r="2" fill="${color}"><title>${new Date(s.ts).toLocaleString('zh-CN')}：${s.remain} 剩余</title></circle>`).join('')}
+      ${xLabels.join('')}
+    </svg>`;
+  }
+
+  function fmtDate(iso, withTime) {
+    const d = new Date(iso);
+    const md = (d.getMonth() + 1) + '/' + d.getDate();
+    if (!withTime) return md;
+    return md + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  // 柱状图：每日净消耗
+  function barChart(daily, color) {
+    const W = 600, H = 130, PL = 8, PR = 8, PT = 10, PB = 22;
+    if (!daily || !daily.length) return '<div class="empty" style="padding:20px">暂无数据</div>';
+    const maxAbs = Math.max(...daily.map(d => Math.abs(d.delta || 0)), 1);
+    const zero = PT + ((H - PT - PB) / 2);
+    const colW = (W - PL - PR) / daily.length;
+    const bars = daily.map((d, i) => {
+      const v = d.delta || 0;
+      const h = Math.abs(v) / maxAbs * (H - PT - PB) / 2;
+      const x = PL + i * colW + colW * 0.18;
+      const bw = colW * 0.64;
+      const top = v >= 0 ? zero - h : zero;
+      return `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}"
+        fill="${v >= 0 ? '#dc2626' : '#16a34a'}" opacity="0.75" rx="2">
+        <title>${d.day}：${v > 0 ? '+' : ''}${v}</title></rect>`;
+    }).join('');
+    const zeroLine = `<line x1="${PL}" x2="${W - PR}" y1="${zero.toFixed(1)}" y2="${zero.toFixed(1)}" stroke="#c7ccd6" stroke-width="1" stroke-dasharray="3,3"/>`;
+    const step = Math.max(1, Math.floor(daily.length / 7));
+    const xLabels = [];
+    for (let i = 0; i < daily.length; i += step) {
+      xLabels.push(`<text x="${(PL + i * colW + colW / 2).toFixed(1)}" y="${H - 7}" font-size="10" fill="#8a919f" text-anchor="middle">${(daily[i].day || '').slice(5).replace('-', '/')}</text>`);
+    }
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${zeroLine}${bars}${xLabels.join('')}</svg>`;
+  }
+
+  // 积分排行：按剩余降序，含占比与到期
+  function renderRank(accounts) {
+    const sorted = accounts.slice().sort((a, b) => (b.remain || 0) - (a.remain || 0));
+    const max = Math.max(...sorted.map(a => a.remain || 0), 1);
+    const total = sorted.reduce((s, a) => s + (a.remain || 0), 0);
+    const kindColor = { traework: '#2563eb', workbuddy: '#7c3aed', qoder: '#0891b2', codebuddy: '#16a34a', wbintl: '#ea580c', zcode: '#6366f1', autoclaw: '#0d9488' };
+    const rows = sorted.map((a, i) => {
+      const pct = total > 0 ? Math.round((a.remain || 0) / total * 100) : 0;
+      const used = a.used || 0, totalQ = a.total || 0;
+      const exp = expireText(a.expire_at || 0);
+      const no = i + 1;
+      return `<tr>
+        <td><span class="rank-no ${i === 0 ? 'top1' : (i < 3 ? 'top3' : '')}">${no}</span></td>
+        <td style="font-weight:600">${esc(a.nickname || a.uid)} <span class="tag" style="color:${kindColor[a.kind] || '#8a919f'}">${KIND_LABEL[a.kind] || a.kind}</span></td>
+        <td style="font-weight:700">${fmt(a.remain || 0)}</td>
+        <td><div class="prog-wrap"><div class="prog"><i style="width:${Math.round((a.remain || 0) / max * 100)}%;background:${kindColor[a.kind] || '#2563eb'}"></i></div><div style="font-size:11px;color:var(--muted)">${pct}%</div></div></td>
+        <td>${fmt(used)} / ${fmt(totalQ)}</td>
+        <td class="${(a.today || 0) > 0 ? 'pos' : 'neg'}">${(a.today || 0) > 0 ? '+' : ''}${a.today || 0}</td>
+        <td><span class="${exp.cls === 'danger' ? 'exp-urgent' : (exp.cls === 'warn' ? 'v warn' : '')}">${exp.text}</span></td>
+      </tr>`;
+    }).join('');
+    document.querySelector('#rankTable tbody').innerHTML = rows || '<tr><td colspan="7" class="empty" style="padding:20px">暂无账号</td></tr>';
+  }
+
+  // 到期日历：未来 30 天；未到期账号不计
+  function renderCalendar(accounts) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const cells = [];
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(today.getTime() + i * 86400000);
+      const ts = Math.floor(d.getTime() / 1000); // 当日 00:00 的 Unix 秒
+      const hits = accounts.filter(a => {
+        const e = a.expire_at || 0;
+        if (e <= 0) return false;
+        const et = new Date(e * 1000);
+        return et.getMonth() === d.getMonth() && et.getDate() === d.getDate();
+      }).slice(0, 3);
+      const daysLeft = i;
+      const cls = daysLeft <= 3 ? 'hit' : (daysLeft <= 7 ? 'hit soon' : (hits.length ? 'hit' : ''));
+      const who = hits.map(h => esc(h.nickname || h.uid.split('-')[0])).join(',') + (hits.length > 3 ? '…' : '');
+      const dayLabel = d.getDate() === 1 ? (d.getMonth() + 1) + '/' + d.getDate() : String(d.getDate());
+      cells.push(`<div class="cal-ok ${cls}" title="${who || '无到期'}">
+        <span class="d">${dayLabel}</span>${who ? `<span class="who">${who}</span>` : ''}</div>`);
+    }
+    document.getElementById('calGrid').innerHTML = cells.join('');
+    const soon = accounts.filter(a => (a.expire_at || 0) > 0 && (a.expire_at * 1000 - Date.now()) / 86400000 <= 7);
+    document.getElementById('calMeta').textContent = soon.length ? `${soon.length} 个账号 7 天内到期` : '30 天内无到期';
+  }
+
+  // Token 热力图：近 14 天 × 每账号，色块深浅 = 当日 Token 消耗，细条 = 缓存命中占比
+  function renderHeatmap(accounts) {
+    const days = 14;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const dayKeys = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today.getTime() - i * 86400000);
+      dayKeys.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+    }
+    // 每账号 day → total
+    const mat = accounts.map(a => {
+      const m = {};
+      (a.tokens || []).forEach(t => { if (dayKeys.includes(t.day)) m[t.day] = t; });
+      return { a, m };
+    });
+    const maxTotal = Math.max(...mat.flatMap(x => dayKeys.map(k => x.m[k] ? x.m[k].total : 0)), 1);
+    const kindColor = { traework: '#2563eb', workbuddy: '#7c3aed', qoder: '#0891b2', codebuddy: '#16a34a', wbintl: '#ea580c', zcode: '#6366f1', autoclaw: '#0d9488' };
+    // 表头（账号名）+ 每列一天
+    const head = `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">色块深度 = 当日 Tokens（最亮=${tokFmt(maxTotal)}）· 底部细条比例 = 缓存命中</div>`;
+    let html = head + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>' +
+      '<th style="text-align:left;min-width:120px;padding:4px 6px;color:var(--muted);font-weight:500">账号</th>' + '</tr>' +
+      '<tr>' + dayKeys.map(k => {
+        const p = k.slice(5).replace('-', '/');
+        const week = new Date(k + 'T00:00:00').getDay();
+        return `<th style="font-size:10px;font-weight:400;color:var(--muted);padding:0 2px;text-align:center;${week === 0 || week === 6 ? 'color:#dc2626' : ''}">${p.slice(3).replace('/', '/')}<br><span style="font-size:9px">${p.slice(0, 2)}</span></th>`;
+      }).join('') + '</tr></thead><tbody>';
+    mat.forEach(({ a, m }) => {
+      const nm = esc(a.nickname || a.uid.split('-')[0]);
+      html += `<tr><td style="padding:4px 6px;border-bottom:1px solid var(--border)"><span style="color:${kindColor[a.kind] || '#8a919f'}">●</span> ${nm}</td>`;
+      dayKeys.forEach(k => {
+        const t = m[k];
+        if (!t) { html += '<td style="padding:2px;border-bottom:1px solid var(--border)"><div style="height:26px;background:#f4f5f7;border-radius:4px"></div></td>'; return; }
+        const heat = 0.12 + (t.total / maxTotal) * 0.88;
+        const rate = t.prompt > 0 ? Math.round(t.cache_read / t.prompt * 100) : 0;
+        const cacheColor = rate >= 50 ? '#16a34a' : (rate >= 20 ? '#f59e0b' : '#dc2626');
+        html += `<td style="padding:2px;border-bottom:1px solid var(--border)">
+          <div style="height:26px;border-radius:4px;background:rgba(37,99,235,${heat.toFixed(2)});position:relative;overflow:hidden" title="${t.day}：${tokFmt(t.total)} Tokens · 命中 ${rate}%">
+            <div style="position:absolute;bottom:0;left:0;width:100%;height:5px;background:${cacheColor};opacity:${rate > 0 ? 0.9 : 0.25}"></div>
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:${heat > 0.6 ? '#fff' : '#1f2937'}">${t.total > 0 ? tokFmt(t.total) : '·'}</div>
+          </div></td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    const totalAll = accounts.reduce((s, a) => s + (a.tokens || []).reduce((x, t) => x + t.total, 0), 0);
+    document.getElementById('heatMeta').textContent = `14 天共 ${tokFmt(totalAll)} Tokens`;
+    document.getElementById('heatBody').innerHTML = html;
+  }
+
+  // 全局三线趋势：总余额（每日快照各账号 sum）、日消耗、签到入库（每日 delta 聚合）
+  function renderGlobalTrend(accounts) {
+    const byDay = {};
+    accounts.forEach(a => {
+      (a.daily || []).forEach(d => {
+        if (!byDay[d.day]) byDay[d.day] = { remain: 0, consume: 0, gain: 0 };
+        byDay[d.day].remain += d.remain || 0;
+        const v = d.delta || 0;
+        if (v > 0) byDay[d.day].consume += v; else byDay[d.day].gain += -v;
+      });
+      // 今日：无 daily 记录时用各账号当前 remain 补齐总余额末点
+    });
+    const days = Object.keys(byDay).sort();
+    const meta = $('trendMeta'), stats = $('trendStats');
+    if (!days.length) {
+      stats.innerHTML = '<span style="color:var(--muted)">暂无历史数据</span>';
+      meta.textContent = '';
+      $('trendChart').innerHTML = '';
+      return;
+    }
+    // 合并今日余额端点
+    const todayKey = new Date().toISOString().slice(0, 10);
+    if (!byDay[todayKey]) byDay[todayKey] = { remain: accounts.reduce((s, a) => s + (a.remain || 0), 0), consume: 0, gain: 0 };
+    else byDay[todayKey].remain = accounts.reduce((s, a) => s + (a.remain || 0), 0);
+    if (!days.includes(todayKey)) days.push(todayKey);
+    days.sort();
+
+    const series = days.map(k => byDay[k]);
+    const consumeAll = series.reduce((s, d) => s + d.consume, 0);
+    const gainAll = series.reduce((s, d) => s + d.gain, 0);
+    stats.innerHTML = `<span>区间消耗 <span style="color:var(--danger);font-weight:600">${fmt(consumeAll)}</span></span>
+      <span>区间签到入库 <span style="color:var(--ok);font-weight:600">+${fmt(gainAll)}</span></span>
+      <span>当前总余额 <span style="font-weight:600">${fmt(series[series.length - 1].remain)}</span></span>`;
+    meta.textContent = `${days.length} 天`;
+    $('trendChart').innerHTML = tripleLine(series.map((s, i) => ({
+      label: days[i], remain: s.remain, consume: s.consume, gain: s.gain,
+    })));
+  }
+
+  // 三线图：总余额（蓝实线）+ 日消耗（红）+ 签到入库（绿），独立 y 同图
+  function tripleLine(data) {
+    const W = 860, H = 200, PL = 10, PR = 60, PT = 10, PB = 24;
+    if (!data.length) return '<div class="empty" style="padding:20px">暂无数据</div>';
+    const maxBal = Math.max(...data.map(d => d.remain), 1);
+    const maxF = Math.max(...data.map(d => Math.max(d.consume, d.gain)), 1);
+    const X = (i) => PL + (data.length === 1 ? (W - PL - PR) / 2 : i / (data.length - 1) * (W - PL - PR));
+    const Y = (v, lo, hi) => PT + (hi - lo === 0 ? 0 : (hi - v) / (hi - lo) * (H - PT - PB));
+    const balPath = data.map((d, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(d.remain, 0, maxBal).toFixed(1)}`).join('');
+    const conPath = data.map((d, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(d.consume, 0, maxF).toFixed(1)}`).join('');
+    const gaiPath = data.map((d, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(d.gain, 0, maxF).toFixed(1)}`).join('');
+    const step = Math.max(1, Math.floor(data.length / 8));
+    const xLabels = [];
+    let lastLX = -1e9;
+    for (let i = 0; i < data.length; i += step) {
+      const x = X(i);
+      if (i > 0 && x - lastLX < 30) continue;
+      lastLX = x;
+      xLabels.push(`<text x="${x.toFixed(1)}" y="${H - 7}" font-size="10" fill="#8a919f" text-anchor="middle">${(data[i].label || '').slice(5).replace('-', '/')}</text>`);
+    }
+    const yBal = [], yF = [];
+    [0, 0.5, 1].forEach(r => {
+      yBal.push(`<text x="${W - PR + 4}" y="${Y(maxBal * r, 0, maxBal) + 3}" font-size="9" fill="#8a919f">${fmt(maxBal * r)}</text>`);
+      yF.push(`<text x="${PL - 4}" y="${Y(maxF * r, 0, maxF) + 3}" font-size="9" fill="#8a919f" text-anchor="end">${fmt(maxF * r)}</text>`);
+    });
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+      <line x1="${PL}" x2="${W - PR}" y1="${PT}" y2="${PT}" stroke="#eef1f6"/>
+      ${yBal.join('')}${yF.join('')}
+      <path d="${balPath}" fill="none" stroke="#2563eb" stroke-width="2"/>
+      <path d="${conPath}" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4,3"/>
+      <path d="${gaiPath}" fill="none" stroke="#16a34a" stroke-width="1.4" stroke-dasharray="4,3"/>
+      <circle cx="${X(data.length - 1).toFixed(1)}" cy="${Y(data[data.length - 1].remain, 0, maxBal).toFixed(1)}" r="3" fill="#2563eb">
+        <title>当前总余额 ${data[data.length - 1].remain}</title></circle>
+      ${xLabels.join('')}
+    </svg>`;
+  }
+
+  window.__toggleAll = function () {
+    collapsedAll = !collapsedAll;
+    document.getElementById('btnToggle').textContent = collapsedAll ? '全部展开' : '全部收起';
+    document.querySelectorAll('#accounts details.group').forEach(d => { d.open = !collapsedAll; });
+  };
+
+
+  function arsCard(name, num, sub, on, note) {
+    return '<div class="ars-card"><div class="ars-top"><span class="dot ' + (on ? 'on' : 'off') + '"></span><b>' + name + '</b></div>' +
+      '<div class="ars-num">' + num + '</div><div class="ars-sub">' + sub + '</div>' +
+      (note ? '<div class="ars-note">' + note + '</div>' : '') + '</div>';
+  }
+
+  async function renderArsenal() {
+    try {
+      const res = await fetch('/api/arsenal', { cache: 'no-store' });
+      const d = await res.json();
+      const cards = [];
+      const ww = d.wildwork || {};
+      cards.push(arsCard('wild-work 池 · 7863', (ww.accounts || 0) + '', (ww.channels || 0) + ' 个渠道', true, '含 autoclaw 自动签到 · Seed 2.1'));
+      const gg = d.gpt_gemini || {};
+      cards.push(arsCard('GPT/Gemini · 8317', (gg.models || 0) + '<small> 模型</small>', 'Codex(GPT) + Gemini 3.x', !!gg.online, gg.online ? '免费额度在线' : '离线'));
+      const cp = d.copilot || {};
+      cards.push(arsCard('Copilot · 4141', (cp.models || 0) + '<small> 模型</small>', 'GitHub Copilot auto', !!cp.online, cp.online ? 'OAuth 在线' : '离线'));
+      const db = d.doubao || {};
+      if (db.online) {
+        const st = db.stats || {};
+        const calls = st.total_calls || 0;
+        const byModel = Object.entries(st.by_model || {}).map(function (e) { return e[0].replace('doubao/', '') + '×' + e[1]; }).join(' · ') || '尚未调用';
+        cards.push(arsCard('豆包桥 · 7868', calls + '<small> 次调用</small>', byModel, true, 'Chat / 专家(2.1 Turbo) / Vision / V+脑'));
+      } else {
+        cards.push(arsCard('豆包桥 · 7868', '—', '离线', false, ''));
+      }
+      document.getElementById('arsenalBody').innerHTML = cards.join('');
+    } catch (e) {
+      document.getElementById('arsenalBody').innerHTML = '<div class="ars-card">聚合接口暂不可用</div>';
+    }
+  }
+
+  load();
+  renderArsenal();
+  setInterval(load, 60000);
+  setInterval(renderArsenal, 30000);
+})();
+</script>
+</body>
+</html>

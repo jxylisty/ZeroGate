@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>wild-work 管理面板</title>
-<link rel="stylesheet" href="./style.css">
+<title>ZeroGate 管理面板</title>
+<link rel="stylesheet" href="./style.css?v={{timestamp}}">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <div id="app">
@@ -14,7 +15,7 @@
     <div class="brand">
       <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
       <div class="brand-text">
-        <div class="title">wild-work <span class="ver" id="ver"></span></div>
+        <div class="title">ZeroGate <span class="ver" id="ver"></span></div>
         <div class="sub" id="serverLine"></div>
       </div>
     </div>
@@ -31,6 +32,8 @@
       </div>
     </div>
     <div class="top-icons">
+      <a class="icon-link" href="./usage.html" title="用量监控">📈</a>
+      <span class="icon-link" id="btnDoubao" title="豆包保活续期">🔄</span>
       <span class="icon-link" id="btnHelp" title="帮助">?</span>
       <span class="icon-link" id="btnAbout" title="关于">i</span>
     </div>
@@ -42,7 +45,7 @@
       <h2>账号管理</h2>
       <div class="panel-actions">
         <button class="btn primary" id="btnRefreshAll">刷新积分</button>
-        <button class="btn" id="btnCheckinAll">全部签到</button>
+        <button class="btn" id="btnCheckinAll">批量签到</button>
         <button class="btn primary" id="btnAddWB">＋ WorkBuddy</button>
         <button class="btn primary alt" id="btnAddTrae">＋ TraeWork</button>
         <button class="btn primary alt qoder" id="btnAddQoder">＋ Qoder</button>
@@ -80,6 +83,16 @@
       <button class="btn small" id="btnRefreshFees">刷新费率</button>
     </div>
     <div id="feesBox" class="fees"></div>
+  </section>
+
+  <!-- Token 用量统计 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Token 用量统计</h2>
+      <button class="btn small" id="btnRefreshTokens">刷新</button>
+      <button class="btn small primary" id="btnUsageStats">柱状图</button>
+    </div>
+    <div id="tokenStats" class="token-stats"></div>
   </section>
 
   <div class="footer">wild-work — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
@@ -171,7 +184,7 @@
     <div class="modal-body docs">
       <p>1. 添加账号后自动完成登录（Qoder 渠道当前无签到活动，仅 API 转发）。</p>
       <p>2. AI 客户端配置：Base URL <code>http://127.0.0.1:7863/v1</code>，API Key 见页面顶部。</p>
-      <p>3. 模型 ID 需带渠道前缀：<code>workbuddy/&lt;model&gt;</code>、<code>traework/&lt;model&gt;</code>、<code>qoder/&lt;model&gt;</code>。</p>
+      <p>3. 模型 ID 需带渠道前缀：<code>workbuddy/&lt;model&gt;</code>、<code>traework/&lt;model&gt;</code>、<code>qoder/&lt;model&gt;</code>、<code>codebuddy/&lt;model&gt;</code>（CodeBuddy 国际版需开梯子）。</p>
       <p>4. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
       <p>5. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
       <p>6. 退出程序：右键托盘图标选择"退出"。</p>
@@ -187,7 +200,7 @@
 <div class="overlay hidden" id="aboutOverlay">
   <div class="modal" style="text-align:center">
     <img class="logo" src="./logo64.png" alt="logo" style="width:64px;height:64px;margin-bottom:12px">
-    <div class="modal-title">wild-work</div>
+    <div class="modal-title">ZeroGate</div>
     <div class="modal-body" style="color:var(--muted)">
       <p>版本 <span id="aboutVer"></span></p>
       <p>多渠道账号聚合工具</p>
@@ -200,8 +213,63 @@
   </div>
 </div>
 
+<!-- 批量签到弹层 -->
+<div class="overlay hidden" id="checkinOverlay">
+  <div class="modal modal-wide">
+    <div class="modal-title">批量签到 <span class="muted" id="ciCount"></span></div>
+    <div class="ci-toolbar">
+      <button class="btn small" id="ciSelAll">全选</button>
+      <button class="btn small" id="ciSelNone">全不选</button>
+      <button class="btn small" id="ciInvert">反选</button>
+      <button class="btn small" id="ciOnlyUnchecked">仅未签</button>
+      <button class="btn small" id="ciSkipExpired">跳过过期/停用</button>
+    </div>
+    <div class="ci-list" id="ciList"></div>
+    <div class="ci-progress hidden" id="ciProgress">
+      <div class="ci-bar"><i id="ciBar"></i></div>
+      <div class="ci-status" id="ciStatus"></div>
+    </div>
+    <div class="ci-results" id="ciResults"></div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnCiClose">关闭</button>
+      <button class="btn small primary" id="btnCiStart">开始签到</button>
+    </div>
+  </div>
+</div>
+
+<!-- 豆包保活弹层 -->
+<div class="overlay hidden" id="doubaoOverlay">
+  <div class="modal modal-wide">
+    <div class="modal-title">豆包保活续期 <span class="muted">会话滑动续期，避免登录态过期</span></div>
+    <div class="db-note">凭证读取自豆包桌面客户端（<span class="muted">User Data\Local State 的 sessionid</span>），两段式探活判定有效后才调保活端点。建议每天执行一次。</div>
+    <div class="db-result" id="dbResult">
+      <div class="db-summary" id="dbSummary"></div>
+      <div class="db-list" id="dbList"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnDbClose">关闭</button>
+      <button class="btn small primary" id="btnDbRenew">立即保活</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden"></div>
 
-<script src="./app.js"></script>
+<!-- Token 用量统计图表 -->
+<div class="overlay hidden" id="usageOverlay">
+  <div class="modal modal-wide">
+    <div class="modal-title">Token 用量统计</div>
+    <div class="usage-toolbar">
+      <select id="usageAccountSelect" class="form-control"></select>
+      <button class="btn small primary" id="btnUsageRefresh">刷新</button>
+      <button class="btn small" id="btnUsageClose">关闭</button>
+    </div>
+    <div style="height:400px;margin-top:16px">
+      <canvas id="usageChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<script src="./app.js?v={{timestamp}}"></script>
 </body>
 </html>

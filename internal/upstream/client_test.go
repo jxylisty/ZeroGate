@@ -231,3 +231,25 @@ func TestRegionBases(t *testing.T) {
 		t.Error("global bases wrong")
 	}
 }
+
+func TestAccountExpireAt(t *testing.T) {
+	cases := []struct {
+		ms    int64
+		str   string
+		want  int64
+		label string
+	}{
+		{1792135888000, "", 1792135888, "ms dedcut"},                 // DeductionEndTime（毫秒）→ 秒
+		{0, "2026-10-16 15:31:28", 1792135888, "str utc8 padded"},    // 字符串按 UTC+8 解析
+		{0, "2026-10-16", 1792166399, "date end-of-day"},             // 纯日期 23:59:59
+		{0, "2026-10-16T15:31:28", 1792135888, "iso-like t"},         // T 分隔
+		{0, "", 0, "empty → long-term"},                              // 无到期 = 长期
+		{1792135888000, "bad", 1792135888, "ms wins over bad str"},   // 毫秒优先，字符串解析失败不影响
+		{1789543888000, "", 1789543888, "past ms untouched"},         // 已过期时间戳原样归一
+	}
+	for _, c := range cases {
+		if got := accountExpireAt(c.ms, c.str); got != c.want {
+			t.Errorf("%s: accountExpireAt(%d,%q)=%d want %d", c.label, c.ms, c.str, got, c.want)
+		}
+	}
+}

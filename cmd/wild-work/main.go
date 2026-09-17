@@ -20,7 +20,9 @@ import (
 
 	"wild-work/internal/app"
 	"wild-work/internal/auth"
+	"wild-work/internal/autoclaw"
 	"wild-work/internal/config"
+	"wild-work/internal/intl"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
@@ -30,6 +32,7 @@ import (
 	"wild-work/internal/systray"
 	"wild-work/internal/traework"
 	"wild-work/internal/upstream"
+	"wild-work/internal/zcode"
 )
 
 //go:embed all:web
@@ -89,7 +92,23 @@ func main() {
 	if err != nil {
 		fatal("读取 Qoder 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d from %s", len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), cfg.AuthDir)
+	cbAuths, err := auth.LoadCodeBuddyDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 CodeBuddy(intl) 账号目录失败：%v", err)
+	}
+	wbAuthsI, err := auth.LoadWBIntlDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 WorkBuddy(intl) 账号目录失败：%v", err)
+	}
+	zcAuths, err := auth.LoadZCodeDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 ZCode 账号目录失败：%v", err)
+	}
+	acAuths, err := auth.LoadAutoClawDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 AutoClaw 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, codebuddy=%d, wbintl=%d, zcode=%d, autoclaw=%d from %s", len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(cbAuths), len(wbAuthsI), len(zcAuths), len(acAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -104,6 +123,22 @@ func main() {
 		qoder.EnsureFingerprint(a) // 老凭证补机器指纹
 		qdPool.Add(a)
 	}
+	cbPool := pool.New(filepath.Join(stateDir, "state-codebuddy.json"))
+	for _, a := range cbAuths {
+		cbPool.Add(a)
+	}
+	wbIntlPool := pool.New(filepath.Join(stateDir, "state-wbintl.json"))
+	for _, a := range wbAuthsI {
+		wbIntlPool.Add(a)
+	}
+	zcPool := pool.New(filepath.Join(stateDir, "state-zcode.json"))
+	for _, a := range zcAuths {
+		zcPool.Add(a)
+	}
+	acPool := pool.New(filepath.Join(stateDir, "state-autoclaw.json"))
+	for _, a := range acAuths {
+		acPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -111,6 +146,16 @@ func main() {
 	trUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	qdUp := qoder.New()
 	qdUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	cbUp := intl.New()
+	cbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	// WorkBuddy 国际版与 CodeBuddy 同协议，仅域名不同
+	wbIntlUp := intl.NewWithBase("https://www.workbuddy.ai")
+	wbIntlUp.Channel = "wbintl"
+	wbIntlUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	zcUp := zcode.New()
+	zcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	acUp := autoclaw.New()
+	acUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
 	if err != nil {
 		fatal("解析签到时间失败：%v", err)
@@ -120,16 +165,32 @@ func main() {
 	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）
 	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	// 国际版 CodeBuddy 亦无签到活动；token 有效期约一年，keepalive 保持配置一致
+	cbSch := scheduler.New(scheduler.Config{Pool: cbPool, Upstream: cbUp, Name: "codebuddy", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	// WorkBuddy 国际版同后端无签到，仅 keepalive
+	wbIntlSch := scheduler.New(scheduler.Config{Pool: wbIntlPool, Upstream: wbIntlUp, Name: "wbintl", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	// ZCode 无签到活动（CheckinMinutes=nil）；JWT 无刷新，keepalive 仅为空转
+	zcSch := scheduler.New(scheduler.Config{Pool: zcPool, Upstream: zcUp, Name: "zcode", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	// AutoClaw 有每日任务（daily_signin 等）可主动领取，纳入全局签到时间
+	acSch := scheduler.New(scheduler.Config{Pool: acPool, Upstream: acUp, Name: "autoclaw", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},
 		provider.TraeWork:  {Kind: provider.TraeWork, Pool: trPool, Upstream: trUp, StaticModels: server.TraeWorkStaticModels()},
 		provider.Qoder:     {Kind: provider.Qoder, Pool: qdPool, Upstream: qdUp, StaticModels: qoder.StaticModels()},
+		provider.CodeBuddy: {Kind: provider.CodeBuddy, Pool: cbPool, Upstream: cbUp, StaticModels: intl.StaticModels()},
+		provider.WBIntl:    {Kind: provider.WBIntl, Pool: wbIntlPool, Upstream: wbIntlUp, StaticModels: intl.StaticModels()},
+		provider.ZCode:     {Kind: provider.ZCode, Pool: zcPool, Upstream: zcUp, StaticModels: zcode.StaticModels()},
+		provider.AutoClaw:  {Kind: provider.AutoClaw, Pool: acPool, Upstream: acUp, StaticModels: autoclaw.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
 		provider.TraeWork:  {Kind: provider.TraeWork, Pool: trPool, Upstream: trUp, Scheduler: trSch},
 		provider.Qoder:     {Kind: provider.Qoder, Pool: qdPool, Upstream: qdUp, Scheduler: qdSch},
+		provider.CodeBuddy: {Kind: provider.CodeBuddy, Pool: cbPool, Upstream: cbUp, Scheduler: cbSch},
+		provider.WBIntl:    {Kind: provider.WBIntl, Pool: wbIntlPool, Upstream: wbIntlUp, Scheduler: wbIntlSch},
+		provider.ZCode:     {Kind: provider.ZCode, Pool: zcPool, Upstream: zcUp, Scheduler: zcSch},
+		provider.AutoClaw:  {Kind: provider.AutoClaw, Pool: acPool, Upstream: acUp, Scheduler: acSch},
 	}
 
 	appInst, err := app.New(app.Options{
@@ -146,9 +207,17 @@ func main() {
 	wbSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("workbuddy", r) })
 	trSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("traework", r) })
 	qdSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("qoder", r) })
+	cbSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("codebuddy", r) })
+	wbIntlSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("wbintl", r) })
+	zcSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("zcode", r) })
+	acSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("autoclaw", r) })
 	wbSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("workbuddy", uid, ok, msg) })
 	trSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("traework", uid, ok, msg) })
 	qdSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("qoder", uid, ok, msg) })
+	cbSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("codebuddy", uid, ok, msg) })
+	wbIntlSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("wbintl", uid, ok, msg) })
+	zcSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("zcode", uid, ok, msg) })
+	acSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("autoclaw", uid, ok, msg) })
 
 	// HTTP handler：OpenAI 端点 + Web UI + 管理 API
 	sub, err := fs.Sub(webFS, "web")
@@ -168,7 +237,7 @@ func main() {
 	appInst.SetHandler(h)
 
 	if err := appInst.StartServer(); err != nil {
-		log.Printf("listen %s failed: %v（面板中将提示）", cfg.Listen.Addr(), err)
+		fatal("监听 %s 失败：%v\n\n可能已有一个实例正在运行。\n请用托盘“退出”，或先结束占用该端口的进程后再启动。", cfg.Listen.Addr(), err)
 	}
 
 	// 调度器后台运行
@@ -177,6 +246,10 @@ func main() {
 	go wbSch.Run(sctx)
 	go trSch.Run(sctx)
 	go qdSch.Run(sctx)
+	go cbSch.Run(sctx)
+	go wbIntlSch.Run(sctx)
+	go zcSch.Run(sctx)
+	go acSch.Run(sctx)
 
 	// 启动提示（非 --autostart）：系统通知
 	if !autostart && !noTray {
@@ -193,7 +266,7 @@ func main() {
 		fmt.Printf("  API-Key:       %s\n", cfg.APIKey)
 		fmt.Printf("  Web UI:        http://%s:%d/\n", host, cfg.Listen.Port)
 		fmt.Printf("  Listen:        %s\n", addr)
-		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d\n", len(wbAuths), len(trAuths), len(qdAuths))
+		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d codebuddy=%d wbintl=%d zcode=%d autoclaw=%d\n", len(wbAuths), len(trAuths), len(qdAuths), len(cbAuths), len(wbAuthsI), len(zcAuths), len(acAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -216,7 +289,7 @@ func main() {
 				os.Exit(1)
 			}
 		}()
-		systray.Run(trayIconICO, "wild-work — 渠道聚合代理", systray.Actions{
+		systray.Run(trayIconICO, "ZeroGate — 渠道聚合代理", systray.Actions{
 		OpenUI: func() {
 			_ = platform.OpenURL(fmt.Sprintf("http://%s:%d/", displayHost(cfg), cfg.Listen.Port))
 		},

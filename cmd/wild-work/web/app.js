@@ -39,6 +39,19 @@ function shortUid(uid) {
   return uid.length <= 12 ? uid : uid.slice(0, 6) + "…" + uid.slice(-4);
 }
 
+// groupMeta 返回渠道分组的展示元数据：{cls, name, checkin}。
+function groupMeta(g) {
+  switch (g) {
+    case "traework": return { cls: "trae", name: "TraeWork", checkin: false };
+    case "qoder": return { cls: "qoder", name: "Qoder", checkin: true };
+    case "codebuddy": return { cls: "cb", name: "CodeBuddy(国际)", checkin: true };
+    case "wbintl": return { cls: "wbi", name: "WorkBuddy(国际)", checkin: true };
+    case "zcode": return { cls: "zc", name: "ZCode (Z.AI)", checkin: false };
+    case "autoclaw": return { cls: "ac", name: "AutoClaw", checkin: true };
+    default: return { cls: "wb", name: "WorkBuddy", checkin: false };
+  }
+}
+
 // ---------- 全局状态 ----------
 let state = null;
 
@@ -53,6 +66,20 @@ async function loadFees() {
     const fees = await api("/api/fees");
     renderFees(fees);
   } catch (e) { /* 费率接口失败不阻塞 */ }
+}
+
+async function loadTokenStats() {
+  try {
+    const stats = await api("/api/token_usage");
+    renderTokenStats(stats);
+  } catch (e) { /* Token 统计失败不阻塞 */ }
+}
+
+async function refreshTokens() {
+  try {
+    await loadTokenStats();
+    toast("Token 用量已刷新");
+  } catch (e) { toast(e.message); }
 }
 
 async function refreshFees() {
@@ -139,6 +166,9 @@ function renderTopbar() {
 
   const key = state.api_key;
   $("apiKeyDisplay").querySelector(".val").textContent = key === "" ? "（无鉴权）" : key;
+
+  // 开机自启开关回写真实状态（注册表为准），避免页面刷新后总显示关闭
+  $("chkAutostart").checked = !!state.autostart;
 }
 
 function renderAccounts() {
@@ -152,9 +182,10 @@ function renderAccounts() {
   empty.classList.add("hidden");
 
   grid.innerHTML = state.accounts.map((a) => {
-    const group = a.group === "traework" ? "trae" : (a.group === "qoder" ? "qoder" : "wb");
-    const groupName = a.group === "traework" ? "TraeWork" : (a.group === "qoder" ? "Qoder" : "WorkBuddy");
-    const noCheckin = a.group === "qoder"; // Qoder 无签到活动，签到按钮灰掉
+    const gm = groupMeta(a.group);
+    const group = gm.cls;
+    const groupName = gm.name;
+    const noCheckin = gm.checkin;
 
     const checkinTag = a.last_checkin_at
       ? `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`
@@ -164,8 +195,11 @@ function renderAccounts() {
     const disableIcon = a.disabled ? "▶" : "⏸";
     const disableTitle = a.disabled ? "启用" : "停用";
     const checkinBtn = noCheckin
-      ? `<span class="icon-op off" title="Qoder 无签到活动" onclick="return false">✓</span>`
+      ? `<span class="icon-op off" title="${groupName} 无签到活动" onclick="return false">✓</span>`
       : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">✓</span>`;
+    const growthBtn = a.group === "workbuddy"
+      ? `<span class="icon-op" title="成长中心（旅行/盲盒/任务领奖）" onclick="growth('${a.uid}')">🎁</span>`
+      : "";
 
     return `
     <div class="acct-card${disabledClass}">
@@ -176,6 +210,7 @@ function renderAccounts() {
         </div>
         <div class="acct-ops">
           ${checkinBtn}
+          ${growthBtn}
           <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
           <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">✕</span>
@@ -197,6 +232,17 @@ function renderTimes() {
   $("nextCheckin").textContent = state.next_checkin || "-";
 }
 
+// 渠道主题色（卡片渐变图标）
+const feeThemes = {
+  traework: ["#2563eb", "#38bdf8"],
+  qoder:     ["#7c3aed", "#a855f7"],
+  codebuddy: ["#0ea5e9", "#06b6d4"],
+  wbintl:    ["#f59e0b", "#fbbf24"],
+  zcode:     ["#10b981", "#34d399"],
+  autoclaw:  ["#6366f1", "#818cf8"],
+  workbuddy: ["#2563eb", "#3b82f6"],
+};
+
 function renderFees(fees) {
   const box = $("feesBox");
   const channels = fees.channels || [];
@@ -211,28 +257,66 @@ function renderFees(fees) {
   if (fees.cached_at) html += `<div class="note">上次更新：${esc(fees.cached_at)}</div>`;
   if (fees.error) html += `<div class="note" style="color:var(--danger)">${esc(fees.error)}</div>`;
 
-  html += `<table><thead><tr><th>模型</th><th>倍率</th><th>模型</th><th>倍率</th></tr></thead><tbody>`;
-
+  html += `<div class="fees-grid">`;
   for (const ch of channels) {
-    const chName = ch.channel === "traework" ? "TraeWork" : (ch.channel === "qoder" ? "Qoder" : "WorkBuddy");
-    const chClass = ch.channel === "traework" ? "trae" : (ch.channel === "qoder" ? "qoder" : "wb");
-    html += `<tr class="ch-header ${chClass}"><td colspan="4">${esc(chName)}</td></tr>`;
-
+    const gm = groupMeta(ch.channel);
+    const theme = feeThemes[ch.channel] || feeThemes.workbuddy;
+    const icon = esc((gm.name || ch.channel).slice(0, 2).toUpperCase());
     const models = ch.models || [];
-    // 每行两个模型
-    for (let i = 0; i < models.length; i += 2) {
-      const m1 = models[i];
-      const m2 = models[i + 1];
-      const c1 = m1 ? `<code>${esc(m1.model)}</code>` : "";
-      const r1 = m1 ? (m1.rate ? `x${m1.rate.toFixed(2)}` : "auto") : "";
-      const c2 = m2 ? `<code>${esc(m2.model)}</code>` : "";
-      const r2 = m2 ? (m2.rate ? `x${m2.rate.toFixed(2)}` : "-") : "";
-      html += `<tr><td>${c1}</td><td>${r1}</td><td>${c2}</td><td>${r2}</td></tr>`;
-    }
-  }
 
-  html += `</tbody></table>`;
-  html += `<div class="note" style="margin-top:8px">${esc(fees.disclaimer || "")}</div>`;
+    let rows = "";
+    for (const m of models) {
+      const rate = m.rate ? Number(m.rate) : 0;
+      let badgeClass = "free";
+      if (rate > 0 && rate <= 0.15) badgeClass = "low";
+      else if (rate > 0.15 && rate <= 0.5) badgeClass = "normal";
+      else if (rate > 0.5) badgeClass = "high";
+      
+      const rateDisplay = rate > 0 ? `x${rate.toFixed(2)}` : "限免";
+      const noteHtml = m.note ? `<div class="fee-note-tag">${esc(m.note)}</div>` : "";
+      
+      // 模型名：长名字换行，但保持可读性（只分割一次）
+      const modelName = esc(m.model);
+      let modelCell = `<span>${modelName}</span>`;
+      if (modelName.length > 30) {
+        const idx = modelName.indexOf('-');
+        if (idx > 0 && idx < modelName.length - 1) {
+          modelCell = `<span style="display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;">${modelName.substring(0, idx + 1)}</span><br><span style="opacity:0.7">${modelName.substring(idx + 1)}</span>`;
+        }
+      }
+      
+      rows += `<tr>
+        <td class="fee-model-cell">${modelCell}</td>
+        <td><span class="fee-rate-badge ${badgeClass}">${rateDisplay}</span></td>
+      </tr>`;
+    }
+    
+    if (!rows) {
+      rows = `<tr><td colspan="2" class="empty-models">暂无模型</td></tr>`;
+    }
+
+    html += `<div class="fee-card">
+      <div class="fee-card-head">
+        <span class="fee-icon" style="background:linear-gradient(135deg,${theme[0]},${theme[1]})">${icon}</span>
+        <span class="fee-card-name">${esc(gm.name)}</span>
+      </div>
+      <div class="fee-body">
+        <table class="fee-table">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th style="width:100px">费率</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+  html += `</div>`;
+  html += `<div class="note" style="margin-top:12px">${esc(fees.disclaimer || "")}</div>`;
   box.innerHTML = html;
 }
 
@@ -249,6 +333,18 @@ async function refreshOne(uid) {
   try {
     const r = await api("/api/account/refresh", { uid });
     toast(`刷新成功：剩余积分 ${r.remain}`);
+    loadState();
+  } catch (e) { toast(e.message); }
+}
+
+async function growth(uid) {
+  try {
+    const r = await api("/api/account/growth", { uid });
+    const parts = [];
+    if (r.travel) parts.push("旅行：" + r.travel);
+    if (r.lottery) parts.push("盲盒：" + r.lottery);
+    if (r.tasks) parts.push("任务：" + r.tasks);
+    toast(parts.join(" · ") || "成长中心执行完成");
     loadState();
   } catch (e) { toast(e.message); }
 }
@@ -274,20 +370,205 @@ function removeAcct(uid) {
   });
 }
 
-// ---------- 批量操作 ----------
-async function checkinAll() {
-  $("btnCheckinAll").disabled = true;
+// ---------- 批量签到（分组多选 + 实时进度） ----------
+const ciSel = new Set(); // 已勾选账号 uid
+let ciRun = false;
+
+function parseMD(s) { // "MM-DD HH:MM" → 今年对应时间（无年份）
+  const m = /^(\d{2})-(\d{2})[ ]+(\d{2}):(\d{2})/.exec(s || "");
+  if (!m) return null;
+  const d = new Date(new Date().getFullYear(), +m[1] - 1, +m[2], +m[3], +m[4]);
+  return isNaN(d.getTime()) ? null : d;
+}
+function isTodayChecked(a) {
+  if (!a.last_checkin_ok || !a.last_checkin_at) return false;
+  const t = parseMD(a.last_checkin_at);
+  if (!t) return false;
+  const now = new Date();
+  return t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth() && t.getDate() === now.getDate();
+}
+function ciExpired(a) { // 已停用 或 已过到期时间
+  if (a.disabled) return true;
+  const t = parseMD(a.until);
+  return !!t && t.getTime() <= Date.now();
+}
+
+function openCheckinDialog() {
+  const accounts = state.accounts || [];
+  if (!accounts.length) { toast("还没有账号"); return; }
+  ciSel.clear();
+  const groups = {};
+  for (const a of accounts) {
+    const g = a.group === "traework" ? "traework" : (a.group === "qoder" ? "qoder" : (a.group === "codebuddy" ? "codebuddy" : (a.group === "wbintl" ? "wbintl" : (a.group === "zcode" ? "zcode" : (a.group === "autoclaw" ? "autoclaw" : "workbuddy")))));
+    (groups[g] = groups[g] || []).push(a);
+  }
+  let html = "";
+  for (const g of ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw"]) {
+    const list = groups[g];
+    if (!list || !list.length) continue;
+    const gName = groupMeta(g).name;
+    html += `<div class="ci-group"><div class="ci-gname">${gName}</div>`;
+    for (const a of list) {
+      const noCheckin = a.group === "qoder" || a.group === "codebuddy" || a.group === "wbintl" || a.group === "zcode";
+      if (!noCheckin) ciSel.add(a.uid);
+      html += ciRowHtml(a, noCheckin);
+    }
+    html += `</div>`;
+  }
+  $("ciList").innerHTML = html;
+  $("ciResults").innerHTML = "";
+  $("ciProgress").classList.add("hidden");
+  $("btnCiStart").disabled = false;
+  ciRun = false;
+  updateCiCount();
+  $("checkinOverlay").classList.remove("hidden");
+}
+
+function ciRowHtml(a, noCheckin) {
+  let tag;
+  if (noCheckin) tag = `<span class="tag neutral">无签到</span>`;
+  else if (isTodayChecked(a)) tag = `<span class="tag ok">今日已签</span>`;
+  else if (a.last_checkin_at) tag = `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`;
+  else tag = `<span class="tag neutral">未签到</span>`;
+  let exp = "";
+  if (a.disabled) exp = `<span class="tag danger">已停用</span>`;
+  else if (a.until) exp = `<span class="tag warn">${esc(a.until)} 到期</span>`;
+  const checked = noCheckin ? "" : "checked";
+  return `<label class="ci-row${noCheckin ? " off" : ""}" title="${esc(a.uid)}">
+    <input type="checkbox" data-uid="${esc(a.uid)}" ${checked} ${noCheckin ? "disabled" : ""} onchange="ciRowChg(this)">
+    <span class="ci-name">${esc(a.nickname || shortUid(a.uid))}</span>
+    <span class="ci-credits">${a.credits} 分</span>
+    ${tag}${exp}
+  </label>`;
+}
+
+function ciRowChg(el) {
+  if (el.checked) ciSel.add(el.dataset.uid); else ciSel.delete(el.dataset.uid);
+  updateCiCount();
+}
+function ciSyncChecks() {
+  document.querySelectorAll("#ciList input[type=checkbox]").forEach((c) => {
+    if (!c.disabled) c.checked = ciSel.has(c.dataset.uid);
+  });
+  updateCiCount();
+}
+function updateCiCount() {
+  const n = document.querySelectorAll("#ciList input[type=checkbox]").length;
+  $("ciCount").textContent = `已选 ${ciSel.size} / ${n}`;
+}
+function ciSetAll(on) {
+  document.querySelectorAll("#ciList input[type=checkbox]").forEach((c) => {
+    if (c.disabled) return;
+    c.checked = on;
+    if (on) ciSel.add(c.dataset.uid); else ciSel.delete(c.dataset.uid);
+  });
+  updateCiCount();
+}
+function ciInvertSel() {
+  document.querySelectorAll("#ciList input[type=checkbox]").forEach((c) => {
+    if (c.disabled) return;
+    c.checked = !c.checked;
+    if (c.checked) ciSel.add(c.dataset.uid); else ciSel.delete(c.dataset.uid);
+  });
+  updateCiCount();
+}
+function ciOnlyUnchecked() {
+  for (const a of state.accounts || []) if (isTodayChecked(a)) ciSel.delete(a.uid);
+  ciSyncChecks();
+}
+function ciSkipExpired() {
+  for (const a of state.accounts || []) if (ciExpired(a)) ciSel.delete(a.uid);
+  ciSyncChecks();
+}
+
+async function runBatchCheckin() {
+  if (ciRun) return;
+  const uids = [...ciSel]; // 顺序 = 勾选顺序
+  if (!uids.length) { toast("请先选择要签到的账号"); return; }
+  ciRun = true;
+  $("btnCiStart").disabled = true;
+  $("ciProgress").classList.remove("hidden");
+  const box = $("ciResults");
+  box.innerHTML = "";
+  const total = uids.length;
+  let ok = 0, already = 0, fail = 0;
+  const nameOf = (uid) => {
+    const a = (state.accounts || []).find((x) => x.uid === uid);
+    return esc((a && (a.nickname || shortUid(uid))) || shortUid(uid));
+  };
+  for (let i = 0; i < total; i++) {
+    const uid = uids[i];
+    $("ciStatus").textContent = `正在签到 ${i + 1}/${total} …`;
+    $("ciBar").style.width = `${(i / total) * 100}%`;
+    let res;
+    try { res = await api("/api/account/checkin", { uid }); }
+    catch (e) { res = { uid, ok: false, msg: e.message }; }
+    const kind = res.ok ? "ok" : ((res.msg || "").includes("已签") ? "already" : "fail");
+    if (kind === "ok") ok++; else if (kind === "already") already++; else fail++;
+    box.insertAdjacentHTML("beforeend",
+      `<div class="ci-result ${kind}"><span class="ci-rname">${nameOf(uid)}</span><span class="ci-rmsg">${esc(res.msg || "")}${res.ok && res.has_remain !== false ? (res.remain !== undefined ? `（剩余 ${res.remain}）` : "") : ""}</span></div>`);
+    box.scrollTop = box.scrollHeight;
+    $("ciBar").style.width = `${((i + 1) / total) * 100}%`;
+  }
+  $("ciStatus").textContent = `完成：成功 ${ok} · 今日已签 ${already} · 失败 ${fail}`;
+  ciRun = false;
+  $("btnCiStart").disabled = false;
+  loadState();
+}
+function closeCheckinDialog() {
+  $("checkinOverlay").classList.add("hidden");
+  if (ciRun) ciRun = false;
+}
+
+// ---------- 豆包保活续期 ----------
+let dbBusy = false;
+function renderDoubao(res) {
+  const list = res.accounts || [];
+  const sum = [];
+  if (res.finished_at) sum.push(`执行时间 ${esc(res.finished_at)}`);
+  if (list.length) sum.push(`有效 ${res.ok} · 失效 ${res.expired} · 异常 ${res.error}`);
+  $("dbSummary").textContent = sum.join("　");
+  if (!list.length) {
+    $("dbList").innerHTML = `<div class="db-row error"><span class="db-uid">—</span><span class="db-detail">${esc(res.note || "暂无记录")}</span></div>`;
+    return;
+  }
+  $("dbList").innerHTML = list.map((a) => {
+    const flag = a.renewed ? `<span class="db-flag" style="color:var(--ok)">已续期</span>`
+      : a.status === "ok" ? `<span class="db-flag" style="color:var(--ok)">有效</span>`
+      : a.status === "expired" ? `<span class="db-flag" style="color:var(--danger)">已失效</span>`
+      : `<span class="db-flag" style="color:var(--warn)">异常</span>`;
+    const expire = a.sid_expire_at ? ` · 到期 ${esc(a.sid_expire_at)}` : "";
+    return `<div class="db-row ${a.status}"><span class="db-uid">${esc(shortUid(a.user_id))}</span><span class="db-detail">${esc(a.detail)}${expire}</span>${flag}</div>`;
+  }).join("");
+}
+async function openDoubaoDialog() {
+  $("doubaoOverlay").classList.remove("hidden");
+  $("dbSummary").textContent = "";
+  $("dbList").innerHTML = `<div class="db-row error"><span class="db-detail">读取上次结果…</span></div>`;
   try {
-    const r = await api("/api/account/checkin_all", {});
-    const ok = (r.results || []).filter((x) => x.ok).length;
-    const skip = (state.accounts || []).filter((a) => a.group === "qoder").length;
-    const total = (r.results || []).length + skip;
-    toast(skip ? `批量签到完成：成功 ${ok} / ${total}（Qoder ${skip} 个无签到跳过）` : `批量签到完成：成功 ${ok} / 共 ${total}`);
-    loadState();
-  } catch (e) { toast(e.message); } finally {
-    $("btnCheckinAll").disabled = false;
+    renderDoubao(await api("/api/doubao/renew_result"));
+  } catch (e) {
+    $("dbList").innerHTML = `<div class="db-row error"><span class="db-detail">${esc(e.message)}</span></div>`;
   }
 }
+async function runDoubaoRenew() {
+  if (dbBusy) return;
+  dbBusy = true;
+  const btn = $("btnDbRenew");
+  btn.disabled = true;
+  btn.textContent = "保活中…";
+  try {
+    renderDoubao(await api("/api/doubao/renew", {}));
+  } catch (e) {
+    $("dbSummary").textContent = "";
+    $("dbList").innerHTML = `<div class="db-row error"><span class="db-detail">${esc(e.message)}</span></div>`;
+  } finally {
+    dbBusy = false;
+    btn.disabled = false;
+    btn.textContent = "立即保活";
+  }
+}
+function closeDoubaoDialog() { $("doubaoOverlay").classList.add("hidden"); }
 
 async function refreshAll() {
   $("btnRefreshAll").disabled = true;
@@ -304,9 +585,9 @@ async function refreshAll() {
 let pendingChannel = null;
 function promptLogin(channel) {
   pendingChannel = channel;
-  const name = channel === "traework" ? "TraeWork" : (channel === "qoder" ? "Qoder" : "WorkBuddy");
+  const name = groupMeta(channel).name;
   $("lcTitle").textContent = "添加 " + name + " 账号";
-  $("lcMsg").textContent = channel === "qoder"
+  $("lcMsg").textContent = groupMeta(channel).checkin
     ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。（${name} 渠道无签到活动，仅 API 转发）`
     : `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。`;
   $("btnLoginConfirm").textContent = "登录" + name;
@@ -322,7 +603,7 @@ async function startLogin(channel) {
     const r = await api("/api/login/start", { channel });
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
-    $("loginTitle").textContent = channel === "traework" ? "添加 TraeWork 账号" : (channel === "qoder" ? "添加 Qoder 账号" : "添加 WorkBuddy 账号");
+    $("loginTitle").textContent = "添加 " + groupMeta(channel).name + " 账号";
     $("loginMsg").textContent = "请在浏览器新窗口中完成登录…";
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
@@ -491,12 +772,27 @@ function bind() {
   $("btnAddWB").onclick = () => promptLogin("workbuddy");
   $("btnAddTrae").onclick = () => promptLogin("traework");
   $("btnAddQoder").onclick = () => promptLogin("qoder");
-  $("btnCheckinAll").onclick = checkinAll;
+  $("btnCheckinAll").onclick = openCheckinDialog;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
+  // 批量签到弹层
+  $("btnCiStart").onclick = runBatchCheckin;
+  $("btnCiClose").onclick = closeCheckinDialog;
+  $("ciSelAll").onclick = () => ciSetAll(true);
+  $("ciSelNone").onclick = () => ciSetAll(false);
+  $("ciInvert").onclick = ciInvertSel;
+  $("ciOnlyUnchecked").onclick = ciOnlyUnchecked;
+  $("ciSkipExpired").onclick = ciSkipExpired;
+  $("checkinOverlay").onclick = (e) => { if (e.target === $("checkinOverlay")) closeCheckinDialog(); };
+  // 豆包保活弹层
+  $("btnDoubao").onclick = openDoubaoDialog;
+  $("btnDbRenew").onclick = runDoubaoRenew;
+  $("btnDbClose").onclick = closeDoubaoDialog;
+  $("doubaoOverlay").onclick = (e) => { if (e.target === $("doubaoOverlay")) closeDoubaoDialog(); };
   $("btnCopyUrl").onclick = copyUrl;
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
+  $("btnRefreshTokens").onclick = refreshTokens;
   $("chkAutostart").onchange = toggleAutostart;
 
   $("apiAddr").onclick = () => {
@@ -516,6 +812,9 @@ function bind() {
   $("btnAbout").onclick = openAbout;
   $("btnHelpClose").onclick = closeHelp;
   $("btnAboutClose").onclick = closeAbout;
+  
+  // Token 用量统计
+  $("btnUsageStats").onclick = openUsageStats;
 
   // 登录确认弹层
   $("btnLoginConfirm").onclick = confirmLogin;
@@ -545,7 +844,239 @@ function bind() {
   try {
     await loadState();
     await loadFees();
+    await loadTokenStats();
   } catch (e) {
     toast("无法连接后台服务：" + e.message);
   }
 })();
+
+// ---------- Token 用量统计渲染 ----------
+function renderTokenStats(data) {
+  const container = $("tokenStats");
+  if (!container || !data) return;
+
+  const summary = data.summary || {};
+  const channels = data.channels || {};
+
+  // 总卡片
+  let html = `
+    <div class="totals-card">
+      <div class="totals-label">累计总 Token 数</div>
+      <div class="totals-value">${fmtTotal(summary.total_tokens || 0)}</div>
+      <div class="totals-detail">
+        <div class="item"><span class="dot" style="background:#2563eb"></span>输入 <b>${fmtTotal(summary.prompt_tokens || 0)}</b></div>
+        <div class="item"><span class="dot" style="background:#16a34a"></span>输出 <b>${fmtTotal(summary.completion_tokens || 0)}</b></div>
+        <div class="item"><span class="dot" style="background:#f59e0b"></span>缓存命中 <b>${fmtTotal(summary.cache_read_tokens || 0)}</b></div>
+        <div class="item"><span class="dot" style="background:#dc2626"></span>缓存写入 <b>${fmtTotal(summary.cache_write_tokens || 0)}</b></div>
+      </div>
+    </div>
+  `;
+
+  // 渠道分组
+  const channelNames = {
+    workbuddy: "WorkBuddy",
+    traework: "TraeWork",
+    qoder: "Qoder",
+    codebuddy: "CodeBuddy",
+    wbintl: "WBIntl",
+    zcode: "ZCode",
+    autoclaw: "AutoClaw"
+  };
+
+  const channelColors = {
+    workbuddy: "#7c3aed",
+    traework: "#2563eb",
+    qoder: "#0891b2",
+    codebuddy: "#16a34a",
+    wbintl: "#ea580c",
+    zcode: "#6366f1",
+    autoclaw: "#0d9488"
+  };
+
+  if (Object.keys(channels).length > 0) {
+    html += '<div class="channels-grid">';
+    for (const [kind, stats] of Object.entries(channels)) {
+      const name = channelNames[kind] || kind;
+      const color = channelColors[kind] || "#6b7280";
+      html += `
+        <div class="ch-card">
+          <div class="ch-head">
+            <div class="ch-icon" style="background:${color}">${name[0]}</div>
+            <div class="ch-name">${name}</div>
+          </div>
+          <div class="ch-stats">
+            <div class="ch-stat">
+              <div class="v">${fmtTotal(stats.prompt || 0)}</div>
+              <div class="l">输入</div>
+            </div>
+            <div class="ch-stat">
+              <div class="v">${fmtTotal(stats.completion || 0)}</div>
+              <div class="l">输出</div>
+            </div>
+            <div class="ch-stat">
+              <div class="v">${fmtTotal(stats.cache_read || 0)}</div>
+              <div class="l">缓存命中</div>
+            </div>
+            <div class="ch-stat">
+              <div class="v">${fmtTotal(stats.cache_write || 0)}</div>
+              <div class="l">缓存写入</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    html += '</div>';
+  } else {
+    html = '<div class="empty" style="text-align:center;padding:40px;color:var(--muted)">暂无 Token 统计数据</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function fmtTotal(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
+
+// ---------- Token 用量柱状图统计 ----------
+let usageChart = null;
+
+async function openUsageStats() {
+  const overlay = $("usageOverlay");
+  const select = $("usageAccountSelect");
+  const btnRefresh = $("btnUsageRefresh");
+  const btnClose = $("btnUsageClose");
+  
+  // 填充账号选择器
+  select.innerHTML = '<option value="">选择账号...</option>';
+  const accounts = state.accounts || [];
+  accounts.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.uid;
+    opt.textContent = `${a.kind}/${shortUid(a.uid)} ${a.nickname ? '(' + esc(a.nickname) + ')' : ''}`;
+    select.appendChild(opt);
+  });
+  
+  // 清空图表
+  if (usageChart) {
+    usageChart.destroy();
+    usageChart = null;
+  }
+  
+  // 事件绑定
+  btnRefresh.onclick = async () => {
+    const uid = select.value;
+    if (!uid) { toast("请先选择账号"); return; }
+    
+    try {
+      const data = await api("/api/usage");
+      const account = (data.accounts || []).find(a => a.uid === uid);
+      
+      if (!account || !account.tokens || !account.tokens.length) {
+        toast("该账号暂无 Token 统计数据");
+        return;
+      }
+      
+      renderUsageChart(account.tokens);
+    } catch (e) {
+      toast("加载失败：" + e.message);
+    }
+  };
+  
+  btnClose.onclick = () => {
+    overlay.classList.add("hidden");
+    if (usageChart) {
+      usageChart.destroy();
+      usageChart = null;
+    }
+  };
+  
+  overlay.classList.remove("hidden");
+}
+
+function renderUsageChart(tokens) {
+  const canvas = $("usageChart");
+  if (!canvas) return;
+  
+  // 按天排序（最近在前）
+  const sorted = [...tokens].sort((a, b) => b.Day.localeCompare(a.Day));
+  const labels = sorted.map(t => t.Day.slice(5)); // 只显示 MM-DD
+  const promptData = sorted.map(t => t.prompt);
+  const completionData = sorted.map(t => t.completion);
+  const totalData = sorted.map(t => t.total);
+  
+  const ctx = canvas.getContext('2d');
+  
+  if (usageChart) {
+    usageChart.destroy();
+  }
+  
+  usageChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: '输入',
+          data: promptData,
+          backgroundColor: 'rgba(37, 99, 235, 0.8)',
+          borderColor: 'rgba(37, 99, 235, 1)',
+          borderWidth: 1
+        },
+        {
+          label: '输出',
+          data: completionData,
+          backgroundColor: 'rgba(22, 163, 74, 0.8)',
+          borderColor: 'rgba(22, 163, 74, 1)',
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'top',
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              let label = context.dataset.label || '';
+              if (label) {
+                label += ': ';
+              }
+              if (context.parsed.y !== null) {
+                label += fmtTotal(context.parsed.y);
+              }
+              return label;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: false,
+          title: {
+            display: true,
+            text: '日期'
+          }
+        },
+        y: {
+          stacked: false,
+          beginAtZero: true,
+          ticks: {
+            callback: function(value) {
+              return fmtTotal(value);
+            }
+          },
+          title: {
+            display: true,
+            text: 'Token 数量'
+          }
+        }
+      }
+    }
+  });
+}

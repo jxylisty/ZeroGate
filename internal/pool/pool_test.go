@@ -8,7 +8,7 @@ import (
 	"wild-work/internal/auth"
 )
 
-func TestPickHighestCredits(t *testing.T) {
+func TestPickLowestCredits(t *testing.T) {
 	p := New("")
 	a1 := &auth.Auth{UID: "u1"}
 	a2 := &auth.Auth{UID: "u2"}
@@ -20,8 +20,8 @@ func TestPickHighestCredits(t *testing.T) {
 	p.SetCredits("u2", 500)
 	p.SetCredits("u3", 300)
 	got := p.Pick()
-	if got == nil || got.UID != "u2" {
-		t.Fatalf("pick=%+v want u2", got)
+	if got == nil || got.UID != "u1" {
+		t.Fatalf("pick=%+v want u1 (lowest credits)", got)
 	}
 }
 

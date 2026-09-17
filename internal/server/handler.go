@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
+	"wild-work/internal/usage"
 )
 
 // Runtime 是一个平台的一组运行时资源：pool + upstream + 静态模型兜底。
@@ -52,6 +56,12 @@ type Config struct {
 	ErrThreshold int
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
+
+	// RecordTokens 每次成功转发后回调 Token 用量（可空 = 不统计）。
+	RecordTokens func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)
+
+	// UsageRecorder token 用量记录器（可空）。
+	UsageRecorder any // *usage.Recorder
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -71,6 +81,18 @@ type Handler struct {
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
+
+	recordTokens func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)
+}
+
+// SetTokenRecorder 注入 Token 用量回调（由 app 装配，统计反代请求实际消耗）。
+func (h *Handler) SetTokenRecorder(fn func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)) {
+	h.recordTokens = fn
+}
+
+// SetUsageRecorder 注入 usage recorder（供 /api/token_usage 查询累计用量）。
+func (h *Handler) SetUsageRecorder(rec any) {
+	h.cfg.UsageRecorder = rec
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -97,13 +119,42 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry)}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), recordTokens: cfg.RecordTokens}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
+	h.mux.HandleFunc("GET /api/token_usage", h.withAuth(h.tokenUsage))
 	if cfg.WebUI != nil {
-		h.mux.Handle("/", http.FileServer(http.FS(cfg.WebUI)))
+		// 使用中间件处理 index.html，替换 {{timestamp}} 为当前时间戳
+		webFS := http.FS(cfg.WebUI)
+		h.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+				// 读取并替换 index.html
+				f, err := webFS.Open("index.html")
+				if err != nil {
+					http.NotFound(w, r)
+					return
+				}
+				defer f.Close()
+				
+				data, err := io.ReadAll(f)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				
+				timestamp := time.Now().Unix()
+				content := strings.ReplaceAll(string(data), "{{timestamp}}", fmt.Sprintf("%d", timestamp))
+				
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Write([]byte(content))
+				return
+			}
+			
+			// 其他文件直接返回
+			http.FileServer(webFS).ServeHTTP(w, r)
+		}))
 	}
 	if cfg.AttachAPI != nil {
 		cfg.AttachAPI(h.mux)
@@ -120,6 +171,7 @@ func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 // 优先使用上次成功路由的账号，直到：
 //   - 账号进入冷却/禁用状态
 //   - 连续成功请求达到 maxReqs 次（默认 50），自动轮换
+//
 // 任一条件触发则降级为 Pick() 选新账号并重置粘性记录。
 func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 	const defaultMaxReqs = 50
@@ -174,7 +226,8 @@ func (h *Handler) stickyClear(rt *Runtime) {
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if key := h.currentAPIKey(); key != "" {
+		key := h.currentAPIKey()
+		if key != "" {
 			authz := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != key {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
@@ -209,11 +262,12 @@ var workbuddyStaticModels = []provider.ModelInfo{
 	{ID: "glm-5.2", ContextWindow: 131072}, {ID: "glm-5.1", ContextWindow: 131072}, {ID: "glm-5v-turbo", ContextWindow: 131072},
 	{ID: "kimi-k2.7", ContextWindow: 131072}, {ID: "minimax-m3", ContextWindow: 131072}, {ID: "hy3", ContextWindow: 131072},
 	{ID: "hy3-preview", ContextWindow: 131072}, {ID: "hy3-preview-agent", ContextWindow: 131072},
-	{ID: "deepseek-v4-pro", ContextWindow: 131072}, {ID: "deepseek-v4-flash", ContextWindow: 131072},
+	// DeepSeek 限免模型
+	{ID: "deepseek-v4.1-flash", ContextWindow: 1000000, MaxTokens: 128000},
 }
 
 var traeworkStaticModels = []provider.ModelInfo{
-	{ID: "glm-5.2"}, {ID: "glm-5-turbo"}, {ID: "glm-5"}, {ID: "DeepSeek-V4-Pro"}, {ID: "DeepSeek-V4-Flash"},
+	{ID: "glm-5.2"}, {ID: "glm-5-turbo"}, {ID: "glm-5"},
 	{ID: "kimi-k2.6"}, {ID: "kimi-k2.7-code"}, {ID: "minimax-m3"}, {ID: "qwen3-coder"}, {ID: "Doubao-Seed-2.1-Pro"},
 }
 
@@ -406,15 +460,49 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		defer rc.Close()
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
+		kind, uid := rt.Kind.String(), acct.UID
 		if peek.Stream {
-			_ = rt.Upstream.Stream(w, rc)
-			return
+			track := &tokenTrackingReader{r: rc}
+				_ = rt.Upstream.Stream(w, track)
+				track.finish()
+				if rec := h.recordTokens; rec != nil {
+					if p, c, cr, cw, ok := track.ScanResult(); ok && (p > 0 || c > 0) {
+						rec(kind, uid, p, c, cr, cw)
+					}
+				}
+				return
 		}
 		resp, err := rt.Upstream.Aggregate(rc)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			return
 		}
+		if rec := h.recordTokens; rec != nil {
+				if u, ok := resp["usage"].(map[string]any); ok {
+					p, _ := asInt(u["prompt_tokens"])
+					c, _ := asInt(u["completion_tokens"])
+					if p == 0 && c == 0 {
+						c = int64(0)
+						if t, ok := asInt(u["total_tokens"]); ok {
+							c = t // 上游只给 total 时按 completion 计入
+						}
+					}
+					cr, _ := asInt(u["prompt_cache_hit_tokens"])
+					if cr == 0 {
+						cr, _ = asInt(u["cache_read_input_tokens"])
+					}
+					if cr == 0 {
+						cr, _ = asInt(u["cached_tokens"])
+					}
+					cw, _ := asInt(u["prompt_cache_write_tokens"])
+					if cw == 0 {
+						cw, _ = asInt(u["cache_creation_input_tokens"])
+					}
+					if p > 0 || c > 0 {
+						rec(kind, uid, p, c, cr, cw)
+					}
+				}
+			}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -466,8 +554,206 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(raw)
 }
 
+// ---------------------------------------------------------------------------
+// Token 用量统计
+// ---------------------------------------------------------------------------
+
+var (
+	usageObjRe = regexp.MustCompile(`"usage":\s*\{(.*?)\}`)
+	usageNumRe = regexp.MustCompile(`"(prompt_tokens|completion_tokens|total_tokens|prompt_cache_hit_tokens|cache_read_input_tokens|cached_tokens|prompt_cache_write_tokens|cache_creation_input_tokens)":\s*(\d+)`)
+	dataObjRe  = regexp.MustCompile(`^data:\s*(\{.*\})\s*$`)
+)
+
+// tokenTrackingReader 包裹上游 SSE 响应流：透明转发的同时按行抓取用量。
+// 支持两种流格式：
+//  1. OpenAI 兼容：收尾 chunk 内 `"usage":{"prompt_tokens":..,"completion_tokens":..}`
+//  2. SOLO 原生：`event:token_usage` + `data:{"prompt_tokens":..}`（无 usage 键）
+//
+// 覆盖赋值即取到整轮消耗；部分上游只回 total_tokens，finish 时归一为 completion。
+// 缓存命中量优先链：prompt_cache_hit_tokens → cache_read_input_tokens → cached_tokens。
+type tokenTrackingReader struct {
+	r          io.ReadCloser
+	pending    []byte
+	prompt     int64
+	completion int64
+	total      int64
+	cacheRead  int64
+	cacheWrite int64
+	has        bool
+}
+
+func (t *tokenTrackingReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.scan(p[:n])
+	}
+	return n, err
+}
+
+func (t *tokenTrackingReader) Close() error { return t.r.Close() }
+
+// finish 处理流末尾可能没有换行的残留数据，并归一化仅含 total 的 usage。
+func (t *tokenTrackingReader) finish() {
+	if len(t.pending) > 0 {
+		t.scan(nil)
+		t.pending = nil
+	}
+	if t.has && t.prompt == 0 && t.completion == 0 {
+		t.completion = t.total
+	}
+}
+
+func (t *tokenTrackingReader) ScanResult() (prompt, completion, cacheRead, cacheWrite int64, ok bool) {
+	return t.prompt, t.completion, t.cacheRead, t.cacheWrite, t.has
+}
+
+func (t *tokenTrackingReader) scan(chunk []byte) {
+	t.pending = append(t.pending, chunk...)
+	for {
+		i := bytes.IndexByte(t.pending, '\n')
+		if i < 0 {
+			break
+		}
+		line := t.pending[:i]
+		t.pending = t.pending[i+1:]
+		t.parseLine(line)
+	}
+	if len(t.pending) > 1<<16 {
+		t.pending = t.pending[len(t.pending)-1<<15:]
+	}
+}
+
+func (t *tokenTrackingReader) parseLine(line []byte) {
+	if m := usageObjRe.FindSubmatch(line); m != nil {
+		// OpenAI 兼容：行内嵌 "usage":{...}
+		for _, kv := range usageNumRe.FindAllSubmatch(m[1], -1) {
+			v, _ := strconv.ParseInt(string(kv[2]), 10, 64)
+			switch string(kv[1]) {
+			case "prompt_tokens":
+				t.prompt = v
+			case "completion_tokens":
+				t.completion = v
+			case "total_tokens":
+				t.total = v
+			case "prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens":
+				t.cacheRead = v
+			case "prompt_cache_write_tokens", "cache_creation_input_tokens":
+				t.cacheWrite = v
+			}
+		}
+		t.has = true
+		return
+	}
+	// SOLO 原生：token_usage 事件的 data 行 {"prompt_tokens":..,"completion_tokens":..}
+	m := dataObjRe.FindSubmatch(line)
+	if m == nil {
+		return
+	}
+	var obj map[string]any
+	if json.Unmarshal(m[1], &obj) != nil {
+		return
+	}
+	p, ok := obj["prompt_tokens"].(float64)
+	if !ok {
+		return
+	}
+	t.prompt = int64(p)
+	if c, ok := obj["completion_tokens"].(float64); ok {
+		t.completion = int64(c)
+	}
+	if tt, ok := obj["total_tokens"].(float64); ok {
+		t.total = int64(tt)
+	}
+	if cr, ok := obj["prompt_cache_hit_tokens"].(float64); ok {
+		t.cacheRead = int64(cr)
+	} else if cr, ok := obj["cache_read_input_tokens"].(float64); ok {
+		t.cacheRead = int64(cr)
+	} else if cr, ok := obj["cached_tokens"].(float64); ok {
+		t.cacheRead = int64(cr)
+	}
+	if cw, ok := obj["prompt_cache_write_tokens"].(float64); ok {
+		t.cacheWrite = int64(cw)
+	} else if cw, ok := obj["cache_creation_input_tokens"].(float64); ok {
+		t.cacheWrite = int64(cw)
+	}
+	t.has = true
+}
+
+// asInt 把 JSON 反序列化的数字（float64 或 string）安全转成 int64。
+func asInt(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case string:
+		iv, err := strconv.ParseInt(n, 10, 64)
+		return iv, err == nil
+	default:
+		return 0, false
+	}
+}
+
 func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": "api_error", "code": code}})
+}
+
+// tokenUsage 返回累计 Token 用量统计（按渠道分组）。
+func (h *Handler) tokenUsage(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.UsageRecorder == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "Token recording not enabled"})
+		return
+	}
+	rec, ok := h.cfg.UsageRecorder.(*usage.Recorder)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": "Token recording not enabled"})
+		return
+	}
+	type tokenStats struct {
+		Prompt      int64 `json:"prompt_tokens"`
+		Completion  int64 `json:"completion_tokens"`
+		CacheRead   int64 `json:"cache_read_tokens"`
+		CacheWrite  int64 `json:"cache_write_tokens"`
+		Total       int64 `json:"total_tokens"`
+	}
+	stats := make(map[string]*tokenStats)
+	for kind := range h.cfg.Runtimes {
+		stats[kind.String()] = &tokenStats{}
+	}
+	// 从 recorder 获取所有账号的 token 统计
+	report := rec.Report()
+	for _, au := range report {
+		kindStr := au.Kind
+		if stats[kindStr] == nil {
+			stats[kindStr] = &tokenStats{}
+		}
+		s := stats[kindStr]
+		// 累加每日 token 统计
+		for _, td := range au.Tokens {
+			s.Prompt += td.Prompt
+			s.Completion += td.Completion
+			s.CacheRead += td.CacheRead
+			s.CacheWrite += td.CacheWrite
+		}
+		s.Total = s.Prompt + s.Completion + s.CacheRead + s.CacheWrite
+	}
+	// 汇总总用量
+	var totalPrompt, totalCompletion, totalCacheRead, totalCacheWrite int64
+	for _, s := range stats {
+		totalPrompt += s.Prompt
+		totalCompletion += s.Completion
+		totalCacheRead += s.CacheRead
+		totalCacheWrite += s.CacheWrite
+	}
+	out := map[string]any{
+		"channels": stats,
+		"summary": map[string]int64{
+			"prompt_tokens":      totalPrompt,
+			"completion_tokens":  totalCompletion,
+			"cache_read_tokens":  totalCacheRead,
+			"cache_write_tokens": totalCacheWrite,
+			"total_tokens":       totalPrompt + totalCompletion + totalCacheRead + totalCacheWrite,
+		},
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func WorkBuddyStaticModels() []provider.ModelInfo {

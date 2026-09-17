@@ -427,6 +427,8 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 					CycleCapacitySize   int64  `json:"CycleCapacitySize"`
 					CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
 					CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
+					DeductionEndTime    int64  `json:"DeductionEndTime"` // 毫秒时间戳；实测 2026-09 携带
+					CycleEndTime        string `json:"CycleEndTime"`      // "2026-10-16 15:31:28"（UTC+8）
 				} `json:"Accounts"`
 			} `json:"Data"`
 		} `json:"Response"`
@@ -449,13 +451,31 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		if remain < 0 { remain = 0 }
 		total += remain
 		items = append(items, provider.ResourceItem{
-			Name:   acct.PackageName,
-			Total:  total_,
-			Used:   used,
-			Remain: remain,
+			Name:     acct.PackageName,
+			Total:    total_,
+			Used:     used,
+			Remain:   remain,
+			ExpireAt: accountExpireAt(acct.DeductionEndTime, acct.CycleEndTime),
 		})
 	}
 	return total, items, nil
+}
+
+// accountExpireAt 归一化套餐到期时间：DeductionEndTime（毫秒）优先，其次 CycleEndTime 字符串。
+// 无法解析返回 0（=长期）。与 upstream.Client.to_ts 的宽容链对齐。
+func accountExpireAt(deductEndMs int64, cycleEnd string) int64 {
+	if deductEndMs >= 1e12 {
+		return deductEndMs / 1000
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, cycleEnd, time.FixedZone("CST", 8*3600)); err == nil {
+			if layout == "2006-01-02" {
+				return t.Add(24*time.Hour - time.Second).Unix() // 纯日期取当天 23:59:59
+			}
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 // DailyCheckin 执行每日签到。已签到（业务 code 非 0）也返回错误，调用方按 msg 区分。

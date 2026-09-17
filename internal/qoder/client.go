@@ -323,6 +323,7 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		return 0, nil, c.classifyError(resp.StatusCode, string(raw))
 	}
 	var q struct {
+		ExpiresAt int64 `json:"expiresAt"` // 毫秒时间戳；同期 quota 响应实测携带
 		UserQuota struct {
 			Total     float64 `json:"total"`
 			Used      float64 `json:"used"`
@@ -337,14 +338,27 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	if err := json.Unmarshal(raw, &q); err != nil {
 		return 0, nil, fmt.Errorf("quota parse: %w", err)
 	}
+	expire := normalizeExpireMs(q.ExpiresAt)
 	total := int64(q.UserQuota.Remaining + q.AddOnQuota.Remaining)
 	items := []provider.ResourceItem{
-		{Name: "用户套餐", Total: int64(q.UserQuota.Total), Used: int64(q.UserQuota.Used), Remain: int64(q.UserQuota.Remaining)},
+		{Name: "用户套餐", Total: int64(q.UserQuota.Total), Used: int64(q.UserQuota.Used), Remain: int64(q.UserQuota.Remaining), ExpireAt: expire},
 	}
 	if q.AddOnQuota.Total > 0 || q.AddOnQuota.Remaining > 0 {
-		items = append(items, provider.ResourceItem{Name: "赠送额度", Total: int64(q.AddOnQuota.Total), Used: int64(q.AddOnQuota.Used), Remain: int64(q.AddOnQuota.Remaining)})
+		items = append(items, provider.ResourceItem{Name: "赠送额度", Total: int64(q.AddOnQuota.Total), Used: int64(q.AddOnQuota.Used), Remain: int64(q.AddOnQuota.Remaining), ExpireAt: expire})
 	}
 	return total, items, nil
+}
+
+// normalizeExpireMs 归一化上游到期时间戳：≥1e12 视为毫秒（qoder 实测该形态）除 1000 → Unix 秒；
+// 其余数值原样返回；0 及未识别返回 0（=长期）。
+func normalizeExpireMs(ts int64) int64 {
+	if ts <= 0 {
+		return 0
+	}
+	if ts >= 1e12 {
+		return ts / 1000
+	}
+	return ts
 }
 
 // DailyCheckin Qoder 当前无签到活动：直接返回已签到语义错误，避免调用上游。

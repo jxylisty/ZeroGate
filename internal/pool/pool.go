@@ -1,5 +1,5 @@
 // Package pool 账号池：内存索引 + 冷却/禁用状态机 + state.json 持久化。
-// 挑选策略：healthy 账号中剩余积分最多者。
+// 挑选策略：有到期时间者优先 > 更早到期者优先 > 剩余积分低者优先。
 package pool
 
 import (
@@ -17,10 +17,10 @@ import (
 type CoolKind int
 
 const (
-	CoolHard CoolKind = iota // 余额不足 → 长冷却
-	CoolSoft                 // 429 → 短冷却
-	CoolErr                  // 连续错误 → 中冷却
-	CoolLowBalance           // 余额低于平均 60% → 15min 冷却
+	CoolHard       CoolKind = iota // 余额不足 → 长冷却
+	CoolSoft                       // 429 → 短冷却
+	CoolErr                        // 连续错误 → 中冷却
+	CoolLowBalance                 // 余额低于平均 60% → 15min 冷却
 )
 
 func (k CoolKind) String() string {
@@ -42,6 +42,7 @@ type Status struct {
 	UID            string    `json:"uid"`
 	Nickname       string    `json:"nickname,omitempty"`
 	Credits        int64     `json:"credits"`
+	ExpireAt       int64     `json:"expire_at,omitempty"` // 最早到期套餐时间（Unix 秒）；0=长期有效
 	Cooling        bool      `json:"cooling"`
 	Until          time.Time `json:"until,omitempty"`
 	Reason         string    `json:"reason,omitempty"`
@@ -55,6 +56,7 @@ type Status struct {
 type entry struct {
 	a        *auth.Auth
 	credits  int64
+	expireAt int64 // 最早到期套餐时间（Unix 秒）；0=长期有效
 	disabled bool
 	reason   string
 	until    time.Time
@@ -78,6 +80,7 @@ func (e *entry) healthy(now time.Time) bool {
 // stateFile 持久化格式。
 type accountState struct {
 	Credits        int64     `json:"credits"`
+	ExpireAt       int64     `json:"expire_at,omitempty"`
 	Disabled       bool      `json:"disabled"`
 	Reason         string    `json:"reason,omitempty"`
 	Until          time.Time `json:"until,omitempty"`
@@ -137,7 +140,8 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	}
 }
 
-// Pick 返回 healthy 中积分最高的账号；无可用返回 nil。
+// Pick 返回 healthy 中优先消耗快到期积分的账号（有到期 > 更早到期 > 余额低）；
+// 无可用返回 nil。credits 为 0 也参与挑选（新账号首次刷新前即从 0 开始计数）。
 func (p *Pool) Pick() *auth.Auth {
 	return p.PickExcluding(nil)
 }
@@ -155,7 +159,7 @@ func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 		if !e.healthy(now) {
 			continue
 		}
-		if best == nil || e.credits > best.credits {
+		if best == nil || betterThan(e, best) {
 			best = e
 		}
 	}
@@ -165,12 +169,44 @@ func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 	return best.a
 }
 
+// betterThan 返回 e1 是否应比 e2 更优先被路由：
+// 有到期时间的优先于长期有效的；同样有时限的越早到期越优先；平手时余额低者优先。
+func betterThan(e1, e2 *entry) bool {
+	e1Has := e1.expireAt > 0
+	e2Has := e2.expireAt > 0
+	if e1Has != e2Has {
+		return e1Has
+	}
+	if e1Has && e1.expireAt != e2.expireAt {
+		return e1.expireAt < e2.expireAt
+	}
+	return e1.credits < e2.credits
+}
+
 // SetCredits 更新账号余额。
 func (p *Pool) SetCredits(uid string, credits int64) {
+	p.SetCreditsExpire(uid, credits, 0)
+}
+
+// SetCreditsExpire 更新账号余额与最早到期时间（expireAt Unix 秒，0 不清除现有时限）。
+func (p *Pool) SetCreditsExpire(uid string, credits, expireAt int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.credits = credits
+		if expireAt > 0 {
+			e.expireAt = expireAt
+		}
+	}
+	p.saveLocked()
+}
+
+// SetExpire 仅更新账号最早到期时间（expireAt Unix 秒，0=无时限）。
+func (p *Pool) SetExpire(uid string, expireAt int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.expireAt = expireAt
 	}
 	p.saveLocked()
 }
@@ -315,6 +351,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		UID:            uid,
 		Nickname:       e.a.Nickname,
 		Credits:        e.credits,
+		ExpireAt:       e.expireAt,
 		Cooling:        !e.until.IsZero() && now.Before(e.until),
 		Until:          e.until,
 		Reason:         e.reason,
@@ -343,6 +380,7 @@ func (p *Pool) load() {
 		p.byUID[uid] = &entry{
 			a:              &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
 			credits:        s.Credits,
+			expireAt:       s.ExpireAt,
 			disabled:       s.Disabled,
 			reason:         s.Reason,
 			until:          s.Until,
@@ -361,6 +399,7 @@ func (p *Pool) saveLocked() {
 	for uid, e := range p.byUID {
 		sf.Accounts[uid] = accountState{
 			Credits:        e.credits,
+			ExpireAt:       e.expireAt,
 			Disabled:       e.disabled,
 			Reason:         e.reason,
 			Until:          e.until,

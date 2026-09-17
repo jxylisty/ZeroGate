@@ -1,0 +1,10 @@
+{
+  "listen": { "host": "127.0.0.1", "port": 7864 },
+  "api_key": "AuthKey",
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json",
+  "region": "cn",
+  "cooldown": { "hard_credit": "12h", "soft_rate": "60s", "err_threshold": 3, "err_cooldown": "10m" },
+  "schedule": { "checkin_hours": [9, 21], "checkin_times": ["09:00", "21:00"], "keepalive_hours": [22] },
+  "upstream": { "timeout_seconds": 180 }
+}

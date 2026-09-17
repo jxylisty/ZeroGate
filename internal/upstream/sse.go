@@ -118,9 +118,9 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		"role":    role,
 		"content": content.String(),
 	}
-	if reasoning.Len() > 0 {
-		message["reasoning_content"] = reasoning.String()
-	}
+	// 思考文本（reasoning_content）不返回客户端：ZCode 等客户端会把它当
+	// 正文渲染（逐词换行）并计入上下文，挤占窗口。模型照常思考，只是不
+	// 透传思考过程。如需透传，把下面三行改回 message["reasoning_content"]。
 	if len(toolOrder) > 0 {
 		sortInts(toolOrder)
 		calls := make([]map[string]any, 0, len(toolOrder))
@@ -189,6 +189,56 @@ func sortInts(a []int) {
 	}
 }
 
+// stripReasoningFromChunk 删除 OpenAI SSE 数据行里的思考字段
+// （delta/message 的 reasoning_content、reasoning），返回处理后的 data 行。
+// 未命中/解析失败原样返回。原因同 Aggregate：客户端不认思考字段，透传
+// 会被当正文渲染并计入上下文（ZCode 实测「一行一个单词」）。
+func stripReasoningFromChunk(line string) string {
+	trimmed := strings.TrimRight(line, "\r\n")
+	if !strings.HasPrefix(trimmed, "data: ") {
+		return line
+	}
+	payload := strings.TrimPrefix(trimmed, "data: ")
+	if payload == "[DONE]" {
+		return line
+	}
+	var chunk map[string]any
+	if json.Unmarshal([]byte(payload), &chunk) != nil {
+		return line
+	}
+	choices, ok := chunk["choices"].([]any)
+	if !ok {
+		return line
+	}
+	changed := false
+	for _, ci := range choices {
+		c, ok := ci.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, holder := range []string{"delta", "message"} {
+			m, ok := c[holder].(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"reasoning_content", "reasoning"} {
+				if _, has := m[key]; has {
+					delete(m, key)
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return line
+	}
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		return line
+	}
+	return "data: " + string(b) + line[len(trimmed):]
+}
+
 // Stream 透传上游 SSE 到 w（每行 flush），保证至少写一个 [DONE]。
 // 调用方必须先设置过 status 200；本函数自设 SSE headers。
 func Stream(w http.ResponseWriter, r io.Reader) error {
@@ -206,7 +256,7 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 			if strings.HasPrefix(strings.TrimRight(line, "\r\n"), "data: [DONE]") {
 				sawDone = true
 			}
-			if _, werr := io.WriteString(w, line); werr != nil {
+			if _, werr := io.WriteString(w, stripReasoningFromChunk(line)); werr != nil {
 				return werr
 			}
 			if fl != nil {

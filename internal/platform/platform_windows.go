@@ -171,6 +171,8 @@ func SetAutostart(on bool) error {
 }
 
 // AutostartEnabled 查询当前 exe 是否已设置开机自启。
+// 按 exe 文件名匹配而非完整路径：升级/迁移目录（如 D 盘部署）后注册表指向旧路径时
+// 仍视为已开启，用户重新开启一次即写入新路径。
 func AutostartEnabled() bool {
 	k, err := registry.OpenKey(registry.CURRENT_USER, autostartKey, registry.QUERY_VALUE)
 	if err != nil {
@@ -181,10 +183,23 @@ func AutostartEnabled() bool {
 	if err != nil {
 		return false
 	}
-	if exe, err := os.Executable(); err == nil {
-		return strings.HasPrefix(v, `"`+exe+`"`)
+	exe, err := os.Executable()
+	if err != nil {
+		return v != ""
 	}
-	return v != ""
+	// 值形如 `"C:\path\wild-work.exe" --autostart`，提取其中的 exe 路径。
+	p := strings.TrimSpace(v)
+	if p == "" {
+		return false
+	}
+	if p[0] == '"' {
+		if i := strings.IndexByte(p[1:], '"'); i >= 0 {
+			p = p[1 : 1+i]
+		}
+	} else if i := strings.IndexAny(p, " \t"); i >= 0 {
+		p = p[:i]
+	}
+	return strings.EqualFold(filepath.Base(p), filepath.Base(exe))
 }
 
 // OpenWithTextEditor 用记事本打开文件。

@@ -1,0 +1,364 @@
+﻿// growth.go WorkBuddy 成长中心自动化：旅行（status→claim→config→depart）、
+// 盲盒（chances→draw 循环）、任务（tasks→accept）。
+// 协议移植自 smart-open/TraeWorkAssistant（MIT）src-tauri/src/tasks/wb_checkin.rs，
+// 凭证即账号自身 access_token，无额外设备信息。
+package upstream
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+
+	"wild-work/internal/auth"
+)
+
+// GrowthResult 成长中心单次执行结果。
+type GrowthResult struct {
+	Travel  string `json:"travel,omitempty"`  // "ok: 领奖X，已出发" | "skip: 旅行在途" | "fail: ..."
+	Lottery string `json:"lottery,omitempty"` // "ok: 抽取 N 次（奖励 ...）"
+	Tasks   string `json:"tasks,omitempty"`   // "ok: 领取 N 项" | "skip: 无可领"
+	AuthErr bool   `json:"auth_err,omitempty"` // 登录态失效，需刷新
+}
+
+// growthURL 拼成长中心接口地址。
+func (c *Client) growthURL(a *auth.Auth, path string) string {
+	return c.billingBase(a) + "/v2/activity/growth/" + path
+}
+
+// growthGet 成长中心 GET：返回 (http 状态, body 字节)；响应非 code/data 信封，原样返回。
+func (c *Client) growthGet(url string, a *auth.Auth) (int, []byte) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, []byte(err.Error())
+	}
+	BillingHeaders(req, a)
+	resp, err := c.billingClient().Do(req)
+	if err != nil {
+		return 0, []byte(err.Error())
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	return resp.StatusCode, raw
+}
+
+// growthPost 成长中心 POST（body 可为 nil=空对象）。
+func (c *Client) growthPost(url string, a *auth.Auth, body any) (int, []byte) {
+	var buf bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&buf).Encode(body)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, &buf)
+	if err != nil {
+		return 0, []byte(err.Error())
+	}
+	BillingHeaders(req, a)
+	resp, err := c.billingClient().Do(req)
+	if err != nil {
+		return 0, []byte(err.Error())
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	return resp.StatusCode, raw
+}
+
+// growthDig 从嵌套 map 按路径取任意值（宽容大小写字段名）。
+func growthDig(v any, keys ...string) any {
+	cur := v
+	for _, k := range keys {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		val, exists := m[k]
+		if !exists {
+			// 大小写宽容回退
+			val = nil
+			for kk, vv := range m {
+				if equalFold(kk, k) {
+					val = vv
+					break
+				}
+			}
+		}
+		cur = val
+	}
+	return cur
+}
+
+func equalFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// growthTruthy 类 Python truthy：非 nil 且非 false/0/""/"false"/"0"/"null"。
+func growthTruthy(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return t
+	case float64:
+		return t != 0
+	case json.Number:
+		f, _ := t.Float64()
+		return f != 0
+	case string:
+		return t != "" && t != "false" && t != "0" && t != "null" && t != "False"
+	case []any:
+		return len(t) > 0
+	case map[string]any:
+		return len(t) > 0
+	}
+	return true
+}
+
+func growthStr(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return fmt.Sprintf("%g", t)
+	case json.Number:
+		return t.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+// growth200 判断 2xx。
+func growthOK(status int) bool { return status >= 200 && status <= 201 }
+
+// GrowthTravel 旅行：status 到达 → claim 领奖 → config 取目的地 → depart 出发。
+func (c *Client) GrowthTravel(a *auth.Auth) (string, bool) {
+	url := c.growthURL(a, "buddy/travel/status")
+	status, raw := c.growthGet(url, a)
+	if status == http.StatusUnauthorized {
+		return "登录态失效（401）", true
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Sprintf("travel/status 不可用（HTTP %d）", status), false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "travel/status 响应解析失败", false
+	}
+	arrived := growthTruthy(growthDig(body, "arrived")) ||
+		growthTruthy(growthDig(body, "is_arrived")) ||
+		growthTruthy(growthDig(body, "has_arrived"))
+	recordID := growthDig(body, "record_id")
+	if recordID == nil {
+		recordID = growthDig(body, "recordId")
+	}
+	if !arrived {
+		dest := growthStr(growthDig(body, "destination", "name"))
+		if dest == "" {
+			dest = growthStr(growthDig(body, "target"))
+		}
+		if dest != "" {
+			return "旅行在途（" + dest + "）", false
+		}
+		return "旅行在途", false
+	}
+	// 领奖
+	claimBody := map[string]any{}
+	if r, ok := recordID.(string); ok && r != "" {
+		claimBody["record_id"] = r
+	}
+	st1, raw1 := c.growthPost(c.growthURL(a, "buddy/travel/claim"), a, claimBody)
+	if st1 == http.StatusUnauthorized {
+		return "登录态失效（401）", true
+	}
+	claimTxt := ""
+	if growthOK(st1) {
+		var b1 map[string]any
+		if err := json.Unmarshal(raw1, &b1); err == nil {
+			rw := growthDig(b1, "reward", "credits")
+			if rw == nil {
+				rw = growthDig(b1, "reward")
+			}
+			if rw != nil {
+				claimTxt = " " + growthStr(rw)
+			}
+		}
+	} else {
+		return fmt.Sprintf("领奖失败（HTTP %d）", st1), false
+	}
+	// 查目的地（失败不阻塞出发）
+	dest := ""
+	if _, r2 := c.growthGet(c.growthURL(a, "buddy/travel/config"), a); len(r2) > 0 {
+		var b2 map[string]any
+		if err := json.Unmarshal(r2, &b2); err == nil {
+			dest = growthStr(growthDig(b2, "destination", "name"))
+			if dest == "" {
+				dest = growthStr(growthDig(b2, "target"))
+			}
+		}
+	}
+	departBody := map[string]any{}
+	if dest != "" {
+		departBody["destination"] = dest
+	}
+	st3, _ := c.growthPost(c.growthURL(a, "buddy/travel/depart"), a, departBody)
+	if growthOK(st3) {
+		if dest != "" {
+			return "领奖" + claimTxt + "，已出发（" + dest + "）", false
+		}
+		return "领奖" + claimTxt + "，已出发", false
+	}
+	return fmt.Sprintf("领奖%s；depart 失败（HTTP %d）", claimTxt, st3), false
+}
+
+// GrowthLottery 盲盒：chances balance>0 → draw 循环（上限 20）。
+func (c *Client) GrowthLottery(a *auth.Auth, maxDraws int) (string, bool) {
+	if maxDraws <= 0 {
+		maxDraws = 20
+	}
+	status, raw := c.growthGet(c.growthURL(a, "lottery/chances"), a)
+	if status == http.StatusUnauthorized {
+		return "登录态失效（401）", true
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Sprintf("lottery/chances 不可用（HTTP %d）", status), false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "lottery/chances 响应解析失败", false
+	}
+	balance := 0
+	if b := growthDig(body, "balance"); b != nil {
+		switch t := b.(type) {
+		case float64:
+			balance = int(t)
+		case json.Number:
+			f, _ := t.Float64()
+			balance = int(f)
+		}
+	}
+	draws, rewards := 0, 0
+	for draws < maxDraws && balance > 0 {
+		st, r2 := c.growthPost(c.growthURL(a, "lottery/draw"), a, map[string]any{})
+		if st == http.StatusUnauthorized {
+			return fmt.Sprintf("登录态失效（401，已抽 %d 次）", draws), true
+		}
+		if !growthOK(st) {
+			break
+		}
+		draws++
+		balance--
+		var b2 map[string]any
+		if err := json.Unmarshal(r2, &b2); err == nil {
+			rw := growthDig(b2, "reward", "credits")
+			if rw == nil {
+				rw = growthDig(b2, "reward")
+			}
+			if rw != nil && growthStr(rw) != "" {
+				rewards++
+			}
+		}
+	}
+	if draws == 0 {
+		if balance <= 0 {
+			return "盲盒机会已用完", false
+		}
+		return "draw 不可用", false
+	}
+	return fmt.Sprintf("抽取 %d 次（%d 次有奖励）", draws, rewards), false
+}
+
+// GrowthTasks 任务领奖：tasks → 过滤 has_reward && 未领取 → accept。
+func (c *Client) GrowthTasks(a *auth.Auth) (string, bool) {
+	status, raw := c.growthGet(c.growthURL(a, "tasks"), a)
+	if status == http.StatusUnauthorized {
+		return "登录态失效（401）", true
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Sprintf("tasks 不可用（HTTP %d）", status), false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "tasks 响应解析失败", false
+	}
+	tasks := growthDig(body, "tasks", "list")
+	if tasks == nil {
+		tasks = growthDig(body, "tasks", "records")
+	}
+	list, ok := tasks.([]any)
+	if !ok {
+		return "tasks 无可领任务", false
+	}
+	claimed, skipped := 0, 0
+	for _, t := range list {
+		obj, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		hasReward := growthTruthy(obj["has_reward"]) || growthTruthy(growthDig(obj, "hasReward"))
+		if !hasReward {
+			continue
+		}
+		acceptStatus := growthStr(growthDig(obj, "accept_status"))
+		if acceptStatus == "" {
+			acceptStatus = growthStr(growthDig(obj, "acceptStatus"))
+		}
+		switch acceptStatus {
+		case "1", "2", "claimed", "accepted", "已领取", "true", "True":
+			skipped++
+			continue
+		}
+		code := growthStr(growthDig(obj, "task_code"))
+		if code == "" {
+			code = growthStr(growthDig(obj, "taskCode"))
+		}
+		acceptBody := map[string]any{}
+		if code != "" {
+			acceptBody["task_code"] = code
+		}
+		st, _ := c.growthPost(c.growthURL(a, "tasks/accept"), a, acceptBody)
+		if st == http.StatusUnauthorized {
+			return fmt.Sprintf("登录态失效（401，已领 %d 项）", claimed), true
+		}
+		if growthOK(st) {
+			claimed++
+		}
+	}
+	if claimed == 0 {
+		return fmt.Sprintf("无可领奖励（已跳过 %d 项）", skipped), false
+	}
+	return fmt.Sprintf("领取 %d 项任务奖励", claimed), false
+}
+
+// GrowthAll 执行成长中心全部功能，返回每项结果。
+func (c *Client) GrowthAll(a *auth.Auth) GrowthResult {
+	res := GrowthResult{}
+	if a == nil {
+		res.Travel, res.Lottery, res.Tasks = "无凭证", "无凭证", "无凭证"
+		return res
+	}
+	tr, authErr := c.GrowthTravel(a)
+	res.Travel, res.AuthErr = tr, authErr || res.AuthErr
+	lo, authErr := c.GrowthLottery(a, 20)
+	res.Lottery, res.AuthErr = lo, authErr || res.AuthErr
+	tk, authErr := c.GrowthTasks(a)
+	res.Tasks, res.AuthErr = tk, authErr || res.AuthErr
+	log.Printf("workbuddy growth uid=%s travel=%s lottery=%s tasks=%s", a.UID, tr, lo, tk)
+	return res
+}

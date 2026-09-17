@@ -17,6 +17,10 @@ const (
 	WorkBuddy Kind = "workbuddy"
 	TraeWork  Kind = "traework"
 	Qoder     Kind = "qoder"
+	CodeBuddy Kind = "codebuddy"  // 国际版 www.codebuddy.ai
+	WBIntl    Kind = "wbintl"     // WorkBuddy 国际版 www.workbuddy.ai（同后端，独立入口）
+	ZCode     Kind = "zcode"      // 智谱 ZCode (Z.AI) https://zcode.z.ai
+	AutoClaw  Kind = "autoclaw"   // AutoClaw（Z.ai 官方代理通道）
 )
 
 func (k Kind) String() string { return string(k) }
@@ -96,8 +100,26 @@ type Upstream interface {
 
 // ResourceItem 积分明细条目。
 type ResourceItem struct {
-	Name   string `json:"name"`
-	Total  int64  `json:"total"`
-	Used   int64  `json:"used"`
-	Remain int64  `json:"remain"`
+	Name     string `json:"name"`
+	Total    int64  `json:"total"`
+	Used     int64  `json:"used"`
+	Remain   int64  `json:"remain"`
+	ExpireAt int64  `json:"expire_at,omitempty"` // 该套餐到期时间（Unix 秒）；0=长期有效
+}
+
+// EarliestExpire 返回 items 中最早到期的套餐时间；全部长期有效则返回 0。
+// 已用尽的套餐（Remain<=0）不参与排序：其到期时间对路由/展示无意义，
+// 只会让面板恒显示一个"最早但已用光"的过期时间（如 Trae 串行签到包）。
+// 路由"快到期优先"依赖此值：0 视为长期（最后使用），>0 越早越优先。
+func EarliestExpire(items []ResourceItem) int64 {
+	var e int64
+	for _, it := range items {
+		if it.Remain <= 0 {
+			continue
+		}
+		if it.ExpireAt > 0 && (e == 0 || it.ExpireAt < e) {
+			e = it.ExpireAt
+		}
+	}
+	return e
 }

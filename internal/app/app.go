@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,15 +20,18 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/config"
+	"wild-work/internal/doubao"
 	"wild-work/internal/login"
 	loginqoder "wild-work/internal/login_qoder"
 	logintrae "wild-work/internal/login_trae"
-	"wild-work/internal/pool"
 	"wild-work/internal/platform"
+	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
+	"wild-work/internal/upstream"
+	"wild-work/internal/usage"
 )
 
 // Version 版本号。
@@ -82,18 +86,23 @@ type App struct {
 	pricingCache   []provider.ModelPricing // 本地缓存
 	pricingFetched time.Time
 	pricingErr     string // 最近一次拉取错误
+
+	usage *usage.Recorder
+	stop  chan struct{} // 关闭周期任务
 }
 
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
 func New(opts Options) (*App, error) {
 	a := &App{
-		cfgPath:    opts.ConfigPath,
-		cfg:        opts.Config,
-		runtimes:   opts.Runtimes,
-		handler:    opts.Handler,
+		cfgPath:  opts.ConfigPath,
+		cfg:      opts.Config,
+		runtimes: opts.Runtimes,
+		handler:  opts.Handler,
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
+	a.usage = usage.New(filepath.Join(filepath.Dir(opts.Config.StateFile), "usage.csv"))
+	a.stop = make(chan struct{})
 
 	// 日志文件 data/app.log
 	logFP := filepath.Join(filepath.Dir(opts.Config.StateFile), "app.log")
@@ -106,11 +115,66 @@ func New(opts Options) (*App, error) {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetOutput(&logWriter{app: a})
 	a.loadPricingCache()
+	go a.usageLoop()
 	return a, nil
 }
 
-// Close 关闭日志文件。
+// usageLoop 周期记录各账号实时余额快照（30 分钟一次，与调度器错开）。
+func (a *App) usageLoop() {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	a.captureUsage() // 启动先记一次
+	for {
+		select {
+		case <-ticker.C:
+			a.captureUsage()
+		case <-a.stop:
+			return
+		}
+	}
+}
+
+// captureUsage 拉取全部账号实时余额并写入 Recorder + 同步签到状态。
+func (a *App) captureUsage() {
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil || rt.Upstream == nil {
+			continue
+		}
+		for _, st := range rt.Pool.List() {
+			au := rt.Pool.AuthByUID(st.UID)
+			if au == nil || au.AccessToken == "" {
+				continue
+			}
+			remain, total := st.Credits, st.Credits
+			var expireAt int64
+			if r, items, err := rt.Upstream.UserResourceDetail(au); err == nil {
+				remain = r
+				expireAt = provider.EarliestExpire(items)
+				var sum int64
+				for _, it := range items {
+					sum += it.Total
+				}
+				if sum > 0 {
+					total = sum
+				}
+				rt.Pool.SetCreditsExpire(st.UID, remain, expireAt)
+				a.usage.SetExpire(st.UID, expireAt)
+			}
+			a.usage.Record(rt.Kind.String(), st.UID, st.Nickname, remain, total)
+			a.usage.SetCheckin(st.UID, st.LastCheckinOK, fmtTime(st.LastCheckinAt), st.LastCheckinMsg)
+		}
+	}
+}
+
+// Close 关闭日志文件与后台任务。
 func (a *App) Close() {
+	if a.stop != nil {
+		select {
+		case <-a.stop:
+		default:
+			close(a.stop)
+		}
+	}
 	if a.logFile != nil {
 		_ = a.logFile.Close()
 		a.logFile = nil
@@ -125,7 +189,7 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 }
 
 func (a *App) firstRuntime() *Runtime {
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.TraeWork, provider.Qoder} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.TraeWork, provider.Qoder, provider.CodeBuddy, provider.WBIntl} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -141,6 +205,49 @@ func (a *App) totalAccounts() int {
 		}
 	}
 	return n
+}
+
+// ArsenalOverview 聚合各本地服务状态供前端「白嫖总览」动态渲染（尽力而为，失败标 offline）。
+func (a *App) ArsenalOverview() map[string]any {
+	fetchJSON := func(url, key string, out any) bool {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		cli := &http.Client{Timeout: 4 * time.Second}
+		resp, err := cli.Do(req)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return json.Unmarshal(raw, out) == nil
+	}
+	var m8317 struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	ok8317 := fetchJSON("http://127.0.0.1:8317/v1/models", "CodexAPI", &m8317)
+	var m4141 struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	ok4141 := fetchJSON("http://127.0.0.1:4141/v1/models", "sk-7199d8a2-72e9-4785-9904-a45aac9594dc", &m4141)
+	var stats7868 map[string]any
+	ok7868 := fetchJSON("http://127.0.0.1:7868/stats", "DoubaoAPI", &stats7868)
+	return map[string]any{
+		"wildwork": map[string]any{
+			"channels": len(a.runtimes), "accounts": a.totalAccounts(),
+		},
+		"gpt_gemini": map[string]any{"online": ok8317, "models": len(m8317.Data)},
+		"copilot":    map[string]any{"online": ok4141, "models": len(m4141.Data), "model": "auto"},
+		"doubao":     map[string]any{"online": ok7868, "stats": stats7868},
+	}
 }
 
 func (a *App) allStatuses() []pool.Status {
@@ -188,7 +295,17 @@ func (a *App) nextFire() time.Time {
 }
 
 // SetHandler 注入 HTTP handler（在 HandleAPI 注册后调用）。
-func (a *App) SetHandler(h *server.Handler) { a.handler = h }
+func (a *App) SetHandler(h *server.Handler) {
+	a.handler = h
+	// 注入 Token 用量回调：反代转发成功后记录实际消耗（按天聚合到 usage）。
+	if h != nil {
+		h.SetTokenRecorder(func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64) {
+			a.usage.RecordTokens(kind, uid, prompt, completion, cacheRead, cacheWrite)
+		})
+		// 注入 UsageRecorder 供 /api/token_usage 查询累计用量
+		h.SetUsageRecorder(a.usage)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // HTTP 服务
@@ -470,6 +587,38 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
+	if rt := a.runtime(provider.CodeBuddy); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadCodeBuddyDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload codebuddy accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.WBIntl); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadWBIntlDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload wbintl accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.ZCode); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadZCodeDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload zcode accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.AutoClaw); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadAutoClawDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload autoclaw accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
 }
 
 // CheckinAccount 单个账号立即签到。
@@ -478,8 +627,8 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 	if rt == nil || rt.Scheduler == nil {
 		return scheduler.CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
-	if rt.Kind == provider.Qoder {
-		return scheduler.CheckinResult{}, fmt.Errorf("Qoder 渠道无签到活动")
+	if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode {
+		return scheduler.CheckinResult{}, fmt.Errorf("%s 渠道无签到活动", rt.Kind)
 	}
 	res, err := rt.Scheduler.CheckinAccount(uid)
 	if err != nil {
@@ -497,7 +646,7 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 		if rt == nil || rt.Pool == nil || rt.Scheduler == nil {
 			continue
 		}
-		if rt.Kind == provider.Qoder { // Qoder 无签到活动，跳过
+		if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode { // 无签到活动，跳过
 			continue
 		}
 		for _, st := range rt.Pool.List() {
@@ -522,6 +671,61 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 	return results
 }
 
+// GrowthAccount 对指定 WorkBuddy 账号执行成长中心自动化（旅行/盲盒/任务领奖）。
+func (a *App) GrowthAccount(uid string) (upstream.GrowthResult, error) {
+	rt, au := a.findRuntimeAuth(uid)
+	if rt == nil || au == nil {
+		return upstream.GrowthResult{}, fmt.Errorf("unknown account %s", uid)
+	}
+	if rt.Kind != provider.WorkBuddy {
+		return upstream.GrowthResult{}, fmt.Errorf("成长中心仅支持 WorkBuddy 渠道")
+	}
+	up, ok := rt.Upstream.(*upstream.Client)
+	if !ok {
+		return upstream.GrowthResult{}, fmt.Errorf("upstream type %T not supported", rt.Upstream)
+	}
+	log.Printf("growth start platform=%s uid=%s", rt.Kind, uid)
+	return up.GrowthAll(au), nil
+}
+
+// doubaoResultFP 豆包保活结果文件路径。
+func (a *App) doubaoResultFP() string {
+	return filepath.Join(filepath.Dir(a.cfg.StateFile), "doubao_renew_result.json")
+}
+
+// DoubaoRenew 豆包会话保活续期：读豆包桌面端 Local State 明文 sessionid，
+// 两段式探活 + 滑动续期，结果持久化供页面回显（协议见 internal/doubao）。
+func (a *App) DoubaoRenew() doubao.Result {
+	res := doubao.Renew(doubaoLocalStatePath())
+	raw, _ := json.Marshal(res)
+	if err := os.WriteFile(a.doubaoResultFP(), raw, 0o644); err != nil {
+		log.Printf("doubao renew save failed: %v", err)
+	}
+	log.Printf("doubao renew done ok=%d expired=%d error=%d accounts=%d",
+		res.OK, res.Expired, res.Error, len(res.Accounts))
+	return res
+}
+
+// DoubaoLastResult 最近一次豆包保活结果（无记录返回空结构）。
+func (a *App) DoubaoLastResult() doubao.Result {
+	var res doubao.Result
+	raw, err := os.ReadFile(a.doubaoResultFP())
+	if err != nil {
+		return res
+	}
+	_ = json.Unmarshal(raw, &res)
+	return res
+}
+
+// doubaoLocalStatePath 豆包桌面客户端 Local State 路径。
+func doubaoLocalStatePath() string {
+	la := os.Getenv("LOCALAPPDATA")
+	if la == "" {
+		return ""
+	}
+	return filepath.Join(la, "Doubao", "User Data", "Local State")
+}
+
 // RefreshCredits 刷新单个账号积分。
 func (a *App) RefreshCredits(uid string) (int64, error) {
 	rt, au := a.findRuntimeAuth(uid)
@@ -529,12 +733,12 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		return 0, fmt.Errorf("unknown account %s", uid)
 	}
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
-	remain, err := rt.Upstream.UserResource(au)
+	remain, items, err := rt.Upstream.UserResourceDetail(au)
 	if err != nil {
 		log.Printf("credits refresh failed platform=%s uid=%s err=%v", rt.Kind, uid, err)
 		return 0, err
 	}
-	rt.Pool.SetCredits(uid, remain)
+	rt.Pool.SetCreditsExpire(uid, remain, provider.EarliestExpire(items))
 	log.Printf("credits refresh success platform=%s uid=%s remain=%d", rt.Kind, uid, remain)
 	return remain, nil
 }
@@ -566,8 +770,8 @@ func (a *App) RefreshAll() RefreshSummary {
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: false, Msg: "no token"})
 				continue
 			}
-			if remain, err := rt.Upstream.UserResource(au); err == nil {
-				rt.Pool.SetCredits(st.UID, remain)
+			if remain, items, err := rt.Upstream.UserResourceDetail(au); err == nil {
+				rt.Pool.SetCreditsExpire(st.UID, remain, provider.EarliestExpire(items))
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: remain})
 			} else {
@@ -586,18 +790,18 @@ func (a *App) RefreshAll() RefreshSummary {
 
 // RefreshSummary 积分刷新汇总（托盘消息框内容）。
 type RefreshSummary struct {
-	Busy      bool                        `json:"busy"`
-	Total     int                         `json:"total"`
-	OK        int                         `json:"ok"`
-	Failed    int                         `json:"failed"`
-	Platforms map[string]PlatformSummary  `json:"platforms"`
+	Busy      bool                       `json:"busy"`
+	Total     int                        `json:"total"`
+	OK        int                        `json:"ok"`
+	Failed    int                        `json:"failed"`
+	Platforms map[string]PlatformSummary `json:"platforms"`
 }
 
 // PlatformSummary 单个渠道汇总。
 type PlatformSummary struct {
-	OK       int               `json:"ok"`
-	Failed   int               `json:"failed"`
-	Accounts []AccountRefresh  `json:"accounts"`
+	OK       int              `json:"ok"`
+	Failed   int              `json:"failed"`
+	Accounts []AccountRefresh `json:"accounts"`
 }
 
 // AccountRefresh 单账号刷新结果。
@@ -800,12 +1004,28 @@ func (a *App) GetState() State {
 }
 
 func (a *App) accountViews() []AccountView {
-	statuses := a.allStatuses()
-	out := make([]AccountView, 0, len(statuses))
-	for _, s := range statuses {
+	// 按渠道 pool 遍历：codebuddy 与 wbintl 可能同 uid（同后端同账户），
+	// 必须带上 rt.Kind 才能区分分组，不能仅凭 uid。
+	type sv struct {
+		kind string
+		s    pool.Status
+	}
+	var items []sv
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil {
+			continue
+		}
+		for _, s := range rt.Pool.List() {
+			items = append(items, sv{kind: string(rt.Kind), s: s})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].s.UID < items[j].s.UID })
+	out := make([]AccountView, 0, len(items))
+	for _, it := range items {
+		s := it.s
 		out = append(out, AccountView{
 			UID:            s.UID,
-			Group:          a.accountGroup(s.UID),
+			Group:          it.kind,
 			Nickname:       s.Nickname,
 			Credits:        s.Credits,
 			Cooling:        s.Cooling,
@@ -823,17 +1043,41 @@ func (a *App) accountViews() []AccountView {
 
 // accountGroup 返回账号所属分组（workbuddy/traework）。
 func (a *App) accountGroup(uid string) string {
-	_, au := a.findRuntimeAuth(uid)
-	if au != nil {
+	// 遍历各渠道 pool 而非 findRuntimeAuth：codebuddy 与 wbintl 可能同 uid，
+	// 需按所属 pool 的 auth 来源（Kind/FilePath）确定分组。
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil {
+			continue
+		}
+		au := rt.Pool.AuthByUID(uid)
+		if au == nil {
+			continue
+		}
 		if au.Kind != "" {
 			return au.Kind
 		}
-		if au.FilePath != "" && strings.HasPrefix(filepath.Base(au.FilePath), "trae-") {
-			return "traework"
+		if au.FilePath != "" {
+			base := filepath.Base(au.FilePath)
+			if strings.HasPrefix(base, "trae-") {
+				return "traework"
+			}
+			if strings.HasPrefix(base, "qoder") {
+				return "qoder"
+			}
+			if strings.HasPrefix(base, "codebuddy") {
+				return "codebuddy"
+			}
+			if strings.HasPrefix(base, "wbintl") {
+				return "wbintl"
+			}
+			if strings.HasPrefix(base, "zcode") {
+				return "zcode"
+			}
+			if strings.HasPrefix(base, "autoclaw") {
+				return "autoclaw"
+			}
 		}
-		if au.FilePath != "" && strings.HasPrefix(filepath.Base(au.FilePath), "qoder") {
-			return "qoder"
-		}
+		return string(rt.Kind)
 	}
 	return "workbuddy"
 }
@@ -885,6 +1129,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.GetState())
 	})
+	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
+		if a.usage != nil {
+			writeJSON(w, http.StatusOK, a.usage.JSON())
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"accounts": []any{}})
+		}
+	})
 	mux.HandleFunc("POST /api/login/start", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Channel string `json:"channel"`
@@ -920,6 +1171,9 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		results := a.CheckinAll()
 		writeJSON(w, http.StatusOK, map[string]any{"results": results})
 	})
+	mux.HandleFunc("GET /api/arsenal", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.ArsenalOverview())
+	})
 	mux.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
@@ -934,6 +1188,18 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/account/refresh_all", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.RefreshAll())
+	})
+	mux.HandleFunc("POST /api/account/growth", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			UID string `json:"uid"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		res, err := a.GrowthAccount(req.UID)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
 	})
 	mux.HandleFunc("POST /api/account/remove", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -969,6 +1235,12 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"remain": remain, "items": items})
+	})
+	mux.HandleFunc("POST /api/doubao/renew", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.DoubaoRenew())
+	})
+	mux.HandleFunc("GET /api/doubao/renew_result", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.DoubaoLastResult())
 	})
 	mux.HandleFunc("POST /api/config/checkin_times", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -1070,7 +1342,7 @@ func (a *App) FeesInfo() map[string]any {
 	}
 
 	channels := make([]map[string]any, 0)
-	for _, ch := range []string{"workbuddy", "traework", "qoder"} {
+	for _, ch := range []string{"workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw"} {
 		if models, ok := groups[ch]; ok {
 			channels = append(channels, map[string]any{
 				"channel": ch,
@@ -1210,6 +1482,35 @@ func staticFeesInfo() map[string]any {
 					{"model": "deepseek-v4-*", "rate": 0, "note": "按积分计费"},
 					{"model": "qwen3.* / glm-5.*", "rate": 0, "note": "按积分计费"},
 					{"model": "kimi-* / minimax-* / auto", "rate": 0, "note": "按积分计费"},
+				},
+			},
+			{
+				"channel": "codebuddy",
+				"models": []map[string]any{
+					{"model": "default / fast / balanced / primary / deep-model", "rate": 0, "note": "国际版，按积分倍率计费"},
+					{"model": "o4-mini", "rate": 0, "note": "GPT-4o-Mini"},
+				},
+			},
+			{
+				"channel": "wbintl",
+				"models": []map[string]any{
+					{"model": "default / fast / balanced / primary / deep-model", "rate": 0, "note": "WorkBuddy 国际版，限免期 DS 0 积分"},
+					{"model": "o4-mini", "rate": 0, "note": "GPT-4o-Mini"},
+				},
+			},
+			{
+				"channel": "zcode",
+				"models": []map[string]any{
+					{"model": "GLM-5.2", "rate": 0, "note": "1M 上下文，官方赠送 3 亿 units 可用"},
+					{"model": "GLM-5-Turbo", "rate": 0, "note": "高速版，136K 上下文"},
+				},
+			},
+			{
+				"channel": "autoclaw",
+				"models": []map[string]any{
+					{"model": "zai_auto", "rate": 0, "note": "自动路由（实测 deepseek-v4-flash-vision），积分等级低"},
+					{"model": "zai_auto-fast", "rate": 0, "note": "快速自动路由，积分等级中"},
+					{"model": "zaicoding_glm-5.3", "rate": 0, "note": "GLM-5.3 编码，积分等级高"},
 				},
 			},
 		},

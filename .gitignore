@@ -23,3 +23,14 @@ temp/
 Thumbs.dbgithub_token.txt
 HANDOFF.md
 GO多平台发布备忘.md
+
+# 编译产物补漏
+*.exe
+*.exe~
+daemon*.exe
+wild-work*.exe
+
+# 敏感文件（含活 token）
+tmp_codebuddy_intl_token.json
+deploy/
+test-run/

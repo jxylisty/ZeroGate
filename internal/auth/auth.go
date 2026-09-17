@@ -277,3 +277,128 @@ func LoadQoderDir(dir string) ([]*Auth, error) {
 	}
 	return out, nil
 }
+
+// LoadCodeBuddyDir 扫描国际版 CodeBuddy 凭证（codebuddy-*.json / codebuddy_*.json）。
+// 文件形如 D:\wild-work\auths\codebuddy-xxx.json（嵌套形 accessToken + uid）。
+func LoadCodeBuddyDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "codebuddy*"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = "codebuddy", f
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// LoadWBIntlDir 扫描 WorkBuddy 国际版凭证（wbintl-*.json / wbintl_*.json）。
+// 与 CodeBuddy 同后端（www.workbuddy.ai），仅文件前缀与 Kind 不同。
+func LoadWBIntlDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "wbintl*"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = "wbintl", f
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// LoadZCodeDir 扫描智谱 ZCode 凭证（zcode-*.json / zcode_*.json）。
+// 扁平形 {"accessToken":"<JWT 3段点分>","uid":"…","nickname":"…"}。
+// ZCode 登录态为 JWT，无 refresh 机制；expiresAt 缺省时给 30 天兜底，
+// 避免 NeedsRefresh 恒真导致每次请求都触发 refresh（refresh 本身是 no-op）。
+func LoadZCodeDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "zcode*"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		if a.ExpiresAt <= 0 {
+			a.ExpiresAt = time.Now().Add(30 * 24 * time.Hour).Unix()
+		}
+		a.Kind, a.FilePath = "zcode", f
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// LoadAutoClawDir 扫描 AutoClaw 凭证（autoclaw-*.json）。
+// 磁盘格式（autoclaw2api 落盘）：
+//
+//	{"accessToken":"Bearer <JWT>","refreshToken":"Bearer <JWT>","expiresAt":…,
+//	 "userId":"…","userName":"…","deviceId":"…","region":"cn"}
+//
+// access/refresh token 自带 "Bearer " 前缀，入池前剥离（请求时按通道要求重新拼装）。
+func LoadAutoClawDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "autoclaw-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var fc struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+			ExpiresAt    int64  `json:"expiresAt"`
+			UserID       string `json:"userId"`
+			UserName     string `json:"userName"`
+			DeviceID     string `json:"deviceId"`
+			Region       string `json:"region"`
+		}
+		if err := json.Unmarshal(raw, &fc); err != nil {
+			continue
+		}
+		if strings.TrimSpace(fc.AccessToken) == "" {
+			continue
+		}
+		a := &Auth{
+			AccessToken:  strings.TrimPrefix(strings.TrimSpace(fc.AccessToken), "Bearer "),
+			RefreshToken: strings.TrimPrefix(strings.TrimSpace(fc.RefreshToken), "Bearer "),
+			ExpiresAt:    fc.ExpiresAt,
+			UID:          fc.UserID,
+			Nickname:     fc.UserName,
+			DeviceID:     fc.DeviceID,
+		}
+		if a.ExpiresAt <= 0 {
+			// 登录未返回 expires_in，保守 28 天；到期前由 RefreshToken 保活
+			a.ExpiresAt = time.Now().Add(28 * 24 * time.Hour).Unix()
+		}
+		a.Kind, a.FilePath = "autoclaw", f
+		out = append(out, a)
+	}
+	return out, nil
+}
