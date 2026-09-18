@@ -85,6 +85,7 @@ type App struct {
 	loginStateFP string
 	loginKind    provider.Kind
 	zcProv       *zcode.Provision // zcode 面板自助加号编排器
+	pendingZcProv string         // login/start 请求里的 zcode provider（zai|bigmodel）
 	pricingFP    string
 
 	logFile *os.File
@@ -454,7 +455,14 @@ func (a *App) startZcodeLogin() (string, error) {
 	a.loginKind = provider.ZCode
 	a.muLogin.Unlock()
 
-	url, err := a.zcProv.Start("zai")
+	a.muLogin.Lock()
+	provider := strings.TrimSpace(a.pendingZcProv)
+	a.pendingZcProv = ""
+	a.muLogin.Unlock()
+	if provider == "" {
+		provider = "zai"
+	}
+	url, err := a.zcProv.Start(provider)
 	if err != nil {
 		a.finishLogin()
 		return "", err
@@ -1221,9 +1229,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/login/start", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Channel string `json:"channel"`
+			Channel  string `json:"channel"`
+			Provider string `json:"provider"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		a.muLogin.Lock()
+		a.pendingZcProv = strings.TrimSpace(req.Provider)
+		a.muLogin.Unlock()
 		url, err := a.StartLoginFor(req.Channel)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())

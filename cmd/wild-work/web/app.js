@@ -616,9 +616,23 @@ async function refreshAll() {
 
 // ---------- 登录 ----------
 let pendingChannel = null;
+let pendingProvider = "zai";
+function pickZcodeProvider(btn) {
+  pendingProvider = btn.dataset.provider;
+  document.querySelectorAll("#zcodeProviderRow .btn").forEach((b) => b.classList.remove("primary"));
+  btn.classList.add("primary");
+}
 function promptLogin(channel) {
   pendingChannel = channel;
   const name = groupMeta(channel).name;
+  const row = $("zcodeProviderRow");
+  if (channel === "zcode") {
+    pendingProvider = "zai";
+    row.classList.remove("hidden");
+    row.querySelectorAll(".btn").forEach((b) => b.classList.toggle("primary", b.dataset.provider === "zai"));
+  } else {
+    row.classList.add("hidden");
+  }
   $("lcTitle").textContent = "添加 " + name + " 账号";
   $("lcMsg").textContent = groupMeta(channel).checkin
     ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。（${name} 渠道无签到活动，仅 API 转发）`
@@ -633,7 +647,7 @@ function confirmLogin() {
 
 async function startLogin(channel) {
   try {
-    const r = await api("/api/login/start", { channel });
+    const r = await api("/api/login/start", { channel, provider: channel === "zcode" ? pendingProvider : undefined });
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = "添加 " + groupMeta(channel).name + " 账号";
@@ -852,6 +866,8 @@ function bind() {
   // 登录确认弹层
   $("btnLoginConfirm").onclick = confirmLogin;
   $("btnLoginConfirmCancel").onclick = () => $("loginConfirmOverlay").classList.add("hidden");
+  $("btnZcZai").onclick = () => pickZcodeProvider($("btnZcZai"));
+  $("btnZcBigmodel").onclick = () => pickZcodeProvider($("btnZcBigmodel"));
   $("loginConfirmOverlay").onclick = (e) => { if (e.target === $("loginConfirmOverlay")) $("loginConfirmOverlay").classList.add("hidden"); };
 
   $("btnApiSave").onclick = saveApiConfig;
