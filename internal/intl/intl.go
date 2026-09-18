@@ -351,30 +351,12 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 	return out, nil
 }
 
-// FetchModelPricing 返回内置目录中各模型的积分倍率（费率随账号可用模型过滤：
-// 只输出 /v2/enterprises/personal/models 实际返回的模型 + 隐藏免费模型）。
+// FetchModelPricing 返回内置目录中各模型的积分倍率（始终全量显示，不随账号可用模型过滤）。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
-	ids, err := c.fetchModelIDs(a)
-	if err != nil {
-		// 接口失败时退化为目录全量，避免费率区空窗
-		ids = nil
-		for i := range intlModels {
-			ids = append(ids, intlModels[i].ID)
-		}
-	}
-	available := map[string]bool{}
-	for _, id := range ids {
-		available[id] = true
-	}
-	// 官方隐藏模型：deepseek-v4.1-flash 实测可调用且不扣积分，费率区一并显示
-	// 注意：此模型不在 /v2/enterprises/personal/models 列表中，但可直接调用且 credit=0
-	available["deepseek-v4.1-flash"] = true
+	// 无论接口是否成功，都返回完整目录，确保前端费率表不会缺失模型
 	var out []provider.ModelPricing
 	for i := range intlModels {
 		m := &intlModels[i]
-		if !available[m.ID] {
-			continue
-		}
 		pricing := provider.ModelPricing{
 			Model:   m.ID,
 			Channel: c.Channel,
