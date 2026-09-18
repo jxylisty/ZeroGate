@@ -309,6 +309,13 @@ var intlModels = []staticModel{
 	{ID: "kimi-k2.6", Name: "Kimi-K2.6", ContextWindow: 256000, MaxTokens: 32000, Rate: 0.52},
 }
 
+// wbintlHiddenModels WorkBuddy 国际版特有隐藏模型（不在 /v2/enterprises/personal/models 列表中）
+// 这些模型需要动态发现，通过直接调用测试可用性
+var wbintlHiddenModels = []staticModel{
+	// 待补充：根据实际测试添加 wbintl 特有的隐藏模型
+	// 示例格式：{ID: "model-name", Name: "Model Name", ContextWindow: 1000000, MaxTokens: 32000, Rate: 0.0},
+}
+
 // staticModelOf 按 ID 查内置目录，找到返回指针；找不到返回 nil。
 func staticModelOf(id string) *staticModel {
 	for i := range intlModels {
@@ -329,6 +336,12 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 		for _, m := range intlModels {
 			out = append(out, provider.ModelInfo{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens})
 		}
+		// WorkBuddy 国际版额外添加隐藏模型
+		if c.Channel == "wbintl" {
+			for _, m := range wbintlHiddenModels {
+				out = append(out, provider.ModelInfo{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens})
+			}
+		}
 		return out, nil
 	}
 	var out []provider.ModelInfo
@@ -348,6 +361,14 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			out = append(out, provider.ModelInfo{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens})
 		}
 	}
+	// WorkBuddy 国际版额外添加隐藏模型
+	if c.Channel == "wbintl" {
+		for _, m := range wbintlHiddenModels {
+			if !seen[m.ID] {
+				out = append(out, provider.ModelInfo{ID: m.ID, Name: m.Name, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens})
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -355,6 +376,8 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
 	// 无论接口是否成功，都返回完整目录，确保前端费率表不会缺失模型
 	var out []provider.ModelPricing
+	
+	// 基础模型列表（codebuddy 和 wbintl 共享）
 	for i := range intlModels {
 		m := &intlModels[i]
 		pricing := provider.ModelPricing{
@@ -372,6 +395,23 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		}
 		out = append(out, pricing)
 	}
+	
+	// WorkBuddy 国际版特有隐藏模型（仅当 Channel="wbintl" 时添加）
+	if c.Channel == "wbintl" && len(wbintlHiddenModels) > 0 {
+		for i := range wbintlHiddenModels {
+			m := &wbintlHiddenModels[i]
+			pricing := provider.ModelPricing{
+				Model:   m.ID,
+				Channel: c.Channel,
+				Rate:    m.Rate,
+			}
+			if m.Rate == 0 {
+				pricing.Note = "WorkBuddy 国际版隐藏模型限免 0 积分"
+			}
+			out = append(out, pricing)
+		}
+	}
+	
 	return out, nil
 }
 
