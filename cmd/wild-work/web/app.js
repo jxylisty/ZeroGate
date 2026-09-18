@@ -48,6 +48,7 @@ function groupMeta(g) {
     case "wbintl": return { cls: "wbi", name: "WorkBuddy(国际)", checkin: true };
     case "zcode": return { cls: "zc", name: "ZCode (Z.AI)", checkin: false };
     case "autoclaw": return { cls: "ac", name: "AutoClaw", checkin: true };
+    case "atria": return { cls: "atria", name: "Atria", checkin: false };
     default: return { cls: "wb", name: "WorkBuddy", checkin: false };
   }
 }
@@ -1278,6 +1279,7 @@ const CHANNEL_METAS = {
   wbintl:    { name: "WBIntl",    color: "#ea580c" },
   zcode:     { name: "ZCode",     color: "#6366f1" },
   autoclaw:  { name: "AutoClaw",  color: "#0d9488" },
+  atria:     { name: "Atria",     color: "#0284c7" },
 };
 
 function fmtTokens(n) {

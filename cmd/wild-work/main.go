@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"wild-work/internal/app"
+	"wild-work/internal/atria"
 	"wild-work/internal/audit"
 	"wild-work/internal/auth"
 	"wild-work/internal/autoclaw"
@@ -110,7 +111,11 @@ func main() {
 	if err != nil {
 		fatal("读取 AutoClaw 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, codebuddy=%d, wbintl=%d, zcode=%d, autoclaw=%d from %s", len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(cbAuths), len(wbAuthsI), len(zcAuths), len(acAuths), cfg.AuthDir)
+	atriaAuths, err := auth.LoadAtriaDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 Atria 账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, codebuddy=%d, wbintl=%d, zcode=%d, autoclaw=%d, atria=%d from %s", len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(cbAuths), len(wbAuthsI), len(zcAuths), len(acAuths), len(atriaAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -141,6 +146,10 @@ func main() {
 	for _, a := range acAuths {
 		acPool.Add(a)
 	}
+	atriaPool := pool.New(filepath.Join(stateDir, "state-atria.json"))
+	for _, a := range atriaAuths {
+		atriaPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -159,6 +168,8 @@ func main() {
 	zcode.StartWeeklyClaim(context.Background(), zcPool, zcode.BridgeKeyFromEnv())
 	acUp := autoclaw.New()
 	acUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	atriaUp := atria.New()
+	atriaUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
 	if err != nil {
 		fatal("解析签到时间失败：%v", err)
@@ -176,6 +187,8 @@ func main() {
 	zcSch := scheduler.New(scheduler.Config{Pool: zcPool, Upstream: zcUp, Name: "zcode", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	// AutoClaw 有每日任务（daily_signin 等）可主动领取，纳入全局签到时间
 	acSch := scheduler.New(scheduler.Config{Pool: acPool, Upstream: acUp, Name: "autoclaw", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	// Atria 渠道使用静态 API Key，无需签到活动，keepalive 仅为空转
+	atriaSch := scheduler.New(scheduler.Config{Pool: atriaPool, Upstream: atriaUp, Name: "atria", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},
@@ -185,6 +198,7 @@ func main() {
 		provider.WBIntl:    {Kind: provider.WBIntl, Pool: wbIntlPool, Upstream: wbIntlUp, StaticModels: intl.StaticModels()},
 		provider.ZCode:     {Kind: provider.ZCode, Pool: zcPool, Upstream: zcUp, StaticModels: zcode.StaticModels()},
 		provider.AutoClaw:  {Kind: provider.AutoClaw, Pool: acPool, Upstream: acUp, StaticModels: autoclaw.StaticModels()},
+		provider.Atria:     {Kind: provider.Atria, Pool: atriaPool, Upstream: atriaUp, StaticModels: atria.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
@@ -194,6 +208,7 @@ func main() {
 		provider.WBIntl:    {Kind: provider.WBIntl, Pool: wbIntlPool, Upstream: wbIntlUp, Scheduler: wbIntlSch},
 		provider.ZCode:     {Kind: provider.ZCode, Pool: zcPool, Upstream: zcUp, Scheduler: zcSch},
 		provider.AutoClaw:  {Kind: provider.AutoClaw, Pool: acPool, Upstream: acUp, Scheduler: acSch},
+		provider.Atria:     {Kind: provider.Atria, Pool: atriaPool, Upstream: atriaUp, Scheduler: atriaSch},
 	}
 
 	keyStore := clientkey.New(filepath.Join(stateDir, "keys.json"))
@@ -220,6 +235,7 @@ func main() {
 	wbIntlSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("wbintl", r) })
 	zcSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("zcode", r) })
 	acSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("autoclaw", r) })
+	atriaSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("atria", r) })
 	wbSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("workbuddy", uid, ok, msg) })
 	trSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("traework", uid, ok, msg) })
 	qdSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("qoder", uid, ok, msg) })
@@ -227,6 +243,7 @@ func main() {
 	wbIntlSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("wbintl", uid, ok, msg) })
 	zcSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("zcode", uid, ok, msg) })
 	acSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("autoclaw", uid, ok, msg) })
+	atriaSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("atria", uid, ok, msg) })
 
 	// HTTP handler：OpenAI 端点 + Web UI + 管理 API
 	sub, err := fs.Sub(webFS, "web")

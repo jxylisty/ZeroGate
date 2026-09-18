@@ -797,6 +797,14 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
+	if rt := a.runtime(provider.Atria); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadAtriaDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload atria accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
 }
 
 // CheckinAccount 单个账号立即签到。
@@ -805,7 +813,7 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 	if rt == nil || rt.Scheduler == nil {
 		return scheduler.CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
-	if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode {
+	if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria {
 		return scheduler.CheckinResult{}, fmt.Errorf("%s 渠道无签到活动", rt.Kind)
 	}
 	res, err := rt.Scheduler.CheckinAccount(uid)
@@ -824,7 +832,7 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 		if rt == nil || rt.Pool == nil || rt.Scheduler == nil {
 			continue
 		}
-		if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode { // 无签到活动，跳过
+		if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria { // 无签到活动，跳过
 			continue
 		}
 		for _, st := range rt.Pool.List() {

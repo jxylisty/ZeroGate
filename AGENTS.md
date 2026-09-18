@@ -44,11 +44,11 @@ curl -H "Authorization: Bearer <api_key>" http://127.0.0.1:7863/status   # 看�
 
 ## 1. 项目定位
 
-ZeroGate 是一个**多渠道账号聚合网关**：把 CodeBuddy(WorkBuddy)/TraeWork/Qoder/AutoClaw/ZCode/WBIntl 多个渠道的账号聚合成一个 OpenAI 兼容 API，系统托盘常驻 daemon + 浏览器 Web UI 管理，自动签到 + token 保活 + 积分刷新。
+ZeroGate 是一个**多渠道账号聚合网关**：把 CodeBuddy(WorkBuddy)/TraeWork/Qoder/AutoClaw/ZCode/WBIntl/Atria 多个渠道的账号聚合成一个 OpenAI 兼容 API，系统托盘常驻 daemon + 浏览器 Web UI 管理，自动签到 + token 保活 + 积分刷新。
 
 架构是 **单进程 daemon**：一个 `http.Server` 同时服务 OpenAI 兼容端点、管理 API 和静态 Web UI；无前端编译链（`go:embed` 纯静态 HTML/CSS/JS）。
 
-## 2. 渠道扩展方式（已实现 7 个渠道）
+## 2. 渠道扩展方式（已实现 8 个渠道）
 
 1. 新建 `internal/<channel>/` 包，实现 `provider.Upstream` 接口
 2. `internal/auth` 增加对应 `Load<Channel>Dir()`（文件名前缀 `<channel>-*.json`）

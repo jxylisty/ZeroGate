@@ -98,6 +98,7 @@ func Parse(raw []byte) (*Auth, error) {
 		var n struct {
 			Auth struct {
 				AccessToken  string `json:"accessToken"`
+				ApiKey       string `json:"apiKey"`
 				RefreshToken string `json:"refreshToken"`
 				ExpiresAt    int64  `json:"expiresAt"`
 				Domain       string `json:"domain"`
@@ -117,8 +118,12 @@ func Parse(raw []byte) (*Auth, error) {
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
+		token := n.Auth.AccessToken
+		if token == "" {
+			token = n.Auth.ApiKey
+		}
 		a = Auth{
-			AccessToken:  n.Auth.AccessToken,
+			AccessToken:  token,
 			RefreshToken: n.Auth.RefreshToken,
 			ExpiresAt:    n.Auth.ExpiresAt,
 			Domain:       n.Auth.Domain,
@@ -135,6 +140,7 @@ func Parse(raw []byte) (*Auth, error) {
 	} else {
 		var f struct {
 			AccessToken  string `json:"accessToken"`
+			ApiKey       string `json:"apiKey"`
 			RefreshToken string `json:"refreshToken"`
 			ExpiresAt    int64  `json:"expiresAt"`
 			Domain       string `json:"domain"`
@@ -151,8 +157,12 @@ func Parse(raw []byte) (*Auth, error) {
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
+		token := f.AccessToken
+		if token == "" {
+			token = f.ApiKey
+		}
 		a = Auth{
-			AccessToken:  f.AccessToken,
+			AccessToken:  token,
 			RefreshToken: f.RefreshToken,
 			ExpiresAt:    f.ExpiresAt,
 			Domain:       f.Domain,
@@ -379,6 +389,42 @@ func LoadAutoClawDir(dir string) ([]*Auth, error) {
 			continue
 		}
 		a.Kind, a.FilePath = "autoclaw", f
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// LoadAtriaDir 扫描 Atria 凭证（atria-*.json / atria_*.json）。
+// 支持 {"apiKey":"atr_xxx","uid":"...","nickname":"..."} 或 {"accessToken":"atr_xxx",...}。
+func LoadAtriaDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "atria*"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		if strings.HasSuffix(f, ".example") {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		base := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
+		if a.UID == "" {
+			a.UID = base
+		}
+		if a.Nickname == "" {
+			a.Nickname = a.UID
+		}
+		if a.ExpiresAt <= 0 {
+			a.ExpiresAt = time.Now().Add(365 * 24 * time.Hour).Unix()
+		}
+		a.Kind, a.FilePath = "atria", f
 		out = append(out, a)
 	}
 	return out, nil

@@ -21,6 +21,7 @@ const (
 	WBIntl    Kind = "wbintl"     // WorkBuddy 国际版 www.workbuddy.ai（同后端，独立入口）
 	ZCode     Kind = "zcode"      // 智谱 ZCode (Z.AI) https://zcode.z.ai
 	AutoClaw  Kind = "autoclaw"   // AutoClaw（Z.ai 官方代理通道）
+	Atria     Kind = "atria"      // Atria Dawn Preview（上海人工智能实验室）https://api.atria-asi.ai
 )
 
 func (k Kind) String() string { return string(k) }

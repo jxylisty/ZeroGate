@@ -107,3 +107,43 @@ func TestNeedsRefresh(t *testing.T) {
 		t.Error("far future should not need refresh")
 	}
 }
+
+func TestParseApiKey(t *testing.T) {
+	raw := []byte(`{"apiKey":"atr_test_123","uid":"atria-1","nickname":"test-atria"}`)
+	a, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("parse apiKey err: %v", err)
+	}
+	if a.AccessToken != "atr_test_123" {
+		t.Errorf("want atr_test_123, got %s", a.AccessToken)
+	}
+	if a.UID != "atria-1" || a.Nickname != "test-atria" {
+		t.Errorf("unexpected account: %+v", a)
+	}
+}
+
+func TestLoadAtriaDir(t *testing.T) {
+	dir := t.TempDir()
+	f1 := `{"apiKey":"atr_1","uid":"a1"}`
+	f2 := `{"accessToken":"atr_2"}`
+	fEx := `{"apiKey":"sample"}`
+	os.WriteFile(filepath.Join(dir, "atria-1.json"), []byte(f1), 0o600)
+	os.WriteFile(filepath.Join(dir, "atria-2.json"), []byte(f2), 0o600)
+	os.WriteFile(filepath.Join(dir, "atria-example.json.example"), []byte(fEx), 0o600)
+
+	list, err := LoadAtriaDir(dir)
+	if err != nil {
+		t.Fatalf("load atria: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want 2 accounts (excluding example), got %d", len(list))
+	}
+	for _, a := range list {
+		if a.Kind != "atria" {
+			t.Errorf("want kind atria, got %s", a.Kind)
+		}
+		if a.ExpiresAt <= 0 {
+			t.Errorf("want positive expiresAt, got %d", a.ExpiresAt)
+		}
+	}
+}
