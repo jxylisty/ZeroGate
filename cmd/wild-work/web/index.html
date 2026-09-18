@@ -357,6 +357,38 @@
 </div>
 
 <!-- 添加账号确认弹层 -->
+<div class="overlay hidden" id="wbtokenOverlay">
+  <div class="modal">
+    <div class="modal-title" id="wbtTitle">添加国际版账号</div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin:14px 0;">
+      <textarea class="input" id="wbtToken" rows="4" placeholder="粘贴 accessToken（JWT，登录 workbuddy.ai / codebuddy.ai 后获取）" style="font-family:monospace;font-size:12px;"></textarea>
+      <input class="input" id="wbtRefresh" placeholder="refreshToken（可选，用于保活；没有可留空）" style="font-family:monospace;font-size:12px;" />
+      <input class="input" id="wbtName" placeholder="备注名（可选）" />
+      <p class="text-muted" id="wbtMsg" style="font-size:12px;"></p>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn small" id="wbtCancel">取消</button>
+      <button class="btn small primary" id="wbtConfirm">导入账号</button>
+    </div>
+  </div>
+</div>
+<div class="overlay hidden" id="autoclawOverlay">
+  <div class="modal">
+    <div class="modal-title">添加 AutoClaw 账号</div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin:14px 0;">
+      <input class="input" id="aclPhone" placeholder="手机号（发送短信验证码登录）" autocomplete="off" />
+      <div style="display:flex;gap:8px;">
+        <input class="input" id="aclCode" placeholder="短信验证码" autocomplete="off" style="flex:1" />
+        <button class="btn small" id="aclSend">发送验证码</button>
+      </div>
+      <p class="text-muted" id="aclMsg" style="font-size:12px;"></p>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn small" id="aclCancel">取消</button>
+      <button class="btn small primary" id="aclConfirm">登录并入池</button>
+    </div>
+  </div>
+</div>
 <div class="overlay hidden" id="loginConfirmOverlay">
   <div class="modal">
     <div class="modal-title" id="lcTitle">添加账号</div>

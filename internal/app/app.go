@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,6 +444,48 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	go a.pollLogin(ctx)
 	log.Printf("%s 登录流程已发起", k)
 	return authURL, nil
+}
+
+// jwtIDName 从 JWT payload（base64url 中段）尽量解出 uid 与昵称。
+func jwtIDName(token string) (uid, name string) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return "", ""
+	}
+	payload := parts[1]
+	if padded := payload + strings.Repeat("=", (4-len(payload)%4)%4); padded != payload {
+		payload = padded
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		if raw2, err2 := base64.URLEncoding.DecodeString(payload); err2 == nil {
+			raw = raw2
+		} else {
+			return "", ""
+		}
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return "", ""
+	}
+	for _, k := range []string{"sub", "uid", "userId", "user_id", "uuid"} {
+		if v, ok := claims[k].(string); ok && v != "" {
+			uid = v
+			break
+		}
+	}
+	for _, k := range []string{"nickname", "name", "userName", "username", "displayName"} {
+		if v, ok := claims[k].(string); ok && v != "" {
+			name = v
+			break
+		}
+	}
+	if uid == "" {
+		if v, ok := claims["user_id"].(float64); ok {
+			uid = fmt.Sprintf("%.0f", v)
+		}
+	}
+	return uid, name
 }
 
 // autoclawClient 返回 autoclaw 渠道上游客户端。
@@ -1343,6 +1386,53 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		log.Printf("autoclaw 面板登录成功 uid=%s nickname=%s", lr.UserID, lr.UserName)
 		a.reloadAccounts()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": lr.UserID, "nickname": lr.UserName})
+	})
+	mux.HandleFunc("POST /api/wbintl/add", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Domain       string `json:"domain"` // workbuddy.ai | codebuddy.ai
+			Token        string `json:"token"`
+			RefreshToken string `json:"refresh_token"`
+			Nickname     string `json:"nickname"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		token := strings.TrimSpace(req.Token)
+		if token == "" {
+			apiError(w, http.StatusBadRequest, "token 不能为空")
+			return
+		}
+		kind := ""
+		switch req.Domain {
+		case "workbuddy.ai":
+			kind = "wbintl"
+		case "codebuddy.ai":
+			kind = "codebuddy"
+		default:
+			apiError(w, http.StatusBadRequest, "domain 仅支持 workbuddy.ai / codebuddy.ai")
+			return
+		}
+		uid, uname := jwtIDName(token)
+		if uid == "" {
+			uid = fmt.Sprintf("%d", time.Now().UnixNano())
+		}
+		if req.Nickname != "" {
+			uname = req.Nickname
+		}
+		au := &auth.Auth{
+			Kind:         kind,
+			AccessToken:  token,
+			RefreshToken: strings.TrimSpace(req.RefreshToken),
+			Domain:       "www." + req.Domain,
+			UID:          uid,
+			Nickname:     uname,
+		}
+		au.FilePath = filepath.Join(a.cfg.AuthDir, fmt.Sprintf("%s-%s.json", kind, uid))
+		if err := au.SaveAtomic(); err != nil {
+			apiError(w, http.StatusInternalServerError, "凭证落盘失败: "+err.Error())
+			return
+		}
+		log.Printf("%s 面板粘贴登录成功 uid=%s nickname=%s", kind, uid, uname)
+		a.reloadAccounts()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "nickname": uname})
 	})
 	mux.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

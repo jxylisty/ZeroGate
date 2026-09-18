@@ -622,6 +622,28 @@ function pickZcodeProvider(btn) {
   document.querySelectorAll("#zcodeProviderRow .btn").forEach((b) => b.classList.remove("primary"));
   btn.classList.add("primary");
 }
+let wbtKind = "wbintl";
+function openWbtDialog(channel) {
+  wbtKind = channel === "codebuddy" ? "codebuddy" : "wbintl";
+  $("wbtTitle").textContent = "添加 " + groupMeta(channel).name + " 账号（粘贴 token）";
+  $("wbtToken").value = ""; $("wbtRefresh").value = ""; $("wbtName").value = ""; $("wbtMsg").textContent = "";
+  $("wbtokenOverlay").classList.remove("hidden");
+}
+function closeWbtDialog() { $("wbtokenOverlay").classList.add("hidden"); }
+async function wbtImport() {
+  const token = $("wbtToken").value.trim();
+  if (!token) { toast("请粘贴 accessToken"); return; }
+  const domain = wbtKind === "codebuddy" ? "codebuddy.ai" : "workbuddy.ai";
+  $("wbtConfirm").disabled = true;
+  try {
+    const r = await api("/api/wbintl/add", { domain, token, refresh_token: $("wbtRefresh").value.trim(), nickname: $("wbtName").value.trim() });
+    closeWbtDialog();
+    toast("导入成功：" + (r.nickname || r.uid));
+    await loadState();
+    refreshFees();
+  } catch (e) { $("wbtMsg").textContent = "导入失败：" + e.message; }
+  finally { $("wbtConfirm").disabled = false; }
+}
 let aclDeviceID = null;
 async function openAutoclawDialog() {
   pendingChannel = null;
@@ -664,6 +686,7 @@ function promptLogin(channel) {
   pendingChannel = channel;
   const name = groupMeta(channel).name;
   if (channel === "autoclaw") { openAutoclawDialog(); return; }
+  if (channel === "wbintl" || channel === "codebuddy") { openWbtDialog(channel); return; }
   const row = $("zcodeProviderRow");
   if (channel === "zcode") {
     pendingProvider = "zai";
@@ -910,6 +933,8 @@ function bind() {
   $("aclSend").onclick = () => void aclSendCode();
   $("aclConfirm").onclick = () => void aclConfirm();
   $("aclCancel").onclick = closeAutoclawDialog;
+  $("wbtCancel").onclick = closeWbtDialog;
+  $("wbtConfirm").onclick = () => void wbtImport();
   $("aclSend").onclick = () => void aclSendCode();
   $("aclConfirm").onclick = () => void aclConfirm();
   $("aclCancel").onclick = closeAutoclawDialog;
