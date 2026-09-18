@@ -22,6 +22,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"wild-work/internal/auth"
@@ -34,6 +35,10 @@ type Client struct {
 	HTTP    *http.Client
 	Base    string // 默认 https://www.codebuddy.ai
 	Channel string // 渠道名（codebuddy / wbintl），用于费率分组
+	
+	// 动态发现机制：记录成功调用的隐藏模型（接口未返回但实际可用）
+	discoveredModelsOnce sync.Once
+	discoveredModels     map[string]bool // 已确认可用的隐藏模型 ID 集合
 }
 
 // New 生产默认。intl 与 CN 同域不同路径路由，无需多 base。
@@ -55,6 +60,14 @@ func NewWithBase(base string) *Client {
 	c := New()
 	c.Base = base
 	return c
+}
+
+// discoverDiscoveredModels 初始化并返回已发现的隐藏模型集合（线程安全，只执行一次）
+func (c *Client) discoverDiscoveredModels() map[string]bool {
+	c.discoveredModelsOnce.Do(func() {
+		c.discoveredModels = make(map[string]bool)
+	})
+	return c.discoveredModels
 }
 
 // uuidHex 生成无横线的 uuid（trace 头共用同一 id）。
@@ -232,6 +245,14 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			a.UID, peek.Model, resp.StatusCode, kind, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
+	
+	// 成功调用后，记录模型 ID（用于发现隐藏模型）
+	if peek.Model != "" && resp.StatusCode == 200 {
+		discovered := c.discoverDiscoveredModels()
+		discovered[peek.Model] = true
+		log.Printf("codebuddy chat_stream uid=%s model=%s: discovered hidden model (HTTP 200)", a.UID, peek.Model)
+	}
+	
 	return resp.Body, resp.StatusCode, nil, nil
 }
 
@@ -369,6 +390,15 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			}
 		}
 	}
+	// 添加动态发现的隐藏模型（通过成功调用嗅探到的）
+	discovered := c.discoverDiscoveredModels()
+	for modelID := range discovered {
+		if !seen[modelID] && staticModelOf(modelID) == nil {
+			// 不是已知模型且未在接口列表中，可能是新发现的隐藏模型
+			out = append(out, provider.ModelInfo{ID: modelID, Name: modelID})
+			seen[modelID] = true
+		}
+	}
 	return out, nil
 }
 
@@ -407,6 +437,29 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 			}
 			if m.Rate == 0 {
 				pricing.Note = "WorkBuddy 国际版隐藏模型限免 0 积分"
+			}
+			out = append(out, pricing)
+		}
+	}
+	
+	// 添加动态发现的隐藏模型定价信息（通过成功调用嗅探到的）
+	discovered := c.discoverDiscoveredModels()
+	for modelID := range discovered {
+		// 检查是否已在列表中（避免重复）
+		exists := false
+		for _, p := range out {
+			if p.Model == modelID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			// 新发现的隐藏模型，默认免费（Rate=0），前端会显示提示
+			pricing := provider.ModelPricing{
+				Model:   modelID,
+				Channel: c.Channel,
+				Rate:    0,
+				Note:    fmt.Sprintf("动态发现隐藏模型 · 实测可用 (HTTP 200)"),
 			}
 			out = append(out, pricing)
 		}
