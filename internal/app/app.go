@@ -26,6 +26,7 @@ import (
 	"wild-work/internal/doubao"
 	"wild-work/internal/login"
 	loginqoder "wild-work/internal/login_qoder"
+	"wild-work/internal/zcode"
 	logintrae "wild-work/internal/login_trae"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
@@ -83,6 +84,7 @@ type App struct {
 	loginClient  *http.Client
 	loginStateFP string
 	loginKind    provider.Kind
+	zcProv       *zcode.Provision // zcode 面板自助加号编排器
 	pricingFP    string
 
 	logFile *os.File
@@ -110,6 +112,13 @@ func New(opts Options) (*App, error) {
 		auditRec:   opts.AuditRec,
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
+	// zcode 自助加号：实例编排（默认目录约定见 AGENTS.md 7.6；用 env 可覆盖）
+	a.zcProv = zcode.NewProvision(
+		os.Getenv("ZCODE_PROXY_EXE"),
+		os.Getenv("ZCODE_PROXY_INSTANCES_DIR"),
+		opts.Config.AuthDir,
+		18086,
+	)
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
 	a.usage = usage.New(filepath.Join(filepath.Dir(opts.Config.StateFile), "usage.csv"))
 	a.stop = make(chan struct{})
@@ -383,8 +392,11 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	if k == "" {
 		k = provider.WorkBuddy
 	}
-	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder {
+	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder && k != provider.ZCode {
 		return "", fmt.Errorf("unknown login provider %s", kind)
+	}
+	if k == provider.ZCode {
+		return a.startZcodeLogin()
 	}
 	a.muLogin.Lock()
 	if a.loginBusy {
@@ -430,11 +442,58 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	return authURL, nil
 }
 
+// startZcodeLogin 面板自助加号：编排实例 + 发起 auth login，返回授权 URL。
+// 完成后台 goroutine 等凭证 → Finalize 落库 → 重载账号池。
+func (a *App) startZcodeLogin() (string, error) {
+	a.muLogin.Lock()
+	if a.loginBusy {
+		a.muLogin.Unlock()
+		return "", errors.New("已有登录流程进行中，请先完成或取消")
+	}
+	a.loginBusy = true
+	a.loginKind = provider.ZCode
+	a.muLogin.Unlock()
+
+	url, err := a.zcProv.Start("zai")
+	if err != nil {
+		a.finishLogin()
+		return "", err
+	}
+	go func() {
+		ok, derr := a.zcProv.Done(5 * time.Minute)
+		if !ok {
+			log.Printf("zcode 登录未完成: %v", derr)
+			a.finishLogin()
+			return
+		}
+		fp, ferr := a.zcProv.Finalize()
+		if ferr != nil {
+			log.Printf("zcode 登录落库失败: %v", ferr)
+			a.finishLogin()
+			return
+		}
+		log.Printf("zcode 新账号已落库: %s", filepath.Base(fp))
+		a.reloadAccounts()
+		a.finishLogin()
+	}()
+	return url, nil
+}
+
 // CancelLogin 取消当前登录流程。
 func (a *App) CancelLogin() error {
 	a.muLogin.Lock()
+	kind := a.loginKind
 	cancel := a.loginCancel
 	a.muLogin.Unlock()
+	if kind == provider.ZCode {
+		if a.zcProv == nil {
+			return errors.New("没有进行中的登录")
+		}
+		err := a.zcProv.Abort()
+		a.finishLogin()
+		log.Printf("zcode 登录已取消")
+		return err
+	}
 	if cancel == nil {
 		return errors.New("没有进行中的登录")
 	}
