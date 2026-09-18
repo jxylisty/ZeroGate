@@ -227,3 +227,15 @@ ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./
   与新调度重复执行也无害——claim 幂等，重复领取返回无包）
 - 周五晚间如有测试需要：手动 `curl -X POST http://127.0.0.1:<实例端口>/admin/claim-now
   -H "Authorization: Bearer sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4"`（确认账号已登录该实例）
+
+### 7.10 面板自助添加 ZCode 账号（2026-09-18 实施）
+
+- 面板 ZCode 分组的「＋」→ 通用登录弹窗打开授权页 → 浏览器授权 → 自动完成：
+  - `internal/zcode/provision.go`：分配端口（18086 起）→ 创建 instances/acc-lognXXXX/
+    （config.yaml + start.sh + creds/）→ 启动 serve 实例 → 发起 `auth login zai`
+    （后台解析授权 URL）→ 凭证文件生成即成功 → 写 auths/zcode-*.json（bridgeUrl 占位）
+    → reloadAccounts → login_busy=false
+  - 默认 provider=zai（面板暂不选 bigmodel；需要国内号时手动建或用请求体扩展）
+  - 环境变量覆盖：`ZCODE_PROXY_EXE` / `ZCODE_PROXY_INSTANCES_DIR`
+- 取消：`/api/login/cancel`（实例目录保留，含 serve 进程，凭证可复用）
+- 测试残留实例：`instances/acc-logn*`（超时/取消产物），删目录即可
