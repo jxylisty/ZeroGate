@@ -858,7 +858,7 @@ function renderTokenStats(data) {
   const summary = data.summary || {};
   const channels = data.channels || {};
 
-  // 总卡片
+  // 总卡片 - 统一使用 token 后缀字段
   let html = `
     <div class="totals-card">
       <div class="totals-label">累计总 Token 数</div>
@@ -906,19 +906,19 @@ function renderTokenStats(data) {
           </div>
           <div class="ch-stats">
             <div class="ch-stat">
-              <div class="v">${fmtTotal(stats.prompt || 0)}</div>
+              <div class="v">${fmtTotal(stats.prompt_tokens || 0)}</div>
               <div class="l">输入</div>
             </div>
             <div class="ch-stat">
-              <div class="v">${fmtTotal(stats.completion || 0)}</div>
+              <div class="v">${fmtTotal(stats.completion_tokens || 0)}</div>
               <div class="l">输出</div>
             </div>
             <div class="ch-stat">
-              <div class="v">${fmtTotal(stats.cache_read || 0)}</div>
+              <div class="v">${fmtTotal(stats.cache_read_tokens || 0)}</div>
               <div class="l">缓存命中</div>
             </div>
             <div class="ch-stat">
-              <div class="v">${fmtTotal(stats.cache_write || 0)}</div>
+              <div class="v">${fmtTotal(stats.cache_write_tokens || 0)}</div>
               <div class="l">缓存写入</div>
             </div>
           </div>
@@ -997,16 +997,16 @@ async function openUsageStats() {
 
 function renderUsageChart(tokens) {
   const canvas = $("usageChart");
-  if (!canvas) return;
+  if (!canvas || !tokens || tokens.length === 0) return;
   
   // 按天排序（最近在前）
-  const sorted = [...tokens].sort((a, b) => b.Day.localeCompare(a.Day));
-  const labels = sorted.map(t => t.Day.slice(5)); // 只显示 MM-DD
-  const promptData = sorted.map(t => t.prompt);
-  const completionData = sorted.map(t => t.completion);
-  const cacheReadData = sorted.map(t => t.cache_read);
-  const cacheWriteData = sorted.map(t => t.cache_write);
-  const totalData = sorted.map(t => t.total);
+  const sorted = [...tokens].sort((a, b) => b.day.localeCompare(a.day));
+  const labels = sorted.map(t => t.day.slice(5)); // 只显示 MM-DD
+  const promptData = sorted.map(t => t.prompt || 0);
+  const completionData = sorted.map(t => t.completion || 0);
+  const cacheReadData = sorted.map(t => t.cache_read || 0);
+  const cacheWriteData = sorted.map(t => t.cache_write || 0);
+  const totalData = sorted.map(t => t.total || 0);
   
   const ctx = canvas.getContext('2d');
   
