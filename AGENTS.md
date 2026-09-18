@@ -74,7 +74,7 @@ ZeroGate 是一个**多渠道账号聚合网关**：把 CodeBuddy(WorkBuddy)/Tra
 4. `data/state-*.json` 只增不减字段，向后兼容
 5. 托盘回调必须 goroutine 化
 6. `config.example.json` 与 `config.Default()` 同步
-7. 上游 HTTP ≥400 错误直接透传原始响应，不包装
+7. 上游 HTTP ≥400 错误：**OpenAI 标准 error 格式（含 error.message）原样透传；非标准格式（字节系上游）包装成标准格式**（ZCode 等客户端解析不了非标准体 → reason=unknown；2026-09-18 修复）
 8. 定价缓存持久化到 `data/pricing-cache.json`，启动加载，超 1h 自动刷新
 9. 无桌面 Linux 必须 `--no-tray`，不带参数托盘 panic 直接 exit 提示
 10. **粘性路由**：`pickWithSticky` 优先复用上次账号，直至连续成功请求达 50 次或遭遇错误冷却。成功时 `stickySuccess` 递增计数，错误时 `stickyClear` 清除粘性记录。不使用 credits 阈值（pool 中余额是 stale 数据）。

@@ -451,10 +451,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			default:
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 			}
-			// 上游错误直接透传给客户端，不做包装
+			// 上游错误：已是 OpenAI 标准 error 格式则原样透传；
+			// 否则包装成标准格式（字节系上游错误体无 error.message，
+			// ZCode 等客户端解析不出原因 → reason=unknown）
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_, _ = w.Write(respBody)
+			if isOpenAIError(respBody) {
+				_, _ = w.Write(respBody)
+			} else {
+				_, _ = w.Write(wrapUpstreamError(status, respBody))
+			}
 			return
 		}
 		defer rc.Close()
@@ -694,6 +700,51 @@ func asInt(v any) (int64, bool) {
 
 func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": "api_error", "code": code}})
+}
+
+// isOpenAIError 判断响应体是否为 OpenAI 标准错误格式（含 error.message）。
+func isOpenAIError(raw []byte) bool {
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(raw, &e) == nil && e.Error.Message != ""
+}
+
+// wrapUpstreamError 把非标准上游错误体包装成 OpenAI 标准 error 格式。
+// message 依次尝试常见字段（error.message / message / msg / errMsg），
+// 原始体放进 upstream_body 供调试。
+func wrapUpstreamError(status int, raw []byte) []byte {
+	msg := ""
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) == nil {
+		if e, ok := obj["error"].(map[string]any); ok {
+			if m, _ := e["message"].(string); m != "" {
+				msg = m
+			}
+		}
+		if msg == "" {
+			for _, k := range []string{"message", "msg", "errMsg", "err_msg", "error_msg"} {
+				if m, ok := obj[k].(string); ok && m != "" {
+					msg = m
+					break
+				}
+			}
+		}
+	}
+	if msg == "" {
+		msg = "upstream error (status " + http.StatusText(status) + ")"
+	}
+	out, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message":       msg,
+			"type":          "upstream_error",
+			"code":          fmt.Sprintf("http_%d", status),
+			"upstream_body": string(raw),
+		},
+	})
+	return out
 }
 
 // tokenUsage 返回累计 Token 用量统计（按渠道分组）。
