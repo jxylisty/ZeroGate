@@ -568,6 +568,7 @@ type anthropicEvent struct {
 	Delta struct {
 		Type       string `json:"type"`
 		Text       string `json:"text"`
+		Thinking   string `json:"thinking"`
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 	Message struct {
@@ -637,9 +638,20 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 				case "content_block_start":
 					// 跳过（Anthropic 结构）；thinking/text 均从 delta 出
 				case "content_block_delta":
-					text := ev.Delta.Text
-					if text == "" {
-						continue
+					// ZCode 3.12.3 上游：thinking_delta（字段 thinking）先行，
+					// text_delta（字段 text）在后；两者都要正确转换（2026-09-18 修复）。
+					d := map[string]any{}
+					switch ev.Delta.Type {
+					case "thinking_delta":
+						if ev.Delta.Thinking == "" {
+							continue
+						}
+						d["reasoning_content"] = ev.Delta.Thinking
+					default: // text_delta 等
+						if ev.Delta.Text == "" {
+							continue
+						}
+						d["content"] = ev.Delta.Text
 					}
 					chunk := map[string]any{
 						"id":      idOrSynth(id),
@@ -649,7 +661,7 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 						"choices": []any{
 							map[string]any{
 								"index":         0,
-								"delta":         map[string]any{"content": text},
+								"delta":         d,
 								"finish_reason": nil,
 							},
 						},
