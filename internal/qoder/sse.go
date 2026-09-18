@@ -40,6 +40,13 @@ func parseNestedSSE(r io.Reader, onChunk func(map[string]any) error) error {
 						return err
 					}
 				}
+			} else if strings.TrimSpace(payload) != "[DONE]" {
+				var direct map[string]any
+				if json.Unmarshal([]byte(payload), &direct) == nil {
+					if err := onChunk(direct); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		if err == io.EOF {
@@ -203,7 +210,43 @@ func sortInts(a []int) {
 // 每个 chunk 重写 model 字段为客户端模型名；末尾补 data: [DONE]。
 func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) error {
 	sawDone := false
+	var autoCallID string
 	err := parseNestedSSE(r, func(chunk map[string]any) error {
+		// 1. 防 403 崩溃：若 chunk 本身包含上游错误码（如 403 或 10605），绝不可把 code: 403 透传给客户端，
+		// 否则 ZCode 等客户端 AI SDK 会识别为客户端自身的 API Key 失效（reason: auth_failed, retryable: false）导致 Turn 崩溃。
+		if codeVal, hasCode := chunk["code"]; hasCode {
+			codeStr := fmt.Sprintf("%v", codeVal)
+			if codeStr == "403" || codeStr == "10605" || strings.Contains(codeStr, "403") {
+				chunk["code"] = "429"
+				chunk["retryable"] = true
+			}
+		}
+
+		// 2. 补齐 tool_call id：Qoder 流式输出工具调用时 id 常为空字符串，导致 ZCode AI SDK 无法关联工具调用
+		if ch, ok := chunk["choices"].([]any); ok {
+			for _, ci := range ch {
+				if c, ok := ci.(map[string]any); ok {
+					if delta, ok := c["delta"].(map[string]any); ok {
+						if tcs, ok := delta["tool_calls"].([]any); ok {
+							for _, tc := range tcs {
+								if call, ok := tc.(map[string]any); ok {
+									id, _ := call["id"].(string)
+									if id == "" {
+										if autoCallID == "" {
+											autoCallID = fmt.Sprintf("call_qd_%d", time.Now().UnixNano())
+										}
+										call["id"] = autoCallID
+									} else {
+										autoCallID = id
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
 		chunk["model"] = model
 		raw, _ := json.Marshal(chunk)
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
