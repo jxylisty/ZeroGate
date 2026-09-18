@@ -239,3 +239,16 @@ ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./
   - 环境变量覆盖：`ZCODE_PROXY_EXE` / `ZCODE_PROXY_INSTANCES_DIR`
 - 取消：`/api/login/cancel`（实例目录保留，含 serve 进程，凭证可复用）
 - 测试残留实例：`instances/acc-logn*`（超时/取消产物），删目录即可
+
+### 7.11 WorkBuddy 国际版（wbintl）网页登录（2026-09-18 实施）
+
+- 参考实现：ardeyouxipianyi/workbuddy2api-hub（README 标"OAuth 一键免客户端登录"）
+- 协议（与国内同构，仅换 host/UA）：
+  - `POST https://www.workbuddy.ai/v2/plugin/auth/state?platform=CLI` → {state, authUrl}
+  - 浏览器打开 authUrl（服务端返回 codebuddy.cn 腾讯统一登录页，正常）
+  - 轮询 `GET /v2/plugin/auth/token?state=` → {accessToken, refreshToken, expiresIn}
+  - `GET /v2/plugin/login/account?state=`（Bearer）拿 uid/nickname
+  - pending 业务码 11217；登录 TTL 600s
+- 头：UA `WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2`，Origin www.workbuddy.ai
+- ZeroGate：login_pkg 加 StartIntl/PollIntl；StartLoginFor 支持 channel=wbintl
+  （面板 WBIntl 组「＋」即网页授权，凭证落 auths/wbintl-<uid>.json）；粘贴 token 表单保留兜底

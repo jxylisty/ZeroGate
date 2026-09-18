@@ -268,3 +268,103 @@ func truncate(s string, n int) string {
 	}
 	return string(s)
 }
+
+// ---------------------------------------------------------------------------
+// 国际版（www.workbuddy.ai）登录：同一套设备流协议（POST auth/state →
+// 浏览器授权 → 轮询 auth/token），仅 host / UA / Origin 不同。
+// 参数对齐 wb2api-hub（2026-09-18 实测参考）。
+// ---------------------------------------------------------------------------
+
+const (
+	UpstreamBaseIntl = "https://www.workbuddy.ai"
+	intlUA           = "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2"
+	intlOrigin       = "https://www.workbuddy.ai"
+
+	endpointAuthStateIntl = UpstreamBaseIntl + "/v2/plugin/auth/state?platform=CLI"
+	endpointLoginAcctIntl = UpstreamBaseIntl + "/v2/plugin/login/account?state="
+	endpointAuthTokenIntl = UpstreamBaseIntl + "/v2/plugin/auth/token?state="
+)
+
+func intlHeaders(req *http.Request) {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Origin", intlOrigin)
+	req.Header.Set("Referer", intlOrigin+"/")
+	req.Header.Set("User-Agent", intlUA)
+}
+
+// StartIntl 发起国际版登录：POST auth/state 拿 state+授权 URL。
+func StartIntl(client *http.Client, statePath string) (string, error) {
+	data, err := doJSON(client, http.MethodPost, endpointAuthStateIntl, intlHeaders, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return "", fmt.Errorf("intl auth state failed: %w", err)
+	}
+	var st struct {
+		State   string `json:"state"`
+		AuthURL string `json:"authUrl"`
+	}
+	if err := json.Unmarshal(data, &st); err != nil || st.State == "" || st.AuthURL == "" {
+		return "", fmt.Errorf("intl auth state: missing state or authUrl")
+	}
+	raw, _ := json.Marshal(map[string]string{"state": st.State})
+	if dir := filepath.Dir(statePath); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		return "", fmt.Errorf("write state: %w", err)
+	}
+	return st.AuthURL, nil
+}
+
+// PollIntl 单次轮询国际版登录状态；未完成返回 ErrPending。
+func PollIntl(client *http.Client, statePath string) (Result, error) {
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		return Result{}, fmt.Errorf("read state: %w", err)
+	}
+	var ls struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &ls); err != nil || ls.State == "" {
+		return Result{}, fmt.Errorf("parse state: %w", err)
+	}
+	tokRaw, errTok := doJSON(client, http.MethodGet, endpointAuthTokenIntl+ls.State, intlHeaders, nil)
+	if errTok != nil {
+		if isPending(errTok) {
+			return Result{}, ErrPending
+		}
+		return Result{}, errTok
+	}
+	var tok struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+		ExpiresIn    int64  `json:"expiresIn"`
+		Domain       string `json:"domain"`
+	}
+	if err := json.Unmarshal(tokRaw, &tok); err != nil || tok.AccessToken == "" {
+		return Result{}, ErrPending
+	}
+	var acct struct {
+		UID          string `json:"uid"`
+		EnterpriseID string `json:"enterpriseId"`
+		Nickname     string `json:"nickname"`
+	}
+	acctHeaders := func(r *http.Request) {
+		intlHeaders(r)
+		r.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	}
+	if acctRaw, errAcct := doJSON(client, http.MethodGet, endpointLoginAcctIntl+ls.State, acctHeaders, nil); errAcct == nil {
+		_ = json.Unmarshal(acctRaw, &acct)
+	}
+	_ = os.Remove(statePath)
+	return Result{
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		ExpiresIn:    tok.ExpiresIn,
+		Domain:       tok.Domain,
+		UID:          acct.UID,
+		EnterpriseID: acct.EnterpriseID,
+		Nickname:     acct.Nickname,
+	}, nil
+}

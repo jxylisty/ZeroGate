@@ -396,7 +396,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	if k == "" {
 		k = provider.WorkBuddy
 	}
-	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder && k != provider.ZCode {
+	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder && k != provider.ZCode && k != provider.WBIntl {
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
 	if k == provider.ZCode {
@@ -622,6 +622,17 @@ func (a *App) pollLogin(ctx context.Context) {
 			}
 			continue
 		}
+		if a.loginKind == provider.WBIntl {
+			r, err := login.PollIntl(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeWbintlLogin(r)
+				return
+			}
+			if !errors.Is(err, login.ErrPending) {
+				log.Printf("wbintl login poll failed: %v", err)
+			}
+			continue
+		}
 		r, err := login.Poll(a.loginClient, a.loginStateFP)
 		if err == nil {
 			a.completeLogin(r)
@@ -678,6 +689,30 @@ func (a *App) completeTraeLogin(r logintrae.Result) {
 			log.Printf("TraeWork 新账号签到完成 %s：%s", r.Nickname, res.Msg)
 		}
 	})
+}
+
+// completeWbintlLogin 国际版登录成功：落盘 wbintl-<uid>.json + 重载账号池。
+func (a *App) completeWbintlLogin(r login.Result) {
+	log.Printf("wbintl 登录成功 uid=%s nickname=%s domain=%s", r.UID, r.Nickname, r.Domain)
+	au := &auth.Auth{
+		Kind:         "wbintl",
+		AccessToken:  r.AccessToken,
+		RefreshToken: r.RefreshToken,
+		Domain:       "www.workbuddy.ai",
+		UID:          r.UID,
+		Nickname:     r.Nickname,
+	}
+	if r.ExpiresIn > 0 {
+		au.ExpiresAt = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).Unix()
+	}
+	au.FilePath = filepath.Join(a.cfg.AuthDir, fmt.Sprintf("wbintl-%s.json", r.UID))
+	if err := au.SaveAtomic(); err != nil {
+		log.Printf("wbintl 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	log.Printf("wbintl 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(au.FilePath))
+	a.reloadAccounts()
+	a.finishLogin()
 }
 
 // completeQoderLogin 登录成功：生成机器指纹、写 auth 文件、重载账号池。
