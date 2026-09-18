@@ -68,7 +68,7 @@ ZeroGate 是一个**多渠道账号聚合网关**：把 CodeBuddy(WorkBuddy)/Tra
 
 ## 4. 关键不变量（改动前必读）
 
-1. `PrepareBody` 三改写勿动：强制 `stream=true`、`tool_choice` 归一化、`developer→system`
+1. `PrepareBody`（upstream 渠道）四改写勿动：强制 `stream=true`、`tool_choice` 归一化、`developer→system`、**删 `max_tokens`**（GLM 等思考模型把 max_tokens 当思考+正文总预算且思考优先，客户端传的 max_tokens 会被思考占满、正文为空 → ZCode 报 empty_model_response；2026-09-18 实测修复）
 2. 日志/面板/消息框**零 token**：不得输出 access/refresh token（调试用假 token）
 3. `config.listen` 兼容新对象格式 + 旧字符串格式 `":7863"`
 4. `data/state-*.json` 只增不减字段，向后兼容

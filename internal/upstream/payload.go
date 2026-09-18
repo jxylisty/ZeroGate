@@ -20,11 +20,22 @@ func PrepareBody(src []byte) []byte {
 	obj["stream"] = true
 	normalizeToolChoice(obj)
 	normalizeRoles(obj) // developer → system（上游对 developer 角色触发内容过滤误杀）
+	stripMaxTokens(obj) // 思考模型 max_tokens 被思考占满 → 正文为空（ZCode empty_model_response）
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return src
 	}
 	return out
+}
+
+// stripMaxTokens 删除客户端 max_tokens：GLM 思考模型的 max_tokens 是
+// 思考+正文总预算且思考优先，客户端（ZCode 等 IDE）传的 max_tokens 会被
+// 思考占满、正文为空，实测报 empty_model_response。不传时服务端默认上限
+// 会给正文留空间（实测正常输出）。
+func stripMaxTokens(obj map[string]any) {
+	if _, ok := obj["max_tokens"]; ok {
+		delete(obj, "max_tokens")
+	}
 }
 
 // normalizeRoles 将 OpenAI 的 developer 角色改写为 system。
