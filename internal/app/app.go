@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"wild-work/internal/audit"
+	"wild-work/internal/autoclaw"
 	"wild-work/internal/auth"
 	"wild-work/internal/clientkey"
 	"wild-work/internal/config"
@@ -441,6 +443,27 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	go a.pollLogin(ctx)
 	log.Printf("%s 登录流程已发起", k)
 	return authURL, nil
+}
+
+// autoclawClient 返回 autoclaw 渠道上游客户端。
+func (a *App) autoclawClient() (*autoclaw.Client, bool) {
+	rt := a.runtime(provider.AutoClaw)
+	if rt == nil || rt.Upstream == nil {
+		return nil, false
+	}
+	ac, ok := rt.Upstream.(*autoclaw.Client)
+	return ac, ok
+}
+
+// newDeviceIDForAutoclaw 生成 autoclaw 登录设备 UUID。
+func newDeviceIDForAutoclaw() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // startZcodeLogin 面板自助加号：编排实例 + 发起 auth login，返回授权 URL。
@@ -1268,6 +1291,58 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /api/arsenal", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.ArsenalOverview())
+	})
+	mux.HandleFunc("POST /api/autoclaw/send_code", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Phone string `json:"phone"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		ac, ok := a.autoclawClient()
+		if !ok {
+			apiError(w, http.StatusBadRequest, "autoclaw 渠道未启用")
+			return
+		}
+		if _, err := ac.SendCode(req.Phone); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/autoclaw/login", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Phone string `json:"phone"`
+			Code  string `json:"code"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		ac, ok := a.autoclawClient()
+		if !ok {
+			apiError(w, http.StatusBadRequest, "autoclaw 渠道未启用")
+			return
+		}
+		deviceID := ""
+		// 沿用本次会话设备：无则现发（首次会重复发条短信，可接受）
+		deviceID = newDeviceIDForAutoclaw()
+		lr, err := ac.Login(deviceID, req.Phone, req.Code)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		au := &auth.Auth{
+			Kind:         "autoclaw",
+			AccessToken:  strings.TrimSpace(lr.AccessToken),
+			RefreshToken: strings.TrimSpace(lr.RefreshToken),
+			DeviceID:     lr.DeviceID,
+			UID:          lr.UserID,
+			Nickname:     lr.UserName,
+		}
+		au.FilePath = filepath.Join(a.cfg.AuthDir, fmt.Sprintf("autoclaw-%s.json", lr.UserID))
+		if err := au.SaveAtomic(); err != nil {
+			apiError(w, http.StatusInternalServerError, "凭证落盘失败: "+err.Error())
+			return
+		}
+		log.Printf("autoclaw 面板登录成功 uid=%s nickname=%s", lr.UserID, lr.UserName)
+		a.reloadAccounts()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": lr.UserID, "nickname": lr.UserName})
 	})
 	mux.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

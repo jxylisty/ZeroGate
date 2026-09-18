@@ -622,9 +622,48 @@ function pickZcodeProvider(btn) {
   document.querySelectorAll("#zcodeProviderRow .btn").forEach((b) => b.classList.remove("primary"));
   btn.classList.add("primary");
 }
+let aclDeviceID = null;
+async function openAutoclawDialog() {
+  pendingChannel = null;
+  aclDeviceID = null;
+  $("aclPhone").value = "";
+  $("aclCode").value = "";
+  $("aclMsg").textContent = "";
+  $("autoclawOverlay").classList.remove("hidden");
+  $("aclPhone").focus();
+}
+function closeAutoclawDialog() {
+  $("autoclawOverlay").classList.add("hidden");
+}
+async function aclSendCode() {
+  const phone = $("aclPhone").value.trim();
+  if (!phone) { toast("请先输入手机号"); return; }
+  $("aclSend").disabled = true;
+  try {
+    await api("/api/autoclaw/send_code", { phone });
+    $("aclMsg").textContent = "验证码已发送至 " + phone + "，请查收短信";
+    $("aclCode").focus();
+  } catch (e) { $("aclMsg").textContent = "发送失败：" + e.message; }
+  finally { $("aclSend").disabled = false; }
+}
+async function aclConfirm() {
+  const phone = $("aclPhone").value.trim();
+  const code = $("aclCode").value.trim();
+  if (!phone || !code) { toast("请输入手机号和验证码"); return; }
+  $("aclConfirm").disabled = true;
+  try {
+    const r = await api("/api/autoclaw/login", { phone, code });
+    closeAutoclawDialog();
+    toast("AutoClaw 登录成功：" + (r.nickname || r.uid));
+    await loadState();
+    refreshFees();
+  } catch (e) { $("aclMsg").textContent = "登录失败：" + e.message; }
+  finally { $("aclConfirm").disabled = false; }
+}
 function promptLogin(channel) {
   pendingChannel = channel;
   const name = groupMeta(channel).name;
+  if (channel === "autoclaw") { openAutoclawDialog(); return; }
   const row = $("zcodeProviderRow");
   if (channel === "zcode") {
     pendingProvider = "zai";
@@ -868,6 +907,12 @@ function bind() {
   $("btnLoginConfirmCancel").onclick = () => $("loginConfirmOverlay").classList.add("hidden");
   $("btnZcZai").onclick = () => pickZcodeProvider($("btnZcZai"));
   $("btnZcBigmodel").onclick = () => pickZcodeProvider($("btnZcBigmodel"));
+  $("aclSend").onclick = () => void aclSendCode();
+  $("aclConfirm").onclick = () => void aclConfirm();
+  $("aclCancel").onclick = closeAutoclawDialog;
+  $("aclSend").onclick = () => void aclSendCode();
+  $("aclConfirm").onclick = () => void aclConfirm();
+  $("aclCancel").onclick = closeAutoclawDialog;
   $("loginConfirmOverlay").onclick = (e) => { if (e.target === $("loginConfirmOverlay")) $("loginConfirmOverlay").classList.add("hidden"); };
 
   $("btnApiSave").onclick = saveApiConfig;

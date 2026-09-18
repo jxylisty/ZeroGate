@@ -24,6 +24,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -625,4 +626,123 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+// ---------------------------------------------------------------------------
+// 面板自助加号：短信验证码登录（对齐 autoclaw2api cmd/login）
+// ---------------------------------------------------------------------------
+
+// LoginResult 登录成功返回的凭证（userapi agent-login 响应）。
+type LoginResult struct {
+	DeviceID     string `json:"-"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	UserID       string `json:"user_id"`
+	UserName     string `json:"user_name"`
+	Phone        string `json:"phone"`
+	FirstLogin   bool   `json:"first_login"`
+	WebFirst     bool   `json:"web_first_login"`
+}
+
+// userAPIBase 返回 userapi 基址（当前固定国内）。
+func (c *Client) userAPIBase() string {
+	return c.Base + "/userapi"
+}
+
+// userAPIJSON 发 userapi 请求并解 {code,msg,data} 信封。
+func (c *Client) userAPIJSON(method, path, rawToken string, body any) (json.RawMessage, error) {
+	var rd io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rd = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, c.userAPIBase()+path, rd)
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range userapiHeaders(rawToken) {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("autoclaw userapi HTTP %d: %s", resp.StatusCode, truncate(string(raw), 160))
+	}
+	var env struct {
+		Code int             `json:"code"`
+		Msg  string          `json:"msg"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("autoclaw userapi parse: %w (body: %s)", err, truncate(string(raw), 160))
+	}
+	if env.Code != 0 {
+		return nil, fmt.Errorf("autoclaw userapi code=%d msg=%s", env.Code, truncate(env.Msg, 160))
+	}
+	return env.Data, nil
+}
+
+// newDeviceID 生成登录设备 UUID（与官方 web 一致，一次性绑定）。
+func newDeviceID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// SendCode 发送短信验证码（面板自助加号第一段）。
+func (c *Client) SendCode(phone string) (string, error) {
+	deviceID := newDeviceID()
+	body := map[string]any{
+		"source_id": "autoclaw",
+		"device_id": deviceID,
+		"phone":     strings.TrimSpace(phone),
+	}
+	if _, err := c.userAPIJSON(http.MethodPost, "/v1/agent-send-code", "", body); err != nil {
+		return "", err
+	}
+	return deviceID, nil
+}
+
+// Login 手机号+验证码换凭证，返回 LoginResult（调用方落盘）。
+// code 必须纯数字（官方 web 转 Number 发送，字符串会被 400001 拒）。
+func (c *Client) Login(deviceID, phone, code string) (*LoginResult, error) {
+	codeNum, err := strconv.ParseInt(strings.TrimSpace(code), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("验证码必须为数字: %v", err)
+	}
+	body := map[string]any{
+		"source_id": "autoclaw",
+		"device_id": deviceID,
+		"phone":     strings.TrimSpace(phone),
+		"code":      codeNum,
+		"platform":  "web",
+	}
+	data, err := c.userAPIJSON(http.MethodPost, "/v1/agent-login/", "", body)
+	if err != nil {
+		return nil, err
+	}
+	var lr LoginResult
+	if err := json.Unmarshal(data, &lr); err != nil {
+		return nil, fmt.Errorf("autoclaw login parse: %w", err)
+	}
+	if strings.TrimSpace(lr.AccessToken) == "" {
+		return nil, fmt.Errorf("autoclaw login: 响应缺 access_token")
+	}
+	lr.DeviceID = deviceID
+	return &lr, nil
 }
