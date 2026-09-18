@@ -208,6 +208,14 @@ type ClientTokenStat struct {
 	ReqCount    int64  `json:"req_count"`
 }
 
+// AccountTokenStat 单个账号的用量统计
+type AccountTokenStat struct {
+	UID         string `json:"uid"`
+	Channel     string `json:"channel"`
+	TotalTokens int64  `json:"total_tokens"`
+	ReqCount    int64  `json:"req_count"`
+}
+
 // DailyTokenStat 单日 Token 统计
 type DailyTokenStat struct {
 	Day        string `json:"day"`
@@ -220,15 +228,16 @@ type DailyTokenStat struct {
 
 // Analytics 聚合分析结构
 type Analytics struct {
-	TotalRequests int64             `json:"total_requests"`
-	TotalTokens   int64             `json:"total_tokens"`
-	PromptTokens  int64             `json:"prompt_tokens"`
-	CompTokens    int64             `json:"completion_tokens"`
-	CacheTokens   int64             `json:"cache_tokens"`
-	TopModels     []ModelTokenStat  `json:"top_models"`
-	TopClients    []ClientTokenStat `json:"top_clients"`
-	ChannelTokens map[string]int64  `json:"channel_tokens"`
-	DailyTrend    []DailyTokenStat  `json:"daily_trend"`
+	TotalRequests int64              `json:"total_requests"`
+	TotalTokens   int64              `json:"total_tokens"`
+	PromptTokens  int64              `json:"prompt_tokens"`
+	CompTokens    int64              `json:"completion_tokens"`
+	CacheTokens   int64              `json:"cache_tokens"`
+	TopModels     []ModelTokenStat   `json:"top_models"`
+	TopClients    []ClientTokenStat  `json:"top_clients"`
+	TopAccounts   []AccountTokenStat `json:"top_accounts"`
+	ChannelTokens map[string]int64   `json:"channel_tokens"`
+	DailyTrend    []DailyTokenStat   `json:"daily_trend"`
 }
 
 // Analytics 返回基于审计记录的多维 Token 分析
@@ -242,6 +251,7 @@ func (r *Recorder) Analytics() Analytics {
 
 	modelMap := make(map[string]*ModelTokenStat)
 	clientMap := make(map[string]*ClientTokenStat)
+	accountMap := make(map[string]*AccountTokenStat)
 	dailyMap := make(map[string]*DailyTokenStat)
 
 	for _, e := range r.entries {
@@ -253,6 +263,17 @@ func (r *Recorder) Analytics() Analytics {
 
 		if e.Channel != "" {
 			res.ChannelTokens[e.Channel] += e.TotalTokens
+		}
+
+		if e.UID != "" {
+			acctKey := e.Channel + "/" + e.UID
+			aSt := accountMap[acctKey]
+			if aSt == nil {
+				aSt = &AccountTokenStat{UID: e.UID, Channel: e.Channel}
+				accountMap[acctKey] = aSt
+			}
+			aSt.TotalTokens += e.TotalTokens
+			aSt.ReqCount++
 		}
 
 		mName := e.ModelReq
@@ -312,6 +333,16 @@ func (r *Recorder) Analytics() Analytics {
 	sort.Slice(res.TopClients, func(i, j int) bool {
 		return res.TopClients[i].TotalTokens > res.TopClients[j].TotalTokens
 	})
+
+	for _, a := range accountMap {
+		res.TopAccounts = append(res.TopAccounts, *a)
+	}
+	sort.Slice(res.TopAccounts, func(i, j int) bool {
+		return res.TopAccounts[i].TotalTokens > res.TopAccounts[j].TotalTokens
+	})
+	if len(res.TopAccounts) > 15 {
+		res.TopAccounts = res.TopAccounts[:15]
+	}
 
 	for _, d := range dailyMap {
 		res.DailyTrend = append(res.DailyTrend, *d)
