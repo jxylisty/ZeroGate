@@ -401,10 +401,12 @@ func (c *Client) UserResource(a *auth.Auth) (int64, error) {
 
 // UserResourceDetail 额度明细：GET /api/v1/zcode-plan/billing/balance。
 // 桥接模式下禁用：billing 端点对 API 形态常 3012，定时刷新的失败请求
-// 会持续喂养账号级风控（2026-09-18 排查结论）。额度看 zcode-proxy 面板。
+// 会持续喂养账号级风控（2026-09-18 排查结论）。
+// 桥接模式改为查询本地实例 /quota（实例带完整身份头查 billing，安全且真实：
+// 返回 balances 的 token 数；2026-09-18 实测通过）。
 func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
 	if c.BridgeURL != "" {
-		return 0, nil, fmt.Errorf("zcode bridge: billing 由 zcode-proxy 管理，本渠道不查询")
+		return c.bridgeUserResource(a)
 	}
 	resp, err := c.authDo(a, c.Base+"/api/v1/zcode-plan/billing/balance")
 	if err != nil {
@@ -434,6 +436,65 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		if name == "" {
 			name = b.Model
 		}
+		if name == "" {
+			name = "model"
+		}
+		if b.RemainingUnits < 0 {
+			b.RemainingUnits = 0
+		}
+		remain += b.RemainingUnits
+		items = append(items, provider.ResourceItem{
+			Name:     strings.ReplaceAll(name, " ", "-"),
+			Total:    b.TotalUnits,
+			Used:     b.UsedUnits,
+			Remain:   b.RemainingUnits,
+			ExpireAt: parseExpire(b.ExpiresAt),
+		})
+	}
+	return remain, items, nil
+}
+
+// bridgeUserResource 桥接模式额度：GET {账号实例}/quota（Bearer bridgeKey），
+// 返回 balances 的 token 数（showName/remainingUnits/totalUnits/usedUnits/
+// unitType/expiresAt，camelCase，见 routes-quota.ts）。
+func (c *Client) bridgeUserResource(a *auth.Auth) (int64, []provider.ResourceItem, error) {
+	bridge := c.BridgeURL
+	if a != nil && strings.TrimSpace(a.BridgeURL) != "" {
+		bridge = strings.TrimRight(a.BridgeURL, "/")
+	}
+	req, err := http.NewRequest(http.MethodGet, bridge+"/quota", nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if c.BridgeKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BridgeKey)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return 0, nil, fmt.Errorf("zcode bridge quota: HTTP %d %s", resp.StatusCode, truncate(string(raw), 160))
+	}
+	var env struct {
+		Balances []struct {
+			ShowName       string `json:"showName"`
+			TotalUnits     int64  `json:"totalUnits"`
+			UsedUnits      int64  `json:"usedUnits"`
+			RemainingUnits int64  `json:"remainingUnits"`
+			UnitType       string `json:"unitType"`
+			ExpiresAt      any    `json:"expiresAt"`
+		} `json:"balances"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return 0, nil, fmt.Errorf("zcode bridge quota parse failed: %w (body: %s)", err, truncate(string(raw), 160))
+	}
+	var remain int64
+	items := make([]provider.ResourceItem, 0, len(env.Balances))
+	for _, b := range env.Balances {
+		name := b.ShowName
 		if name == "" {
 			name = "model"
 		}
