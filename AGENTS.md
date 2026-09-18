@@ -104,3 +104,106 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/wild-work-linux ./cmd/wil
 ```
 
 > 产物名 `wild-work.exe` 为历史遗留，代码全面更名 ZeroGate 前沿用。
+---
+
+## 7. ZCode 渠道经验（2026-09-17~18 排查结论，接手必读）
+
+### 7.1 阿里云 WAF 风控（3012）机制
+
+- `HTTP 405 + {"code":3012,"msg":"request has been blocked due to unusual activity."}` = **账号级行为标记**，不是封号（封号是 401/403 凭证失效）
+- 触发源：自动 claim/领取循环、验证码求解失败循环、高频探测（额度刷新每 60s 打一次 3012 也是在喂养风控）
+- 恢复：**该账号停止一切上游请求** 24-72h（顽固者 1 周+）；官方客户端正常活动有助恢复；换 IP/设备/客户端形态**无效**（账号维度）
+- 铁律：失败绝不循环重试；验证一律单次；自动 claim 永远关闭
+- 账号现状：大小号（zai/bigmodel）被标养号中；Gmail 注册号 `ccacfe94` 带 1 亿 start-plan 卡片可用
+
+### 7.2 plan 与通道区分（最容易踩的坑）
+
+| plan | 端点 | 凭证 | 额度 |
+|------|------|------|------|
+| **start-plan** | `zcode.z.ai/api/v1/zcode-plan/*` | JWT（Bearer） | **额度卡片（1 亿 Global Build 等）在这里** |
+| coding-plan | `api.z.ai`（直连） | API Key | 国际站登录解析出的 API Key 属于它，通常无额度 |
+
+- 额度卡片是 start-plan 资源 → 用 API Key/coding-plan 通道请求会 `429/1113 余额不足`——**这不是号废了，是 plan 配错**
+- LLM 端点：`/api/v1/zcode-plan/anthropic/v1/messages`（Anthropic 协议，强制 stream）
+
+### 7.3 请求指纹（ZCode 3.12.3 形态）
+
+- LLM 头族：`HTTP-Referer` `User-Agent: ZCode/{ver} ai-sdk/anthropic/3.0.81` `X-ZCode-App-Version` `X-Title: Z Code@cli` `X-ZCode-Agent: glm`（3.12.3 内联第 8 位）`X-Platform` `X-Release-Channel` `X-Client-Language/Timezone` `X-Os-Category/Version`
+- **LLM 请求永不带 `X-Device-Mid`**（那是 control-plane/billing 的 HRt 头族）
+- `x-zcode-session-type` 只能 `main`/`subagent`/`other`
+- billing（control-plane）对 API 形态很严，正常账号也可能 3012——**不代表对话通道死**
+- 对话通道生死判据：无 VP 手打 LLM 端点 → `3007 captcha verify failed` = **通道活**（只差验证码）；`3012` = 账号被标
+
+### 7.4 本机现役方案：zcode-proxy（TriDefender/zcode-api v4.6.6）
+
+- 位置 `D:\wild-work\research\zcode-proxy\`（单文件 exe + config.yaml + 源码，MIT）
+- 验证码：**进程内 happy-dom 求解器**（无需浏览器）——captcha_node/jsdom 老方案解出的 VP 无效（3007），已弃用
+- 端口 **18080**（8080 被 Gemini 前端占用，勿动）
+- 启动（必须清代理，HTTPS_PROXY 会走 Clash 被上游断连）：
+  `ZCODE_CLAIM_ENABLED=false HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./zcode-proxy.exe --cli serve`
+- 登录：`./zcode-proxy.exe auth login zai`（凭证存 `~/.zcode-proxy/credentials.json`，换号重新登录即可）
+- 接入：`http://127.0.0.1:18080/v1`，Key 见其 config.yaml `proxyApiKey`，模型 `glm-5.3-flash`/`glm-5.3`
+- 详细：`research/zcode-proxy/使用说明.md`；翻车全程 `research/zcode2api-plus/翻车复盘-20260917.md`（zcode2api-plus 3002 已废弃停用）
+
+### 7.5 ZeroGate zcode 渠道与桥接
+
+- `internal/zcode/zcode.go` 现为 jsdom(captcha_node) 直连实现，验证码无效不可用
+- 正解：桥接本地 zcode-proxy（Anthropic 协议兼容，换 Base+鉴权即可，详见 zcode.go 桥接模式注释）
+
+### 7.6 多账号接入（2026-09-18 实施）
+
+- **架构**：每账号 = 一个 zcode-proxy 实例（独立端口 + 独立凭证目录 `ZCODE_CREDENTIALS_DIR`），
+  Wild-Work 账号文件 `auths/zcode-*.json` 的 `bridgeUrl` 字段路由到对应实例
+  （缺省回退全局 `ZCODE_BRIDGE_URL` 环境变量）
+- **加号流程**（脚本 `research/zcode-proxy/add-zcode-account.sh`）：
+  1. `bash add-zcode-account.sh <账号名> <端口> [zai|bigmodel]` → 生成 auths 账号文件 + 实例启动脚本
+  2. 登录该实例：`ZCODE_CREDENTIALS_DIR=<实例creds目录> ./zcode-proxy.exe auth login <provider>`（浏览器授权）
+  3. 启动实例：`bash instances/acc-<名>/start.sh &`
+  4. 重启 Wild-Work daemon（restart.bat）
+- **纪律（防风控）**：每实例 `ZCODE_CLAIM_ENABLED=false`；验证单次；失败不循环
+- 注：zcode-proxy 源码本地 fork（research/zcode-proxy），支持 `ZCODE_CREDENTIALS_DIR` 覆盖
+  凭证目录（原项目硬编码 ~/.zcode-proxy）；升级上游前需重新应用此补丁（src/auth/store.ts）
+
+### 7.7 每周领取（claim）低频方案（2026-09-18 实施）
+
+- **教训**：原 zcode2api-plus 自动 claim 是"失败→5 分钟重试"循环，把账号喂进 WAF 标记
+- **现方案**：Windows 计划任务 `ZCodeClaimWeekly`，每周五 23:30 执行
+  `research/zcode-proxy/claim-weekly.bat` → 对每个实例（instances/acc-*）执行**一次**
+  `zcode-proxy.exe claim now`（单次命令，失败不重试不循环）
+- claim 常驻轮询保持关闭（ZCODE_CLAIM_ENABLED=false）
+- 手动触发：`schtasks /run /tn ZCodeClaimWeekly`；删除：`schtasks /delete /tn ZCodeClaimWeekly /f`
+- claim 目标为限量/周末体验套餐（"3 亿 3 亿发"的活动包）；`claim list` 可先查看可领项
+
+### 7.8 周末包领取方法（2026-09-18 实测成功，大号已领 3 亿）
+
+#### 机制（破解全过程）
+- **投放**：周五开始投放 "ZCode Weekend Build"（zcode-v3-start-plan-wk-0918，
+  GLM-5.3-Flash 300M token）；preview 显示的 activates=15:00Z（**北京时间 23:00 生效**）
+- **领取接口**：`GET /api/v1/zcode-plan/billing/preview?app_version=&platform=` +
+  `POST /api/v1/zcode-plan/billing/claim` body `{plan_id}`（3.12.3 客户端
+  `coding-plan-subscription.getManualClaimPlanPreviews` / `claimManualPlan` 同源）
+- **3001 之谜（关键坑）**：preview/claim **必须带完整身份头**（X-ZCode-App-Version、
+  X-Title、X-ZCode-Agent、HTTP-Referer、X-Platform 等），匿名/裸 JWT 一律 3001
+  parameter error——参考项目 v4.6.6 的 claim CLI 缺身份头（bug），2026-09-18 已修
+  （src/claim/client.ts + runtime.ts 注入 buildIdentityHeaders，重编译 exe）
+- **投放前**：未上架时 preview 返回 3001（不是 404！）——看到 3001 别急着改代码，
+  先确认是否已到投放窗口（周五晚）
+
+#### 操作命令（对任意已登录实例）
+```bash
+cd /d/wild-work/research/zcode-proxy
+# 查看可领（需对应实例/凭证已登录）
+ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./zcode-proxy.exe claim list
+# 领取（一次）
+ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./zcode-proxy.exe claim now
+```
+
+#### 自动化
+- Windows 计划任务 `ZCodeClaimWeekly`：每周五 23:30 跑 claim-weekly.bat，
+  遍历 instances/acc-* 每个**一次** claim now（失败不重试不循环——防 WAF 标记）
+- 领取后 23:00 生效，实例对应账号即可消耗；到期约 2 天后
+- 2018-09-18 结果：大号（acc-big 18083）已领成功（Weekend Build 300M，23:00 生效）
+
+#### 用电/防标纪律（再次强调）
+- 领取一次就好，不要对同一包重复 claim（claim 返回已领/无包）
+- 本地 18080/18083 实例意外关闭后的重启命令见 instances/acc-*/start.sh
