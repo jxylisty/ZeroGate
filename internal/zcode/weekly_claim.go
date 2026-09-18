@@ -7,14 +7,14 @@ package zcode
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"fmt"
 	"log"
-	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
 	"wild-work/internal/pool"
 )
 
@@ -43,86 +43,62 @@ func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
 	log.Printf("zcode: 周末包领取调度已启动（周五 19:00 单次，账号级桥接）")
 }
 
-// runWeeklyClaim 对池中每个带 BridgeURL 的账号执行一次 claim。
+// runWeeklyClaim 对每个 zcode-proxy 实例执行一次 CLI claim（实例目录遍历）。
+// 不用 HTTP /admin/claim-now：实测该端点处理后会弄死实例进程（2026-09-18）；
+// CLI 方式（claim now）19:2x 验证可靠且幂等。
 func runWeeklyClaim(p *pool.Pool, bridgeKey string) {
-	for _, a := range p.Auths() {
-		if a == nil || strings.TrimSpace(a.BridgeURL) == "" {
+	instDir := strings.TrimSpace(os.Getenv("ZCODE_PROXY_INSTANCES_DIR"))
+	if instDir == "" {
+		instDir = "D:/wild-work/research/zcode-proxy/instances"
+	}
+	dirs, err := os.ReadDir(instDir)
+	if err != nil {
+		log.Printf("zcode weekly claim: 实例目录不可读 %s: %v", instDir, err)
+		return
+	}
+	for _, d := range dirs {
+		if !d.IsDir() || !strings.HasPrefix(d.Name(), "acc-") {
 			continue
 		}
-		result, err := claimViaInstance(a, bridgeKey)
+		credsDir := filepath.Join(instDir, d.Name(), "creds")
+		out, err := claimCLI(credsDir)
 		if err != nil {
-			log.Printf("zcode weekly claim uid=%s bridge=%s error=%v", a.UID, a.BridgeURL, err)
+			log.Printf("zcode weekly claim %s: %v", d.Name(), err)
 			continue
 		}
-		sum := summarizeClaim(result)
-		log.Printf("zcode weekly claim uid=%s bridge=%s ok=%v %s", a.UID, a.BridgeURL, result.OK, sum)
+		log.Printf("zcode weekly claim %s: %s", d.Name(), strings.TrimSpace(out))
 	}
 }
 
-type claimResult struct {
-	OK      bool      `json:"ok"`
-	PlanID  string    `json:"planId,omitempty"`
-	Claimed *claimOut `json:"claimed,omitempty"`
-	Plans   []any     `json:"plans,omitempty"`
-	Error   string    `json:"error,omitempty"`
-}
-
-type claimOut struct {
-	PlanID   string `json:"planId"`
-	StartsAt int64  `json:"startsAt,omitempty"`
-	EndsAt   int64  `json:"endsAt,omitempty"`
-}
-
-// claimViaInstance POST {bridgeUrl}/admin/claim-now（鉴权 Bearer bridgeKey）。
-func claimViaInstance(a *auth.Auth, bridgeKey string) (*claimResult, error) {
-	body, _ := json.Marshal(map[string]string{"mode": "now"})
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(a.BridgeURL, "/")+"/admin/claim-now", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+// claimCLI 以 CLI 单次模式执行 claim（输出含 Claimed/No claimable/error）。
+func claimCLI(credsDir string) (string, error) {
+	exe := "D:/wild-work/research/zcode-proxy/zcode-proxy.exe"
+	cmd := exec.Command(exe, "claim", "now")
+	cmd.Env = append(os.Environ(),
+		"ZCODE_CREDENTIALS_DIR="+credsDir,
+		"ZCODE_CLAIM_ENABLED=false",
+		"HTTPS_PROXY=", "HTTP_PROXY=", "ALL_PROXY=",
+	)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Dir = "D:/wild-work/research/zcode-proxy"
+	// 单次执行，总超时 90s（captcha 求解在内）
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if bridgeKey != "" {
-		req.Header.Set("Authorization", "Bearer "+bridgeKey)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil && buf.Len() == 0 {
+			return "", err
+		}
+		return buf.String(), nil
+	case <-time.After(90 * time.Second):
+		_ = cmd.Process.Kill()
+		return "", fmt.Errorf("claim 超时（90s）")
 	}
-	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var r claimResult
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, err
-	}
-	return &r, nil
-}
-
-func summarizeClaim(r *claimResult) string {
-	if r.Claimed != nil {
-		return "claimed plan=" + r.Claimed.PlanID
-	}
-	if r.Error != "" {
-		return "error=" + r.Error
-	}
-	if len(r.Plans) > 0 {
-		return "plans_available=" + itoa(len(r.Plans)) + " (not claimed)"
-	}
-	return "no claimable plans"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	if neg {
-		b = append([]byte{'-'}, b...)
-	}
-	return string(b)
 }
 
 // BridgeKeyFromEnv 读取全局桥接 key（供 main 装配用）。

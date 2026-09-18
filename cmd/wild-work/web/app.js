@@ -847,7 +847,7 @@ function bind() {
   $("btnAboutClose").onclick = closeAbout;
   
   // Token 用量统计
-  $("btnUsageStats").onclick = openUsageStats;
+  if ($("btnUsageStats")) $("btnUsageStats").onclick = openUsageStats;
 
   // 登录确认弹层
   $("btnLoginConfirm").onclick = confirmLogin;
@@ -1167,8 +1167,8 @@ async function resetRedirects() {
 
 // ---------- 初始化 ----------
 (async function init() {
-  bind();
   initTabs();
+  bind();
   setupAuditLogsPolling();
   try {
     await loadState();
