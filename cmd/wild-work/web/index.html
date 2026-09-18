@@ -39,63 +39,321 @@
     </div>
   </header>
 
-  <!-- 账号管理 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>账号管理</h2>
-      <div class="panel-actions">
-        <button class="btn primary" id="btnRefreshAll">刷新积分</button>
-        <button class="btn" id="btnCheckinAll">批量签到</button>
-        <button class="btn primary" id="btnAddWB">＋ WorkBuddy</button>
-        <button class="btn primary alt" id="btnAddTrae">＋ TraeWork</button>
-        <button class="btn primary alt qoder" id="btnAddQoder">＋ Qoder</button>
+  <!-- 顶部导航 Tab -->
+  <nav class="nav-tabs" id="navTabs">
+    <button class="nav-tab active" data-tab="dashboard">📊 概览看板</button>
+    <button class="nav-tab" data-tab="arsenal">🤖 账号矩阵</button>
+    <button class="nav-tab" data-tab="router">🔀 模型路由</button>
+    <button class="nav-tab" data-tab="logs">📜 调用流水</button>
+    <button class="nav-tab" data-tab="clients">🔑 客户端 Key</button>
+    <button class="nav-tab" data-tab="usage">📈 Token 资产大屏</button>
+    <button class="nav-tab" data-tab="settings">⚙️ 系统设置</button>
+  </nav>
+
+  <!-- Tab 1: 概览看板 -->
+  <div class="tab-pane active" id="tab-dashboard">
+    <div class="stat-cards">
+      <div class="stat-card">
+        <div class="stat-title">今日总请求</div>
+        <div class="stat-val" id="statReqs">0</div>
+        <div class="stat-sub">次调用</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">今日消耗 Token</div>
+        <div class="stat-val" id="statTokens">0</div>
+        <div class="stat-sub">Prompt + Completion</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">今日异常/失败</div>
+        <div class="stat-val" id="statFails" style="color:var(--danger)">0</div>
+        <div class="stat-sub">HTTP 4xx / 5xx</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">在线账号池</div>
+        <div class="stat-val" id="statAccounts" style="color:var(--ok)">0</div>
+        <div class="stat-sub">个正常就绪账号</div>
       </div>
     </div>
-    <div id="acctList" class="acct-grid"></div>
-    <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
-  </section>
 
-  <!-- 自动签到 + 开机自启 -->
-  <section class="panel">
-    <div class="panel-head"><h2>自动签到</h2></div>
-    <div class="config-grid">
-      <div class="config-left">
-        <div class="row wrap">
-          <div id="timesBox" class="times"></div>
-          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+    <!-- 快速接入指引 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>🚀 客户端接入指引</h2>
+      </div>
+      <div style="font-size:13px; line-height:1.8; color:var(--text)">
+        <p>在 Cursor、Windsurf、Cherry Studio、NextChat、Claude Code 等工具中配置：</p>
+        <div style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin:10px 0; font-family:ui-monospace, monospace; font-size:12px;">
+          <div><strong>Base URL</strong>: <code id="quickBaseUrl" style="color:var(--primary)">http://127.0.0.1:7863/v1</code></div>
+          <div style="margin-top:4px;"><strong>API Key</strong>: <code id="quickApiKey" style="color:var(--primary)">WildWorkAPI</code> (或在「客户端 Key」生成独立专属 Key)</div>
+          <div style="margin-top:4px;"><strong>模型名推荐</strong>: <code>claude-3-5-sonnet</code>、<code>claude-3-7-sonnet</code>、<code>deepseek-chat</code>、<code>deepseek-reasoner</code>、<code>gpt-4o</code></div>
         </div>
-        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+        <p class="hint">💡 提示：请求标准模型名将自动触发跨平台智能故障转移（Fallback），免去手动切换渠道前缀。</p>
       </div>
-      <div class="config-right">
-        <div class="row">
-          <span>开机自启</span>
-          <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
+    </section>
+
+    <!-- 渠道健康概况 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>⚡ 渠道在线状况</h2>
+      </div>
+      <div id="channelBadges" style="display:flex; gap:10px; flex-wrap:wrap;"></div>
+    </section>
+  </div>
+
+  <!-- Tab 2: 账号矩阵 (原账号管理) -->
+  <div class="tab-pane" id="tab-arsenal">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>账号管理</h2>
+        <div class="panel-actions">
+          <button class="btn primary" id="btnRefreshAll">刷新积分</button>
+          <button class="btn" id="btnCheckinAll">批量签到</button>
+          <button class="btn primary" id="btnAddWB">＋ WorkBuddy</button>
+          <button class="btn primary alt" id="btnAddTrae">＋ TraeWork</button>
+          <button class="btn primary alt qoder" id="btnAddQoder">＋ Qoder</button>
         </div>
-        <div class="hint">程序随系统启动自动运行</div>
+      </div>
+      <p class="hint" style="margin-bottom:12px;">💡 <strong>智能调度机制</strong>：网关自动遵循【快到期优先】策略（有到期时间优先于长期有效，越早到期越优先消耗，平手时余额低者优先）。带 <span class="tag next-pick" style="font-size:10px; padding:1px 6px;">🎯 优先调度</span> 为当前渠道第一顺位；可在「📜 调用流水」核对每次请求实际调用的账号 UID。</p>
+      <div id="acctList" class="acct-grid"></div>
+      <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
+    </section>
+  </div>
+
+  <!-- Tab 3: 模型路由与别名 -->
+  <div class="tab-pane" id="tab-router">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>模型别名与跨渠道容灾映射</h2>
+        <button class="btn small" id="btnResetRedirects">恢复默认映射</button>
+      </div>
+      <p class="hint" style="margin-bottom:12px;">当客户端请求左侧标准模型时，网关将按顺序优先尝试候选渠道；若主渠道额度用尽或遭遇 429 限流，将自动透明切换至下一个备选渠道。</p>
+      <div class="client-form" style="background:#f8fafc; padding:12px; border-radius:8px; border:1px solid var(--border);">
+        <input class="input" id="inAliasName" placeholder="标准模型名（如 claude-3-5-sonnet）" style="width:240px">
+        <input class="input" id="inAliasTargets" placeholder="候选顺序逗号隔开（如 traework/claude-3-5-sonnet, wbintl/claude-3-5-sonnet）" style="flex:1">
+        <button class="btn small primary" id="btnAddRedirect">添加/保存规则</button>
+      </div>
+      <div id="redirectsList" style="margin-top:12px;"></div>
+    </section>
+  </div>
+
+  <!-- Tab 4: 实时调用流水 -->
+  <div class="tab-pane" id="tab-logs">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>实时调用审计流水</h2>
+        <div class="panel-actions">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer;">
+            <input type="checkbox" id="chkAutoRefreshLogs" checked> 自动刷新 (5s)
+          </label>
+          <button class="btn small primary" id="btnRefreshAuditLogs">手动刷新</button>
+        </div>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>客户端</th>
+              <th>请求模型</th>
+              <th>命中渠道/账号</th>
+              <th>耗时</th>
+              <th>Tokens</th>
+              <th>状态</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody id="auditLogsBody">
+            <tr><td colspan="8" style="text-align:center; color:var(--muted); padding:20px;">暂无调用记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tab 5: 客户端 Key 管理 -->
+  <div class="tab-pane" id="tab-clients">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>极简客户端 Key 管理</h2>
+      </div>
+      <p class="hint" style="margin-bottom:12px;">为不同设备或软件（如 Cursor、CherryStudio、手机端）创建简易 Key，以便区分客户端并统计各自的白嫖用量。保留主 Key 同时生效。</p>
+      <div class="client-form">
+        <input class="input" id="inClientName" placeholder="客户端标签/备注（如 Cursor-笔记本）" style="width:240px">
+        <button class="btn small primary" id="btnCreateClient">＋ 生成客户端 Key</button>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>客户端标签</th>
+              <th>API Key (点击复制)</th>
+              <th>累计 Token</th>
+              <th>最近使用</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="clientsBody">
+            <tr><td colspan="6" style="text-align:center; color:var(--muted); padding:20px;">暂未创建客户端 Key</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tab 6: Token 资产大屏 -->
+  <div class="tab-pane" id="tab-usage">
+    <!-- Hero 财富看板 -->
+    <div class="token-hero">
+      <div class="token-hero-top">
+        <div>
+          <div class="token-hero-title">🪙 Token 资产与战果总览</div>
+          <div class="token-hero-sub">全网关累计通过免费渠道生产的大模型 Token 总量与商业价值折算</div>
+        </div>
+        <div class="token-hero-actions">
+          <button class="btn small" id="btnRefreshTokens">↻ 刷新数据</button>
+          <a class="btn small" href="./usage.html" target="_blank" style="text-decoration:none">独立大屏 ↗</a>
+        </div>
+      </div>
+      
+      <div class="token-metrics-grid">
+        <div class="token-metric-card main">
+          <div class="tm-lbl">累计生产总 Token</div>
+          <div class="tm-val" id="tkHeroTotal">0</div>
+          <div class="tm-savings" id="tkHeroSavings">约为你白嫖节省: ￥0.00</div>
+        </div>
+        <div class="token-metric-card">
+          <div class="tm-lbl">输入 Prompt</div>
+          <div class="tm-val" id="tkHeroPrompt">0</div>
+          <div class="tm-sub" id="tkHeroPromptPct">占比 0%</div>
+        </div>
+        <div class="token-metric-card">
+          <div class="tm-lbl">输出 Completion</div>
+          <div class="tm-val" id="tkHeroComp">0</div>
+          <div class="tm-sub" id="tkHeroCompPct">占比 0%</div>
+        </div>
+        <div class="token-metric-card">
+          <div class="tm-lbl">节省 Cache Tokens</div>
+          <div class="tm-val" id="tkHeroCache">0</div>
+          <div class="tm-sub" id="tkHeroCacheRate">命中率 0%</div>
+        </div>
       </div>
     </div>
-  </section>
 
-  <!-- 渠道费率 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>渠道费率</h2>
-      <button class="btn small" id="btnRefreshFees">刷新费率</button>
+    <!-- 趋势图与渠道分布 -->
+    <div class="analytics-row">
+      <div class="analytics-col chart-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>📊 近 14 天 Token 每日消耗趋势</h2>
+            <div class="legend-group">
+              <span class="legend-item"><i style="background:#3b82f6"></i>输入 (Prompt)</span>
+              <span class="legend-item"><i style="background:#10b981"></i>输出 (Completion)</span>
+              <span class="legend-item"><i style="background:#f59e0b"></i>缓存命中 (Cache)</span>
+            </div>
+          </div>
+          <div id="tokenTrendChartWrap" class="svg-chart-container">
+            <div class="empty-chart">加载中…</div>
+          </div>
+        </div>
+      </div>
+      <div class="analytics-col donut-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>🥧 白嫖渠道贡献占比</h2>
+          </div>
+          <div id="channelDonutWrap" class="donut-chart-container">
+            <div class="empty-chart">加载中…</div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div id="feesBox" class="fees"></div>
-  </section>
 
-  <!-- Token 用量统计 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Token 用量统计</h2>
-      <button class="btn small" id="btnRefreshTokens">刷新</button>
-      <button class="btn small primary" id="btnUsageStats">柱状图</button>
+    <!-- 模型榜单与客户端榜单 -->
+    <div class="analytics-row">
+      <div class="analytics-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>🤖 热门模型白嫖榜 TOP 5</h2>
+          </div>
+          <div id="topModelsList" class="rank-list">
+            <div class="empty-hint">暂无模型调用数据</div>
+          </div>
+        </div>
+      </div>
+      <div class="analytics-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>🔑 客户端用量排行 TOP 5</h2>
+          </div>
+          <div id="topClientsList" class="rank-list">
+            <div class="empty-hint">暂无客户端调用数据</div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div id="tokenStats" class="token-stats"></div>
-  </section>
 
-  <div class="footer">wild-work — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
+    <!-- 账号 Token 生产力明细 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>⚡ 账号 Token 生产力榜单</h2>
+      </div>
+      <p class="hint" style="margin-bottom:12px;">查看账号池中每一个活跃账号的实际产出贡献，结合到期倒计时，合理调度家庭多账号资产。</p>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>渠道 / 账号</th>
+              <th>UID</th>
+              <th>累计 Token</th>
+              <th>今日 Token</th>
+              <th>缓存命中率</th>
+              <th>最早到期时间</th>
+              <th>当前调度状态</th>
+            </tr>
+          </thead>
+          <tbody id="acctProductivityBody">
+            <tr><td colspan="7" style="text-align:center; padding:20px; color:var(--muted)">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tab 7: 系统设置 -->
+  <div class="tab-pane" id="tab-settings">
+    <!-- 自动签到 + 开机自启 -->
+    <section class="panel">
+      <div class="panel-head"><h2>自动签到</h2></div>
+      <div class="config-grid">
+        <div class="config-left">
+          <div class="row wrap">
+            <div id="timesBox" class="times"></div>
+            <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+          </div>
+          <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+        </div>
+        <div class="config-right">
+          <div class="row">
+            <span>开机自启</span>
+            <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
+          </div>
+          <div class="hint">程序随系统启动自动运行</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 渠道费率 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>渠道费率</h2>
+        <button class="btn small" id="btnRefreshFees">刷新费率</button>
+      </div>
+      <div id="feesBox" class="fees"></div>
+    </section>
+  </div>
+
+  <div class="footer">ZeroGate — 个人专用白嫖多渠道聚合中转站 · 右键托盘图标退出</div>
 </div>
 
 <!-- 添加账号确认弹层 -->

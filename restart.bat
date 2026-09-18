@@ -25,6 +25,9 @@ if errorlevel 1 (
 echo    编译成功 daemon.exe
 
 echo [3/3] 启动...
+rem ZCode 桥接：上游走本地 zcode-proxy（18080，进程内验证码求解）
+set ZCODE_BRIDGE_URL=http://127.0.0.1:18080
+set ZCODE_BRIDGE_KEY=sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4
 start "" "%~dp0daemon.exe" --no-tray
 echo    已启动，几秒后访问 http://127.0.0.1:%_PORT%/
 endlocal

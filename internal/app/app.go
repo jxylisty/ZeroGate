@@ -14,11 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"wild-work/internal/audit"
 	"wild-work/internal/auth"
+	"wild-work/internal/clientkey"
 	"wild-work/internal/config"
 	"wild-work/internal/doubao"
 	"wild-work/internal/login"
@@ -56,6 +59,8 @@ type Options struct {
 	Config     *config.Config
 	Runtimes   map[provider.Kind]*Runtime
 	Handler    *server.Handler
+	ClientKeys *clientkey.Store
+	AuditRec   *audit.Recorder
 }
 
 // App 应用编排。
@@ -64,6 +69,9 @@ type App struct {
 	cfg      *config.Config
 	runtimes map[provider.Kind]*Runtime
 	handler  *server.Handler
+
+	clientKeys *clientkey.Store
+	auditRec   *audit.Recorder
 
 	mu      sync.Mutex // 保护 httpSrv / cfg 修改
 	httpSrv *http.Server
@@ -94,10 +102,12 @@ type App struct {
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
 func New(opts Options) (*App, error) {
 	a := &App{
-		cfgPath:  opts.ConfigPath,
-		cfg:      opts.Config,
-		runtimes: opts.Runtimes,
-		handler:  opts.Handler,
+		cfgPath:    opts.ConfigPath,
+		cfg:        opts.Config,
+		runtimes:   opts.Runtimes,
+		handler:    opts.Handler,
+		clientKeys: opts.ClientKeys,
+		auditRec:   opts.AuditRec,
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
@@ -957,9 +967,11 @@ func (a *App) LoginBusy() bool {
 // AccountView 面板展示的账号（脱敏）。
 type AccountView struct {
 	UID            string `json:"uid"`
-	Group          string `json:"group"` // workbuddy | traework
+	Group          string `json:"group"` // workbuddy | traework | qoder ...
 	Nickname       string `json:"nickname"`
 	Credits        int64  `json:"credits"`
+	ExpireAt       int64  `json:"expire_at"` // 最早到期套餐时间（Unix 秒，0=长期有效）
+	IsNext         bool   `json:"is_next"`   // 是否为当前渠道账号池优先调度候选 #1
 	Cooling        bool   `json:"cooling"`
 	Until          string `json:"until"`
 	Reason         string `json:"reason"`
@@ -1007,16 +1019,26 @@ func (a *App) accountViews() []AccountView {
 	// 按渠道 pool 遍历：codebuddy 与 wbintl 可能同 uid（同后端同账户），
 	// 必须带上 rt.Kind 才能区分分组，不能仅凭 uid。
 	type sv struct {
-		kind string
-		s    pool.Status
+		kind   string
+		s      pool.Status
+		isNext bool
 	}
 	var items []sv
 	for _, rt := range a.runtimes {
 		if rt == nil || rt.Pool == nil {
 			continue
 		}
+		nextAuth := rt.Pool.Pick()
+		nextUID := ""
+		if nextAuth != nil {
+			nextUID = nextAuth.UID
+		}
 		for _, s := range rt.Pool.List() {
-			items = append(items, sv{kind: string(rt.Kind), s: s})
+			items = append(items, sv{
+				kind:   string(rt.Kind),
+				s:      s,
+				isNext: s.UID == nextUID && !s.Disabled && !s.Cooling,
+			})
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].s.UID < items[j].s.UID })
@@ -1028,6 +1050,8 @@ func (a *App) accountViews() []AccountView {
 			Group:          it.kind,
 			Nickname:       s.Nickname,
 			Credits:        s.Credits,
+			ExpireAt:       s.ExpireAt,
+			IsNext:         it.isNext,
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,
@@ -1306,6 +1330,122 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		go a.safeGo(func() { a.Quit() })
+	})
+
+	// 客户端 Key 管理
+	mux.HandleFunc("GET /api/clients", func(w http.ResponseWriter, r *http.Request) {
+		if a.clientKeys != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"clients": a.clientKeys.List()})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"clients": []any{}})
+		}
+	})
+	mux.HandleFunc("POST /api/clients/create", func(w http.ResponseWriter, r *http.Request) {
+		if a.clientKeys == nil {
+			apiError(w, http.StatusInternalServerError, "client keys store not initialized")
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		k, err := a.clientKeys.Create(req.Name)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, k)
+	})
+	mux.HandleFunc("POST /api/clients/delete", func(w http.ResponseWriter, r *http.Request) {
+		if a.clientKeys == nil {
+			apiError(w, http.StatusInternalServerError, "client keys store not initialized")
+			return
+		}
+		var req struct {
+			Key string `json:"key"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.clientKeys.Delete(req.Key); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/clients/toggle", func(w http.ResponseWriter, r *http.Request) {
+		if a.clientKeys == nil {
+			apiError(w, http.StatusInternalServerError, "client keys store not initialized")
+			return
+		}
+		var req struct {
+			Key     string `json:"key"`
+			Enabled bool   `json:"enabled"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.clientKeys.Toggle(req.Key, req.Enabled); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	// 实时调用审计日志流水
+	mux.HandleFunc("GET /api/audit/logs", func(w http.ResponseWriter, r *http.Request) {
+		if a.auditRec == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}})
+			return
+		}
+		limit := 100
+		if lStr := r.URL.Query().Get("limit"); lStr != "" {
+			if n, err := strconv.Atoi(lStr); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"logs": a.auditRec.Recent(limit)})
+	})
+	mux.HandleFunc("GET /api/audit/summary", func(w http.ResponseWriter, r *http.Request) {
+		if a.auditRec == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"requests_today": 0, "tokens_today": 0, "fails_today": 0})
+			return
+		}
+		reqs, tokens, fails := a.auditRec.SummaryToday()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"requests_today": reqs,
+			"tokens_today":   tokens,
+			"fails_today":    fails,
+		})
+	})
+	mux.HandleFunc("GET /api/audit/analytics", func(w http.ResponseWriter, r *http.Request) {
+		if a.auditRec == nil {
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
+		writeJSON(w, http.StatusOK, a.auditRec.Analytics())
+	})
+
+	// 模型路由重定向规则
+	mux.HandleFunc("GET /api/router/redirects", func(w http.ResponseWriter, r *http.Request) {
+		if a.handler != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"redirects": a.handler.GetModelRedirects()})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"redirects": a.cfg.ModelRedirects})
+		}
+	})
+	mux.HandleFunc("POST /api/router/redirects", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Redirects map[string][]string `json:"redirects"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.mu.Lock()
+		a.cfg.ModelRedirects = req.Redirects
+		_ = config.Save(a.cfg, a.cfgPath)
+		a.mu.Unlock()
+		if a.handler != nil {
+			a.handler.SetModelRedirects(req.Redirects)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 }
 

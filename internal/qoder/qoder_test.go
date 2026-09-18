@@ -3,6 +3,8 @@ package qoder
 import (
 	"encoding/json"
 	"testing"
+
+	"wild-work/internal/provider"
 )
 
 func TestNormalizeModelName(t *testing.T) {
@@ -119,3 +121,17 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 		t.Errorf("prompt = %q, want 你好", prompt.ChatContext.Text.Text)
 	}
 }
+
+func TestQoder10605ClassifyAndParse(t *testing.T) {
+	sample10605 := []byte(`{"code":"10605","message":"{\"isQueued\":false,\"modelKey\":\"gfmodel\",\"queueCount\":0,\"queueType\":\"p3\",\"retryAfterSeconds\":2,\"serviceAvailable\":true,\"waitTime\":0}"}`)
+	retryAfter, ok := parse10605(sample10605)
+	if !ok || retryAfter != 2 {
+		t.Fatalf("parse10605 failed: ok=%v retryAfter=%d (want 2)", ok, retryAfter)
+	}
+
+	kind := Classify(403, string(sample10605))
+	if kind != provider.ErrSoftRate {
+		t.Fatalf("Classify 10605 failed: got %v, want ErrSoftRate", kind)
+	}
+}
+

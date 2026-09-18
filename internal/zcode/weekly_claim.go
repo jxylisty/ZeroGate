@@ -18,7 +18,7 @@ import (
 	"wild-work/internal/pool"
 )
 
-// StartWeeklyClaim 启动周五 23:30 的周末包领取 goroutine。
+// StartWeeklyClaim 启动周五 19:00 的周末包领取 goroutine（卡片 19 点投放即领，23:00 激活）。
 // bridgeKey 为访问实例管理端点的凭证（ZCODE_BRIDGE_KEY）。
 func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
 	go func() {
@@ -30,7 +30,7 @@ func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
-				if now.Weekday() != time.Friday || now.Hour() != 23 || now.Minute() < 30 || now.Minute() >= 45 {
+				if now.Weekday() != time.Friday || now.Hour() != 19 || now.Minute() < 0 || now.Minute() >= 15 {
 					continue
 				}
 				if lastTrigger.IsZero() || lastTrigger.Year() != now.Year() || lastTrigger.YearDay() != now.YearDay() {
@@ -40,7 +40,7 @@ func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
 			}
 		}
 	}()
-	log.Printf("zcode: 周末包领取调度已启动（周五 23:30 单次，账号级桥接）")
+	log.Printf("zcode: 周末包领取调度已启动（周五 19:00 单次，账号级桥接）")
 }
 
 // runWeeklyClaim 对池中每个带 BridgeURL 的账号执行一次 claim。

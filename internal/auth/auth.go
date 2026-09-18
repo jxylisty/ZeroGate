@@ -32,6 +32,10 @@ type Auth struct {
 	EnterpriseID string
 	Nickname     string
 	FilePath     string // 来源文件；refresh 后原子写回此处
+
+	// BridgeURL zcode 渠道桥接模式专用：账号级上游（本地 zcode-proxy 实例，
+	// 每账号一个实例/端口/凭证目录）。缺省走全局 ZCODE_BRIDGE_URL。
+	BridgeURL string
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -107,6 +111,7 @@ func Parse(raw []byte) (*Auth, error) {
 				UID          string `json:"uid"`
 				EnterpriseID string `json:"enterpriseId"`
 				Nickname     string `json:"nickname"`
+				BridgeURL    string `json:"bridgeUrl"`
 			} `json:"account"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
@@ -125,6 +130,7 @@ func Parse(raw []byte) (*Auth, error) {
 			UID:          n.Account.UID,
 			EnterpriseID: n.Account.EnterpriseID,
 			Nickname:     n.Account.Nickname,
+			BridgeURL:    strings.TrimSpace(n.Account.BridgeURL),
 		}
 	} else {
 		var f struct {
@@ -140,6 +146,7 @@ func Parse(raw []byte) (*Auth, error) {
 			UID          string `json:"uid"`
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
+			BridgeURL    string `json:"bridgeUrl"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -157,6 +164,7 @@ func Parse(raw []byte) (*Auth, error) {
 			UID:          f.UID,
 			EnterpriseID: f.EnterpriseID,
 			Nickname:     f.Nickname,
+			BridgeURL:    strings.TrimSpace(f.BridgeURL),
 		}
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {

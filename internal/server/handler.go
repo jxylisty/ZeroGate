@@ -3,6 +3,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"wild-work/internal/audit"
 	"wild-work/internal/auth"
+	"wild-work/internal/clientkey"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/usage"
@@ -62,6 +65,15 @@ type Config struct {
 
 	// UsageRecorder token 用量记录器（可空）。
 	UsageRecorder any // *usage.Recorder
+
+	// ClientKeys 客户端 Key 存储（可空）。
+	ClientKeys *clientkey.Store
+
+	// AuditRec 实时调用审计记录器（可空）。
+	AuditRec *audit.Recorder
+
+	// ModelRedirects 模型别名映射。
+	ModelRedirects map[string][]string
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -83,6 +95,11 @@ type Handler struct {
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
 
 	recordTokens func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)
+
+	clientKeys     *clientkey.Store
+	auditRec       *audit.Recorder
+	redirectsMu    sync.RWMutex
+	modelRedirects map[string][]string
 }
 
 // SetTokenRecorder 注入 Token 用量回调（由 app 装配，统计反代请求实际消耗）。
@@ -93,6 +110,26 @@ func (h *Handler) SetTokenRecorder(fn func(kind, uid string, prompt, completion,
 // SetUsageRecorder 注入 usage recorder（供 /api/token_usage 查询累计用量）。
 func (h *Handler) SetUsageRecorder(rec any) {
 	h.cfg.UsageRecorder = rec
+}
+
+func (h *Handler) SetClientKeys(s *clientkey.Store)   { h.clientKeys = s }
+func (h *Handler) SetAuditRecorder(a *audit.Recorder) { h.auditRec = a }
+func (h *Handler) SetModelRedirects(m map[string][]string) {
+	h.redirectsMu.Lock()
+	defer h.redirectsMu.Unlock()
+	h.modelRedirects = m
+}
+func (h *Handler) GetModelRedirects() map[string][]string {
+	h.redirectsMu.RLock()
+	defer h.redirectsMu.RUnlock()
+	if h.modelRedirects == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(h.modelRedirects))
+	for k, v := range h.modelRedirects {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -119,7 +156,15 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), recordTokens: cfg.RecordTokens}
+	h := &Handler{
+		cfg:            cfg,
+		mux:            http.NewServeMux(),
+		sticky:         make(map[string]*stickyEntry),
+		recordTokens:   cfg.RecordTokens,
+		clientKeys:     cfg.ClientKeys,
+		auditRec:       cfg.AuditRec,
+		modelRedirects: cfg.ModelRedirects,
+	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -186,6 +231,23 @@ func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 		if acct != nil {
 			status, ok := rt.Pool.Status(sticky.uid)
 			if ok && !status.Cooling && !status.Disabled {
+				// 检查池中是否有更早到期的账号：如果有更紧急到期的账号（例如早到期 > 1小时），打破粘性重新调度
+				best := rt.Pool.Pick()
+				if best != nil && best.UID != sticky.uid {
+					bestStatus, bestOk := rt.Pool.Status(best.UID)
+					if bestOk && bestStatus.ExpireAt > 0 {
+						if status.ExpireAt == 0 || (status.ExpireAt-bestStatus.ExpireAt > 3600) {
+							log.Printf("sticky break platform=%s: sooner expiring acct found uid=%s (exp in %ds) vs current=%s",
+								rt.Kind, best.UID, bestStatus.ExpireAt-time.Now().Unix(), sticky.uid)
+							acct = best
+							h.stickyMu.Lock()
+							h.sticky[h.stickyKey(rt.Kind)] = &stickyEntry{uid: acct.UID, maxReqs: defaultMaxReqs}
+							h.stickyMu.Unlock()
+							return acct
+						}
+					}
+				}
+
 				log.Printf("sticky route platform=%s uid=%s count=%d/%d",
 					rt.Kind, sticky.uid, sticky.reqCount, sticky.maxReqs)
 				return acct
@@ -224,17 +286,53 @@ func (h *Handler) stickyClear(rt *Runtime) {
 	delete(h.sticky, h.stickyKey(rt.Kind))
 }
 
+type clientContextKeyType struct{}
+
+var clientContextKey = clientContextKeyType{}
+
+type callerInfo struct {
+	Name string
+	Key  string
+}
+
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := h.currentAPIKey()
-		if key != "" {
-			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != key {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+		masterKey := h.currentAPIKey()
+		authz := r.Header.Get("Authorization")
+		token := ""
+		if strings.HasPrefix(authz, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
+		}
+
+		caller := callerInfo{Name: "Anonymous", Key: token}
+
+		hasClients := h.clientKeys != nil && len(h.clientKeys.List()) > 0
+		// 无 masterKey 且无任何 clientKey 时为开放模式
+		if masterKey == "" && !hasClients {
+			r = r.WithContext(context.WithValue(r.Context(), clientContextKey, caller))
+			next(w, r)
+			return
+		}
+
+		// 匹配 masterKey
+		if masterKey != "" && token == masterKey {
+			caller.Name = "Default"
+			r = r.WithContext(context.WithValue(r.Context(), clientContextKey, caller))
+			next(w, r)
+			return
+		}
+
+		// 匹配 clientKeys
+		if h.clientKeys != nil {
+			if name, ok := h.clientKeys.Validate(token); ok {
+				caller.Name = name
+				r = r.WithContext(context.WithValue(r.Context(), clientContextKey, caller))
+				next(w, r)
 				return
 			}
 		}
-		next(w, r)
+
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 	}
 }
 
@@ -290,6 +388,27 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) modelList() []map[string]any {
 	out := []map[string]any{}
+	seen := map[string]bool{}
+
+	// 首先暴露所有配置的别名模型（如 claude-3-5-sonnet、deepseek-chat 等）
+	redirects := h.GetModelRedirects()
+	aliasNames := make([]string, 0, len(redirects))
+	for name := range redirects {
+		aliasNames = append(aliasNames, name)
+	}
+	sort.Strings(aliasNames)
+	for _, name := range aliasNames {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, map[string]any{
+				"id":       name,
+				"object":   "model",
+				"created":  1753600000,
+				"owned_by": "zerogate",
+			})
+		}
+	}
+
 	for _, k := range h.runtimeKinds() {
 		rt := h.cfg.Runtimes[k]
 		if rt.Pool == nil || len(rt.Pool.List()) == 0 { // 只暴露已接入账号的平台
@@ -301,14 +420,17 @@ func (h *Handler) modelList() []map[string]any {
 		}
 		for _, mi := range infos {
 			id := k.String() + "/" + mi.ID
-			entry := map[string]any{"id": id, "object": "model", "created": 1753600000, "owned_by": k.String()}
-			if mi.ContextWindow > 0 {
-				entry["context_length"] = mi.ContextWindow
+			if !seen[id] {
+				seen[id] = true
+				entry := map[string]any{"id": id, "object": "model", "created": 1753600000, "owned_by": k.String()}
+				if mi.ContextWindow > 0 {
+					entry["context_length"] = mi.ContextWindow
+				}
+				if mi.MaxTokens > 0 {
+					entry["max_output_tokens"] = mi.MaxTokens
+				}
+				out = append(out, entry)
 			}
-			if mi.MaxTokens > 0 {
-				entry["max_output_tokens"] = mi.MaxTokens
-			}
-			out = append(out, entry)
 		}
 	}
 	return out
@@ -373,6 +495,18 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 }
 
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	caller, _ := r.Context().Value(clientContextKey).(callerInfo)
+	if caller.Name == "" {
+		caller.Name = "Default"
+	}
+	keySnippet := ""
+	if len(caller.Key) > 10 {
+		keySnippet = caller.Key[:6] + "..." + caller.Key[len(caller.Key)-4:]
+	} else if caller.Key != "" {
+		keySnippet = "***"
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
@@ -383,140 +517,254 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &peek)
-	rt, model, err := h.runtimeForModel(peek.Model)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_model", err.Error())
-		return
-	}
-	body, err = rewriteModel(body, model)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
+	requestedModel := strings.TrimSpace(peek.Model)
+
+	// 解析候选列表：命中别名则展开为候选链；否则为单项候选
+	redirects := h.GetModelRedirects()
+	var candidates []string
+	if list, ok := redirects[requestedModel]; ok && len(list) > 0 {
+		candidates = append([]string(nil), list...)
+	} else {
+		candidates = []string{requestedModel}
 	}
 
-	tried := map[string]bool{}
 	var lastErr error
-	for i := 0; i < h.cfg.MaxRotate; i++ {
-		acct := h.pickWithSticky(rt)
-		if acct == nil {
-			break
+	var lastStatus int = http.StatusServiceUnavailable
+
+	for _, cand := range candidates {
+		rt, targetModel, rerr := h.runtimeForModel(cand)
+		if rerr != nil {
+			lastErr = rerr
+			continue
 		}
-		if tried[acct.UID] {
-			// 粘性路由选回已尝试的账号，清除粘性记录后重试
-			h.stickyClear(rt)
-			acct = rt.Pool.PickExcluding(tried)
+
+		candBody, rerr := rewriteModel(body, targetModel)
+		if rerr != nil {
+			lastErr = rerr
+			continue
+		}
+
+		tried := map[string]bool{}
+		candSuccess := false
+
+		for i := 0; i < h.cfg.MaxRotate; i++ {
+			acct := h.pickWithSticky(rt)
 			if acct == nil {
 				break
 			}
-		}
-		tried[acct.UID] = true
-		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
-			log.Printf("refresh start platform=%s uid=%s reason=request", rt.Kind, acct.UID)
-			if err := rt.Upstream.RefreshToken(acct); err != nil {
-				log.Printf("refresh failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
-				lastErr = err
+			if tried[acct.UID] {
+				// 粘性路由选回已尝试的账号，清除粘性记录后重试
 				h.stickyClear(rt)
-				var ue *provider.Error
-				if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
-					rt.Pool.Disable(acct.UID, "refresh session dead")
-				} else {
-					rt.Pool.Cooldown(acct.UID, pool.CoolErr, h.cfg.ErrCooldown, "refresh: "+err.Error())
+				acct = rt.Pool.PickExcluding(tried)
+				if acct == nil {
+					break
 				}
+			}
+			tried[acct.UID] = true
+			if acct.NeedsRefresh(h.cfg.RefreshSkew) {
+				log.Printf("refresh start platform=%s uid=%s reason=request", rt.Kind, acct.UID)
+				if err := rt.Upstream.RefreshToken(acct); err != nil {
+					log.Printf("refresh failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
+					lastErr = err
+					h.stickyClear(rt)
+					var ue *provider.Error
+					if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
+						rt.Pool.Disable(acct.UID, "refresh session dead")
+					} else {
+						rt.Pool.Cooldown(acct.UID, pool.CoolErr, h.cfg.ErrCooldown, "refresh: "+err.Error())
+					}
+					continue
+				}
+				if err := acct.SaveAtomic(); err != nil {
+					log.Printf("refresh save failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
+				}
+				log.Printf("refresh success platform=%s uid=%s expires_at=%d", rt.Kind, acct.UID, acct.ExpiresAt)
+			}
+			rc, status, respBody, terr := rt.Upstream.ChatStream(acct, candBody)
+			if terr != nil {
+				lastErr = terr
+				lastStatus = http.StatusBadGateway
+				h.stickyClear(rt)
+				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				continue
 			}
-			if err := acct.SaveAtomic(); err != nil {
-				log.Printf("refresh save failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
-			}
-			log.Printf("refresh success platform=%s uid=%s expires_at=%d", rt.Kind, acct.UID, acct.ExpiresAt)
-		}
-		rc, status, respBody, terr := rt.Upstream.ChatStream(acct, body)
-		if terr != nil {
-			lastErr = terr
-			h.stickyClear(rt)
-			rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
-			continue
-		}
-		if status >= 400 {
-			h.stickyClear(rt)
-			kind := rt.Upstream.Classify(status, string(respBody))
-			switch kind {
-			case provider.ErrHardCredit:
-				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
-			case provider.ErrSoftRate:
-				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
-			case provider.ErrSessionDead:
-				rt.Pool.Disable(acct.UID, "session dead")
-			case provider.ErrNotFound:
-				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
-			default:
-				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
-			}
-			// 上游错误：已是 OpenAI 标准 error 格式则原样透传；
-			// 否则包装成标准格式（字节系上游错误体无 error.message，
-			// ZCode 等客户端解析不出原因 → reason=unknown）
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			if isOpenAIError(respBody) {
-				_, _ = w.Write(respBody)
-			} else {
-				_, _ = w.Write(wrapUpstreamError(status, respBody))
-			}
-			return
-		}
-		defer rc.Close()
-		rt.Pool.NoteSuccess(acct.UID)
-		h.stickySuccess(rt)
-		kind, uid := rt.Kind.String(), acct.UID
-		if peek.Stream {
-			track := &tokenTrackingReader{r: rc}
-				_ = rt.Upstream.Stream(w, track)
-				track.finish()
-				if rec := h.recordTokens; rec != nil {
-					if p, c, cr, cw, ok := track.ScanResult(); ok && (p > 0 || c > 0) {
-						rec(kind, uid, p, c, cr, cw)
+			if status >= 400 {
+				lastStatus = status
+				h.stickyClear(rt)
+				kind := rt.Upstream.Classify(status, string(respBody))
+				switch kind {
+				case provider.ErrHardCredit:
+					rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
+				case provider.ErrSoftRate:
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
+				case provider.ErrSessionDead:
+					rt.Pool.Disable(acct.UID, "session dead")
+				case provider.ErrNotFound:
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
+				default:
+					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+				}
+				// 限流、排队等待(如 Qoder 10605)、余额不足、会话失效、模型未找到或服务端异常时，继续重试账号池其他账号或备选渠道
+				isRateLimit := kind == provider.ErrSoftRate || status == http.StatusTooManyRequests || strings.Contains(string(respBody), "10605")
+				if isRateLimit || kind == provider.ErrHardCredit || kind == provider.ErrSessionDead ||
+					kind == provider.ErrNotFound || status == http.StatusPaymentRequired || status >= 500 {
+					lastErr = fmt.Errorf("upstream %s(%s) status %d: %s", rt.Kind, acct.UID, status, string(respBody))
+					if isRateLimit {
+						lastStatus = http.StatusTooManyRequests
 					}
+					continue
+				}
+				// 业务层非重试错误（例如用户参数格式错误 400），才直接返回客户端
+				// 注意：若上游返回 401/403（非 10605 的鉴权失败），绝不可把 401/403 透传给客户端，
+				// 否则如 ZCode 等客户端会误判为自己的客户端 Key 失效而崩溃终止会话。应映射为 502 Bad Gateway
+				clientStatus := status
+				if status == http.StatusUnauthorized || status == http.StatusForbidden {
+					clientStatus = http.StatusBadGateway
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(clientStatus)
+				if isOpenAIError(respBody) {
+					_, _ = w.Write(respBody)
+				} else {
+					_, _ = w.Write(wrapUpstreamError(clientStatus, respBody))
+				}
+				if h.auditRec != nil {
+					h.auditRec.Record(audit.Entry{
+						Client:      caller.Name,
+						KeySnippet:  keySnippet,
+						ModelReq:    requestedModel,
+						ModelTarget: targetModel,
+						Channel:     rt.Kind.String(),
+						UID:         acct.UID,
+						DurationMs:  time.Since(startTime).Milliseconds(),
+						Status:      clientStatus,
+						Error:       string(respBody),
+						Stream:      peek.Stream,
+					})
 				}
 				return
-		}
-		resp, err := rt.Upstream.Aggregate(rc)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
-			return
-		}
-		if rec := h.recordTokens; rec != nil {
-				if u, ok := resp["usage"].(map[string]any); ok {
-					p, _ := asInt(u["prompt_tokens"])
-					c, _ := asInt(u["completion_tokens"])
-					if p == 0 && c == 0 {
-						c = int64(0)
-						if t, ok := asInt(u["total_tokens"]); ok {
-							c = t // 上游只给 total 时按 completion 计入
-						}
-					}
-					cr, _ := asInt(u["prompt_cache_hit_tokens"])
-					if cr == 0 {
-						cr, _ = asInt(u["cache_read_input_tokens"])
-					}
-					if cr == 0 {
-						cr, _ = asInt(u["cached_tokens"])
-					}
-					cw, _ := asInt(u["prompt_cache_write_tokens"])
-					if cw == 0 {
-						cw, _ = asInt(u["cache_creation_input_tokens"])
-					}
-					if p > 0 || c > 0 {
-						rec(kind, uid, p, c, cr, cw)
+			}
+
+			// 请求成功！
+			candSuccess = true
+			defer rc.Close()
+			rt.Pool.NoteSuccess(acct.UID)
+			h.stickySuccess(rt)
+			kind, uid := rt.Kind.String(), acct.UID
+
+			if peek.Stream {
+				track := &tokenTrackingReader{r: rc}
+				_ = rt.Upstream.Stream(w, track)
+				track.finish()
+				var p, c, cr, cw int64
+				if pr, crk, crd, cwr, ok := track.ScanResult(); ok {
+					p, c, cr, cw = pr, crk, crd, cwr
+				}
+				if rec := h.recordTokens; rec != nil && (p > 0 || c > 0) {
+					rec(kind, uid, p, c, cr, cw)
+				}
+				if h.clientKeys != nil && (p > 0 || c > 0) {
+					h.clientKeys.RecordUsage(caller.Key, p+c)
+				}
+				if h.auditRec != nil {
+					h.auditRec.Record(audit.Entry{
+						Client:           caller.Name,
+						KeySnippet:       keySnippet,
+						ModelReq:         requestedModel,
+						ModelTarget:      targetModel,
+						Channel:          kind,
+						UID:              uid,
+						PromptTokens:     p,
+						CompletionTokens: c,
+						CacheTokens:      cr,
+						TotalTokens:      p + c,
+						DurationMs:       time.Since(startTime).Milliseconds(),
+						Status:           http.StatusOK,
+						Stream:           true,
+					})
+				}
+				return
+			}
+
+			// 非流式
+			resp, err := rt.Upstream.Aggregate(rc)
+			if err != nil {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
+				return
+			}
+			var p, c, cr, cw int64
+			if u, ok := resp["usage"].(map[string]any); ok {
+				p, _ = asInt(u["prompt_tokens"])
+				c, _ = asInt(u["completion_tokens"])
+				if p == 0 && c == 0 {
+					if t, ok := asInt(u["total_tokens"]); ok {
+						c = t
 					}
 				}
+				cr, _ = asInt(u["prompt_cache_hit_tokens"])
+				if cr == 0 {
+					cr, _ = asInt(u["cache_read_input_tokens"])
+				}
+				if cr == 0 {
+					cr, _ = asInt(u["cached_tokens"])
+				}
+				cw, _ = asInt(u["prompt_cache_write_tokens"])
+				if cw == 0 {
+					cw, _ = asInt(u["cache_creation_input_tokens"])
+				}
 			}
-		writeJSON(w, http.StatusOK, resp)
-		return
+			if rec := h.recordTokens; rec != nil && (p > 0 || c > 0) {
+				rec(kind, uid, p, c, cr, cw)
+			}
+			if h.clientKeys != nil && (p > 0 || c > 0) {
+				h.clientKeys.RecordUsage(caller.Key, p+c)
+			}
+			if h.auditRec != nil {
+				h.auditRec.Record(audit.Entry{
+					Client:           caller.Name,
+					KeySnippet:       keySnippet,
+					ModelReq:         requestedModel,
+					ModelTarget:      targetModel,
+					Channel:          kind,
+					UID:              uid,
+					PromptTokens:     p,
+					CompletionTokens: c,
+					CacheTokens:      cr,
+					TotalTokens:      p + c,
+					DurationMs:       time.Since(startTime).Milliseconds(),
+					Status:           http.StatusOK,
+					Stream:           false,
+				})
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+
+		if candSuccess {
+			return
+		}
+		log.Printf("model candidate %q exhausted, trying next candidate in fallback chain...", cand)
 	}
-	msg := "all accounts unavailable (cooling/disabled)"
+
+	msg := "all accounts/candidates unavailable (cooling/disabled)"
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}
-	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+	if h.auditRec != nil {
+		h.auditRec.Record(audit.Entry{
+			Client:     caller.Name,
+			KeySnippet: keySnippet,
+			ModelReq:   requestedModel,
+			DurationMs: time.Since(startTime).Milliseconds(),
+			Status:     lastStatus,
+			Error:      msg,
+			Stream:     peek.Stream,
+		})
+	}
+	if lastStatus == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", "2")
+	}
+	writeOpenAIError(w, lastStatus, "no_healthy_account", msg)
 }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {

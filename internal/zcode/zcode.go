@@ -13,6 +13,7 @@
 package zcode
 
 import (
+	"os"
 	"bufio"
 	"bytes"
 	"context"
@@ -42,6 +43,14 @@ type Client struct {
 	CaptchaNodeDir string
 
 	captcha *CaptchaManager
+
+	// 桥接模式（ZCODE_BRIDGE_URL 非空时启用）：chat 上游转发到本地
+	// zcode-proxy（TriDefender/zcode-api，进程内验证码求解 + 3.12.3 指纹），
+	// 本进程不再自行求解验证码、不再直连 zcode.z.ai。
+	// billing/额度查询在桥接模式下禁用——billing 端点对 API 形态常 3012，
+	// 重复请求会喂养风控（2026-09-18 排查结论，详见 AGENTS.md 第 7 章）。
+	BridgeURL string
+	BridgeKey string
 }
 
 // New 生产默认。
@@ -51,12 +60,19 @@ func New() *Client {
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	return &Client{
+	c := &Client{
 		HTTP:           &http.Client{Timeout: 180 * time.Second, Transport: tr},
 		Base:           "https://zcode.z.ai",
 		Channel:        "zcode",
 		CaptchaNodeDir: "captcha_node",
 	}
+	if u := strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_URL")); u != "" {
+		c.BridgeURL = strings.TrimRight(u, "/")
+		c.BridgeKey = strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_KEY"))
+		c.CaptchaNodeDir = "" // 桥接模式下禁用本地验证码求解器
+		log.Printf("zcode: 桥接模式 → %s（验证码/指纹由 zcode-proxy 负责）", c.BridgeURL)
+	}
+	return c
 }
 
 // NewWithBase 测试用：覆盖 base。
@@ -255,13 +271,18 @@ func PrepareBody(src []byte) []byte {
 }
 
 // ChatStream 发 chat 请求并返回原始 Anthropic SSE body 流（调用方负责 Close）。
-// 内部处理验证码：首次请求前求解 verifyParam，遇 403+captcha 自动失效重求一次。
+// 直连模式内部处理验证码：首次请求前求解 verifyParam，遇 403+captcha 自动失效重求一次。
+// 桥接模式（BridgeURL 非空）转发到本地 zcode-proxy，验证码/指纹由其负责。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	var peek struct {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &peek)
 	prepared := PrepareBody(body)
+
+	if c.BridgeURL != "" {
+		return c.bridgeChatStream(a, peek.Model, prepared)
+	}
 
 	for attempt := 0; attempt < 2; attempt++ {
 		verifyParam := ""
@@ -307,16 +328,63 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	return nil, 0, nil, fmt.Errorf("zcode captcha retry exhausted")
 }
 
+// bridgeChatStream 桥接模式：转发到本地 zcode-proxy 的 Anthropic 端点
+//（/v1/messages，同协议同 SSE 形态）。只发最小头——客户端指纹、验证码、
+// plan 路由全部由 zcode-proxy 负责，账号 JWT 不参与上游鉴权（仅作路由标识）。
+// 目标实例：账号级 auth.BridgeURL 优先（每账号一个 zcode-proxy 实例），
+// 缺省回退全局 c.BridgeURL。
+func (c *Client) bridgeChatStream(a *auth.Auth, model string, prepared []byte) (io.ReadCloser, int, []byte, error) {
+	bridge := c.BridgeURL
+	if a != nil && strings.TrimSpace(a.BridgeURL) != "" {
+		bridge = strings.TrimRight(a.BridgeURL, "/")
+	}
+	req, err := http.NewRequest(http.MethodPost, bridge+"/v1/messages", bytes.NewReader(prepared))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if c.BridgeKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BridgeKey)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		log.Printf("zcode bridge uid=%s model=%s: transport error: %v", a.UID, model, err)
+		return nil, 0, nil, err
+	}
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		kind := c.Classify(resp.StatusCode, string(raw))
+		log.Printf("zcode bridge uid=%s model=%s: upstream %d %s body=%s",
+			a.UID, model, resp.StatusCode, kind, truncate(string(raw), 200))
+		return nil, resp.StatusCode, raw, nil
+	}
+	return resp.Body, resp.StatusCode, nil, nil
+}
+
 // zcodeModels 静态模型目录（zcode2api AVAILABLE_MODELS；上下文/输出上限来自官方）。
 var zcodeModels = []provider.ModelInfo{
 	{ID: "GLM-5.2", Name: "GLM-5.2", ContextWindow: 1000000, MaxTokens: 96000},
 	{ID: "GLM-5-Turbo", Name: "GLM-5-Turbo", ContextWindow: 136000, MaxTokens: 65024},
 }
 
-// FetchModels 返回 ZCode 公开的可用模型（静态：GLM-5.2 / GLM-5-Turbo）。
+// bridgeModels 桥接模式（zcode-proxy）可用模型，与 zcode-proxy config.yaml 的
+// models 列表一致（小写；zcode-proxy 侧负责模型名映射）。
+var bridgeModels = []provider.ModelInfo{
+	{ID: "glm-5.3-flash", Name: "GLM-5.3-Flash (ZCode)", ContextWindow: 1000000, MaxTokens: 96000},
+	{ID: "glm-5.3", Name: "GLM-5.3 (ZCode)", ContextWindow: 1000000, MaxTokens: 96000},
+}
+
+// FetchModels 返回 ZCode 可用模型：桥接模式走 bridgeModels，直连模式静态目录。
 func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
-	out := make([]provider.ModelInfo, len(zcodeModels))
-	copy(out, zcodeModels)
+	models := zcodeModels
+	if c.BridgeURL != "" {
+		models = bridgeModels
+	}
+	out := make([]provider.ModelInfo, len(models))
+	copy(out, models)
 	return out, nil
 }
 
@@ -332,8 +400,12 @@ func (c *Client) UserResource(a *auth.Auth) (int64, error) {
 }
 
 // UserResourceDetail 额度明细：GET /api/v1/zcode-plan/billing/balance。
-// 返回全部模型的剩余 units 与到期时间（expires_at，供"快到期优先"路由）。
+// 桥接模式下禁用：billing 端点对 API 形态常 3012，定时刷新的失败请求
+// 会持续喂养账号级风控（2026-09-18 排查结论）。额度看 zcode-proxy 面板。
 func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
+	if c.BridgeURL != "" {
+		return 0, nil, fmt.Errorf("zcode bridge: billing 由 zcode-proxy 管理，本渠道不查询")
+	}
 	resp, err := c.authDo(a, c.Base+"/api/v1/zcode-plan/billing/balance")
 	if err != nil {
 		return 0, nil, err

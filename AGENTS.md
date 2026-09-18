@@ -199,7 +199,7 @@ ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./
 ```
 
 #### 自动化
-- Windows 计划任务 `ZCodeClaimWeekly`：每周五 23:30 跑 claim-weekly.bat，
+- Windows 计划任务 `ZCodeClaimWeekly`：每周五 19:00 跑 claim-weekly.bat（卡片 19 点投放即领，23:00 激活），
   遍历 instances/acc-* 每个**一次** claim now（失败不重试不循环——防 WAF 标记）
 - 领取后 23:00 生效，实例对应账号即可消耗；到期约 2 天后
 - 2018-09-18 结果：大号（acc-big 18083）已领成功（Weekend Build 300M，23:00 生效）

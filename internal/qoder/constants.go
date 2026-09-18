@@ -38,6 +38,7 @@ var staticModelKeys = map[string]string{
 	"deepseek-v4-pro":   "dmodel",
 	"deepseek-v4-flash": "dfmodel",
 	"glm-5.3":           "gmodel",
+	"glm-5.3-flash":     "gfmodel",
 	"glm-5.2":           "gm51model",
 	"kimi-k2.7-code":    "kmodel",
 	"minimax-m2.7":      "mmodel",

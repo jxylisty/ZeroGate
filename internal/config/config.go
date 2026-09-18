@@ -111,20 +111,41 @@ type Config struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	ModelRedirects map[string][]string `json:"model_redirects,omitempty"` // 模型别名映射与容灾列表
+
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
 	ErrCooldownDur time.Duration `json:"-"`
 }
 
+// DefaultModelRedirects 返回开箱即用的默认模型别名与备选链。
+func DefaultModelRedirects() map[string][]string {
+	return map[string][]string{
+		"claude-3-5-sonnet": {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
+		"claude-3.5-sonnet": {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
+		"claude-3-7-sonnet": {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
+		"claude-3.7-sonnet": {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
+		"claude-3-5-haiku":  {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
+		"claude-3.5-haiku":  {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
+		"deepseek-chat":     {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
+		"deepseek-v3":       {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
+		"deepseek-reasoner": {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
+		"deepseek-r1":       {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
+		"gpt-4o":            {"qoder/gpt-4o", "traework/glm-5.2"},
+		"qwen-2.5-coder":    {"traework/qwen3-coder", "workbuddy/glm-5.2"},
+	}
+}
+
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:    Listen{Host: "127.0.0.1", Port: 7863},
-		APIKey:    "WildWorkAPI",
-		AuthDir:   "./auths",
-		StateFile: "./data/state.json",
-		Region:    "cn",
+		Listen:         Listen{Host: "127.0.0.1", Port: 7863},
+		APIKey:         "WildWorkAPI",
+		AuthDir:        "./auths",
+		StateFile:      "./data/state.json",
+		Region:         "cn",
+		ModelRedirects: DefaultModelRedirects(),
 	}
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
@@ -158,6 +179,9 @@ func Load(path string) (*Config, error) {
 				c.Schedule.CheckinTimes = nil
 			}
 		}
+	}
+	if len(c.ModelRedirects) == 0 {
+		c.ModelRedirects = DefaultModelRedirects()
 	}
 	applyEnv(c)
 	if err := c.normalize(); err != nil {

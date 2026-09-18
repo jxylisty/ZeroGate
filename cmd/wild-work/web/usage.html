@@ -16,7 +16,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5; padding-bottom: 60px;
 }
-#app { max-width: 1060px; margin: 0 auto; padding: 20px 16px; }
+#app { max-width: 1440px; margin: 0 auto; padding: 20px 24px; }
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -599,7 +599,7 @@ svg text { font-family: inherit; }
 
   // 三线图：总余额（蓝实线）+ 日消耗（红）+ 签到入库（绿），独立 y 同图
   function tripleLine(data) {
-    const W = 860, H = 200, PL = 10, PR = 60, PT = 10, PB = 24;
+    const W = 1200, H = 220, PL = 10, PR = 60, PT = 10, PB = 24;
     if (!data.length) return '<div class="empty" style="padding:20px">暂无数据</div>';
     const maxBal = Math.max(...data.map(d => d.remain), 1);
     const maxF = Math.max(...data.map(d => Math.max(d.consume, d.gain)), 1);

@@ -208,6 +208,32 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
+// parse10605 解析 Qoder 网关并发限流/排队错误（10605 与 retryAfterSeconds）。
+func parse10605(body []byte) (retryAfter int, ok bool) {
+	if !bytes.Contains(body, []byte("10605")) && !bytes.Contains(body, []byte("retryAfterSeconds")) {
+		return 0, false
+	}
+	var top struct {
+		Code    any    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &top); err == nil {
+		var inner struct {
+			RetryAfterSeconds int `json:"retryAfterSeconds"`
+		}
+		if err := json.Unmarshal([]byte(top.Message), &inner); err == nil && inner.RetryAfterSeconds > 0 {
+			return inner.RetryAfterSeconds, true
+		}
+	}
+	var direct struct {
+		RetryAfterSeconds int `json:"retryAfterSeconds"`
+	}
+	if err := json.Unmarshal(body, &direct); err == nil && direct.RetryAfterSeconds > 0 {
+		return direct.RetryAfterSeconds, true
+	}
+	return 2, true
+}
+
 // ChatStream 发 chat 请求并返回原始嵌套 SSE body 流（调用方负责 Close）。
 // 非 2xx 时 rc 为 nil、respBody 为上游响应体、err 为 nil；只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
@@ -268,6 +294,32 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		resp.Body.Close()
 		log.Printf("qoder chat_stream uid=%s model=%s: upstream %d body=%s",
 			a.UID, modelKey, resp.StatusCode, truncate(string(raw), 200))
+
+		// 10605 自动排队退避原地重试（Qoder 突发并发限流通常仅需退避 2 秒）
+		if retryAfter, ok := parse10605(raw); ok && retryAfter <= 3 {
+			log.Printf("qoder chat_stream uid=%s model=%s: hit 10605 rate limit, waiting %ds for in-situ retry...",
+				a.UID, modelKey, retryAfter)
+			time.Sleep(time.Duration(retryAfter) * time.Second)
+
+			req2, err2 := http.NewRequest(http.MethodPost, url, strings.NewReader(encoded))
+			if err2 == nil {
+				if err2 = sess.ApplyHeaders(req2, encoded, url, a.UID, true, modelKey); err2 == nil {
+					resp2, err2 := c.HTTP.Do(req2)
+					if err2 == nil {
+						if resp2.StatusCode < 400 {
+							log.Printf("qoder chat_stream uid=%s model=%s: in-situ retry succeeded!", a.UID, modelKey)
+							return resp2.Body, resp2.StatusCode, nil, nil
+						}
+						raw2, _ := io.ReadAll(io.LimitReader(resp2.Body, 1<<20))
+						resp2.Body.Close()
+						log.Printf("qoder chat_stream uid=%s model=%s: in-situ retry failed with status %d body=%s",
+							a.UID, modelKey, resp2.StatusCode, truncate(string(raw2), 200))
+						return nil, resp2.StatusCode, raw2, nil
+					}
+				}
+			}
+		}
+
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil
@@ -392,6 +444,10 @@ var hardMarkers = []string{
 
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 func Classify(status int, body string) provider.ErrKind {
+	// Qoder 10605 并发排队与限流（上游返回 403，body 含 10605 或 retryAfterSeconds）
+	if strings.Contains(body, "10605") || strings.Contains(body, "retryAfterSeconds") {
+		return provider.ErrSoftRate
+	}
 	if status == http.StatusPaymentRequired {
 		return provider.ErrHardCredit
 	}
