@@ -252,3 +252,16 @@ ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./
 - 头：UA `WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2`，Origin www.workbuddy.ai
 - ZeroGate：login_pkg 加 StartIntl/PollIntl；StartLoginFor 支持 channel=wbintl
   （面板 WBIntl 组「＋」即网页授权，凭证落 auths/wbintl-<uid>.json）；粘贴 token 表单保留兜底
+
+### 7.12 账号体系映射（2026-09-18 用户确认，防混淆）
+
+| 显示名 | uid | 实例/端口 | 额度 |
+|---|---|---|---|
+| 主号bigmodel | 85641786857446263 | acc-big / 18083 | 3 亿 Weekend（2026-09-18 claim） |
+| 主号gmail | 6ccde037-2b78-4502-9686-9b65529db2ce | acc-fuka / 18084 | 1 亿 Global + 3 亿 Weekend + 每日 |
+| 副卡bigmodel | 18201789620455567 | acc-cn / 18085 | 每日（周末包待补货） |
+| 副卡gmail | （另一台电脑） | 待反代 | 4 亿 |
+
+- 主号 gmail = 6ccde037（z.ai 手机号注册号），**不是** "副卡"（历史命名曾混淆）
+- 18080 实例已停用（原 Gmail 号 ccacfe94 凭证被 2026-09-18 晚误覆盖为副卡，且主号 Gmail 用户在官方客户端自用，无需实例）
+- 命名以 auths/*.json 的 nickname 为准（zcode-big → 主号bigmodel 等）
