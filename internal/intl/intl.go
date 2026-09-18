@@ -294,7 +294,7 @@ var intlModels = []staticModel{
 	{ID: "deep-model", Name: "Deep", ContextWindow: 176000, MaxTokens: 24000, Rate: 3.33},
 	{ID: "hy4-preview", Name: "Hy4 preview", ContextWindow: 1000000, MaxTokens: 64000},
 	{ID: "hy3", Name: "Hy3", ContextWindow: 192000, MaxTokens: 64000},
-	{ID: "deepseek-v4.1-flash", Name: "Deepseek-V4.1-Flash", ContextWindow: 1000000, MaxTokens: 128000},
+	{ID: "deepseek-v4.1-flash", Name: "Deepseek-V4.1-Flash (限免)", ContextWindow: 1000000, MaxTokens: 128000},
 	{ID: "gpt-6-astra", Name: "GPT-6-Astra", ContextWindow: 1000000, MaxTokens: 128000, Rate: 6.67},
 	{ID: "gpt-5.6-sol", Name: "GPT-5.6-Sol", ContextWindow: 1000000, MaxTokens: 128000, Rate: 3.47},
 	{ID: "gpt-5.6-terra", Name: "GPT-5.6-Terra", ContextWindow: 1000000, MaxTokens: 128000, Rate: 1.39},
@@ -352,7 +352,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 }
 
 // FetchModelPricing 返回内置目录中各模型的积分倍率（费率随账号可用模型过滤：
-// 只输出 /v2/enterprises/personal/models 实际返回的模型）。
+// 只输出 /v2/enterprises/personal/models 实际返回的模型 + 隐藏免费模型）。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
 	ids, err := c.fetchModelIDs(a)
 	if err != nil {
@@ -367,6 +367,7 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		available[id] = true
 	}
 	// 官方隐藏模型：deepseek-v4.1-flash 实测可调用且不扣积分，费率区一并显示
+	// 注意：此模型不在 /v2/enterprises/personal/models 列表中，但可直接调用且 credit=0
 	available["deepseek-v4.1-flash"] = true
 	var out []provider.ModelPricing
 	for i := range intlModels {
@@ -379,9 +380,13 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 			Channel: c.Channel,
 			Rate:    m.Rate,
 		}
-		// 免费模型不隐藏，标记限免说明（Rate=0 也会正常显示）
+		// 免费模型标记限免说明（Rate=0 也会正常显示）
 		if m.Rate == 0 {
-			pricing.Note = "限免期 0 积分"
+			if m.ID == "deepseek-v4.1-flash" {
+				pricing.Note = "隐藏模型限免 0 积分 · 不在列表但可直接调用"
+			} else {
+				pricing.Note = "限免期 0 积分"
+			}
 		}
 		out = append(out, pricing)
 	}

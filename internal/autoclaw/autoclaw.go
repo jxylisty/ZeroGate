@@ -379,10 +379,10 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 // FetchModelPricing 官方无公开积分单价，返回静态标签由前端兜底。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
 	return []provider.ModelPricing{
-		{Model: "zai_auto", Channel: "autoclaw", Rate: 0, Note: "默认自动路由（实测 deepseek-v4-flash-vision）"},
-		{Model: "zai_auto-fast", Channel: "autoclaw", Rate: 0, Note: "快速自动路由"},
-		{Model: "zaicoding_glm-5.3", Channel: "autoclaw", Rate: 0, Note: "GLM-5.3 编码模型，积分等级高"},
-		{Model: "glm-5.3-flash", Channel: "autoclaw", Rate: 0, Note: "GLM-5.3 Flash 原生多模态轻量版，消耗积分少 ⭐"},
+		{Model: "zai_auto", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · 默认自动路由（实测 deepseek-v4-flash-vision）"},
+		{Model: "zai_auto-fast", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · 快速自动路由"},
+		{Model: "zaicoding_glm-5.3", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · GLM-5.3 编码模型，积分等级高"},
+		{Model: "glm-5.3-flash", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · GLM-5.3 Flash 原生多模态轻量版，消耗积分少 ⭐"},
 	}, nil
 }
 

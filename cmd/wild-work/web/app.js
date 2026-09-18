@@ -1004,6 +1004,8 @@ function renderUsageChart(tokens) {
   const labels = sorted.map(t => t.Day.slice(5)); // 只显示 MM-DD
   const promptData = sorted.map(t => t.prompt);
   const completionData = sorted.map(t => t.completion);
+  const cacheReadData = sorted.map(t => t.cache_read);
+  const cacheWriteData = sorted.map(t => t.cache_write);
   const totalData = sorted.map(t => t.total);
   
   const ctx = canvas.getContext('2d');
@@ -1029,6 +1031,20 @@ function renderUsageChart(tokens) {
           data: completionData,
           backgroundColor: 'rgba(22, 163, 74, 0.8)',
           borderColor: 'rgba(22, 163, 74, 1)',
+          borderWidth: 1
+        },
+        {
+          label: '缓存命中',
+          data: cacheReadData,
+          backgroundColor: 'rgba(245, 158, 11, 0.8)',
+          borderColor: 'rgba(245, 158, 11, 1)',
+          borderWidth: 1
+        },
+        {
+          label: '缓存写入',
+          data: cacheWriteData,
+          backgroundColor: 'rgba(220, 38, 38, 0.8)',
+          borderColor: 'rgba(220, 38, 38, 1)',
           borderWidth: 1
         }
       ]
