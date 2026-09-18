@@ -204,6 +204,12 @@ ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./
 - 领取后 23:00 生效，实例对应账号即可消耗；到期约 2 天后
 - 2018-09-18 结果：大号（acc-big 18083）已领成功（Weekend Build 300M，23:00 生效）
 
+- **preview 语义（2026-09-18 晚修正）**：`billing/preview` 只返回**未领**的包——
+  返回空列表 = 已领过或当前无投放，**不等于"不在名单"**！
+  判断实际持有：查 `billing/balance` 的 `data.plans`（列出全部 plan 及 status，
+  即使未激活也显示；激活前 `balances` 数组里没有 bucket，属正常）
+- 实例验证各号持仓：手动带完整身份头 GET `billing/balance?app_version=3.12.3&platform=win32-x64`
+  （缺头/缺参返回 3001）；或用本机实例 /quota（只回 balances，回 plans 需手动）
 #### 用电/防标纪律（再次强调）
 - 领取一次就好，不要对同一包重复 claim（claim 返回已领/无包）
 - 本地 18080/18083 实例意外关闭后的重启命令见 instances/acc-*/start.sh
