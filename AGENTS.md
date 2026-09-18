@@ -207,3 +207,17 @@ ZCODE_CREDENTIALS_DIR=<实例creds目录> HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= ./
 #### 用电/防标纪律（再次强调）
 - 领取一次就好，不要对同一包重复 claim（claim 返回已领/无包）
 - 本地 18080/18083 实例意外关闭后的重启命令见 instances/acc-*/start.sh
+
+### 7.9 周末包领取内置化（2026-09-18 实施）
+
+- **zcode-proxy fork** 新增管理端点 `POST /admin/claim-now`（鉴权 `Bearer <proxyApiKey>`，
+  请求体 `{"mode":"list"|"now"}`，默认 now）：实例内执行**一次** preview+claim，
+  返回结构化 JSON（ok/plans/claimed/error），失败不重试不循环
+- **ZeroGate** `internal/zcode/weekly_claim.go`：`StartWeeklyClaim` goroutine，
+  每周五 23:30-23:45 对池中每个带 `BridgeURL` 的账号调一次 `/admin/claim-now`
+  （key=ZCODE_BRIDGE_KEY），结果打日志；30s tick 仅在周五窗口+当日未执行才触发
+- `internal/pool` 新增 `Auths()`（遍历账号引用，供桥接类功能使用）
+- 原 Windows 计划任务 `ZCodeClaimWeekly` 仍保留作为兜底（claim-weekly.bat 遍历实例；
+  与新调度重复执行也无害——claim 幂等，重复领取返回无包）
+- 周五晚间如有测试需要：手动 `curl -X POST http://127.0.0.1:<实例端口>/admin/claim-now
+  -H "Authorization: Bearer sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4"`（确认账号已登录该实例）

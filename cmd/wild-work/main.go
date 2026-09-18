@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"wild-work/internal/app"
+	"wild-work/internal/audit"
 	"wild-work/internal/auth"
 	"wild-work/internal/autoclaw"
+	"wild-work/internal/clientkey"
 	"wild-work/internal/config"
 	"wild-work/internal/intl"
 	"wild-work/internal/platform"
@@ -154,6 +156,7 @@ func main() {
 	wbIntlUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	zcUp := zcode.New()
 	zcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	zcode.StartWeeklyClaim(context.Background(), zcPool, zcode.BridgeKeyFromEnv())
 	acUp := autoclaw.New()
 	acUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
@@ -193,10 +196,16 @@ func main() {
 		provider.AutoClaw:  {Kind: provider.AutoClaw, Pool: acPool, Upstream: acUp, Scheduler: acSch},
 	}
 
+	keyStore := clientkey.New(filepath.Join(stateDir, "keys.json"))
+	auditRec := audit.New(filepath.Join(stateDir, "requests.jsonl"), 500)
+	defer auditRec.Close()
+
 	appInst, err := app.New(app.Options{
 		ConfigPath: cfgPath,
 		Config:     cfg,
 		Runtimes:   appRuntimes,
+		ClientKeys: keyStore,
+		AuditRec:   auditRec,
 	})
 	if err != nil {
 		fatal("初始化失败：%v", err)
@@ -225,14 +234,17 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	h := server.NewHandler(server.Config{
-		Runtimes:     runtimes,
-		APIKey:       cfg.APIKey,
-		HardCooldown: cfg.HardCreditDur,
-		SoftCooldown: cfg.SoftRateDur,
-		ErrThreshold: cfg.Cooldown.ErrThresh,
-		ErrCooldown:  cfg.ErrCooldownDur,
-		WebUI:        sub,
-		AttachAPI:    appInst.HandleAPI,
+		Runtimes:       runtimes,
+		APIKey:         cfg.APIKey,
+		HardCooldown:   cfg.HardCreditDur,
+		SoftCooldown:   cfg.SoftRateDur,
+		ErrThreshold:   cfg.Cooldown.ErrThresh,
+		ErrCooldown:    cfg.ErrCooldownDur,
+		WebUI:          sub,
+		AttachAPI:      appInst.HandleAPI,
+		ClientKeys:     keyStore,
+		AuditRec:       auditRec,
+		ModelRedirects: cfg.ModelRedirects,
 	})
 	appInst.SetHandler(h)
 

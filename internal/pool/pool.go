@@ -330,6 +330,18 @@ func (p *Pool) AuthByUID(uid string) *auth.Auth {
 }
 
 // List 返回所有账号状态（按 UID 排序，稳定输出）。
+// Auths 返回池中全部账号的 Auth 引用（供桥接/领取等遍历；调用方不得改写字段，
+// 需改写请走 Add/Cooldown/Disable 等带锁接口）。
+func (p *Pool) Auths() []*auth.Auth {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]*auth.Auth, 0, len(p.byUID))
+	for _, e := range p.byUID {
+		out = append(out, e.a)
+	}
+	return out
+}
+
 func (p *Pool) List() []Status {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
