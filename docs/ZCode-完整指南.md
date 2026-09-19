@@ -8,10 +8,10 @@
 | 显示名 | user_id | 实例/端口 | 额度（09-19） | 凭证目录 |
 |---|---|---|---|---|
 | 主号bigmodel | 85641786857446263 | acc-big / 18083 | 3 亿 Weekend ✅ | instances/acc-big/creds |
-| 主号gmail | 6ccde037-2b78-4502-9686-9b65529db2ce | acc-fuka / 18084 | 1 亿 Global + 3 亿 Weekend + 每日 800 万 ✅ | instances/acc-fuka/creds |
+| 主号gmail | ccacfe94-147d-426e-9d8f-ab95fa22f11d | acc-fuka2 / 18086 | 3.95 亿 ✅（09-19 重新 OAuth 登录，显示/优先级正常） | instances/acc-fuka2/creds |
+| 副卡gmail | 6ccde037-2b78-4502-9686-9b65529db2ce | acc-fuka / 18084 | 1 亿 Global + 3 亿 Weekend + 每日 800 万 ✅ | instances/acc-fuka/creds |
 | 副卡bigmodel | 18201789620455567 | acc-cn / 18085 | 每日 300 万（周末包未投放给它） | instances/acc-cn/creds |
-| 副卡gmail | （另一台电脑） | **待反代**（acc-fuka2 / 18086 已建实例+auths 占位） | 4 亿（在那台电脑） | instances/acc-fuka2/creds |
-| （弃用）Gmail ccacfe94 | ccacfe94-147d-426e-9d8f-ab95fa22f11d | 18080 已停 | 用户官方客户端自用 | ~/.zcode-proxy（已被覆盖） |
+| （历史）18080 实例 | — | 已停用 | 曾被误覆盖凭证（acc-gmail 目录保留可复用） | ~/.zcode-proxy |
 
 **命名纪律**：以 auths/zcode-*.json 的 nickname 为准；uid 与显示名一一对应，勿凭记忆猜。
 

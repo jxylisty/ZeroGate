@@ -100,3 +100,4 @@ ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder /
 - 📘 [`docs/lessons/03-bom-and-bridge-port-postmortem.md`](file:///d:/wild-work/src-true/docs/lessons/03-bom-and-bridge-port-postmortem.md)：2026-09-19 Windows BOM 破坏凭证解析、空壳占位符调度与 18080 废弃端口级联冷却故障全流程复盘。
 - 📘 [`docs/lessons/04-zcode-bridge-stall-and-routing-hardening.md`](file:///d:/wild-work/src-true/docs/lessons/04-zcode-bridge-stall-and-routing-hardening.md)：2026-09-19 晚 ZCode 桥接签发卡死 → 120 秒"假成功"（200/0 token）复盘；零 token 长流熔断、zcode 渠道到期升序轮转、账号停用需代理层+网关层一致等加固与铁律。
 - 📘 [`docs/lessons/05-qoder-nested-sse-usage.md`](file:///d:/wild-work/src-true/docs/lessons/05-qoder-nested-sse-usage.md)：2026-09-19 Qoder 流式 token 计 0 根因（嵌套 SSE 转义 usage 漏抓）与修复；上游 `billable:false` 才是"积分不变"真相。
+- 📘 [`docs/ZCode-完整指南.md`](docs/ZCode-完整指南.md)：ZCode 渠道交接总纲（账号映射终版、billing/preview/claim 完整身份头清单、领取时间窗、12 条坑清单、实例/daemon 速查命令）。
