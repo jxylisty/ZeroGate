@@ -171,32 +171,35 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	h.mux.HandleFunc("GET /api/token_usage", h.withAuth(h.tokenUsage))
 	if cfg.WebUI != nil {
-		// 使用中间件处理 index.html，替换 {{timestamp}} 为当前时间戳
+		// 所有 .html 页面均替换 {{timestamp}} 为当前时间戳（css/js 缓存破坏用）
 		webFS := http.FS(cfg.WebUI)
 		h.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-				// 读取并替换 index.html
-				f, err := webFS.Open("index.html")
+			name := strings.TrimPrefix(r.URL.Path, "/")
+			if name == "" {
+				name = "index.html"
+			}
+			if strings.HasSuffix(name, ".html") {
+				f, err := webFS.Open(name)
 				if err != nil {
 					http.NotFound(w, r)
 					return
 				}
 				defer f.Close()
-				
+
 				data, err := io.ReadAll(f)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				
+
 				timestamp := time.Now().Unix()
 				content := strings.ReplaceAll(string(data), "{{timestamp}}", fmt.Sprintf("%d", timestamp))
-				
+
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.Write([]byte(content))
 				return
 			}
-			
+
 			// 其他文件直接返回
 			http.FileServer(webFS).ServeHTTP(w, r)
 		}))

@@ -4,196 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>用量与资产监控 · ZeroGate</title>
-<style>
-:root {
-  --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
-  --text: #0f172a; --muted: #64748b; --primary: #2563eb;
-  --danger: #ef4444; --ok: #10b981; --warn: #f59e0b; --purple: #8b5cf6;
-  --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 2px rgba(0,0,0,.03);
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: var(--bg); color: var(--text); line-height: 1.5; padding-bottom: 80px;
-}
-#app { max-width: 1440px; margin: 0 auto; padding: 24px 28px; }
-
-/* 顶部导航 */
-.topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 24px; background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 20px; gap: 12px;
-}
-.brand { display: flex; align-items: center; gap: 12px; }
-.brand .title { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; }
-.brand .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.top-right { display: flex; align-items: center; gap: 12px; }
-.top-right .updated { font-size: 12px; color: var(--muted); }
-.btn {
-  font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid var(--border);
-  background: var(--card); padding: 7px 14px; border-radius: 8px; text-decoration: none;
-  color: var(--text); transition: all .15s ease; display: inline-flex; align-items: center; gap: 6px;
-}
-.btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
-.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
-.btn-primary:hover { background: #1d4ed8; color: #fff; }
-
-/* 核心指标卡片：全面以 Token 与纳管服务为中心 */
-.summary {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 20px;
-}
-.sum-card {
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 18px 20px; box-shadow: var(--shadow); position: relative; overflow: hidden;
-}
-.sum-card::after {
-  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: transparent;
-}
-.sum-card.primary::after { background: var(--primary); }
-.sum-card.ok::after { background: var(--ok); }
-.sum-card.warn::after { background: var(--warn); }
-.sum-card.purple::after { background: var(--purple); }
-.sum-card .label { font-size: 13px; font-weight: 500; color: var(--muted); display: flex; justify-content: space-between; }
-.sum-card .value { font-size: 26px; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; }
-.sum-card .sub-label { font-size: 12px; color: var(--muted); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
-
-/* 白嫖聚合条（四个端口服务快速状态） */
-.arsenal-strip {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 20px;
-}
-.ars-card {
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 16px; box-shadow: var(--shadow); display: flex; align-items: center; justify-content: space-between;
-}
-.ars-left { display: flex; align-items: center; gap: 10px; }
-.ars-info .name { font-size: 14px; font-weight: 700; color: var(--text); }
-.ars-info .desc { font-size: 11px; color: var(--muted); }
-.ars-badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2); }
-.dot.off { background: var(--danger); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2); }
-
-/* 图表与看板面板 */
-.panel {
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-  box-shadow: var(--shadow); margin-bottom: 20px; overflow: hidden;
-}
-.panel > summary {
-  list-style: none; cursor: pointer; padding: 16px 20px; display: flex;
-  align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  font-weight: 700; font-size: 16px; user-select: none; border-bottom: 1px solid transparent;
-  transition: background .12s ease;
-}
-.panel > summary::-webkit-details-marker { display: none; }
-.panel > summary:hover { background: #f8fafc; }
-.panel[open] > summary { border-bottom-color: var(--border); }
-.panel > summary .arrow { transition: transform .15s; color: var(--muted); font-size: 12px; margin-right: 6px; }
-.panel[open] > summary .arrow { transform: rotate(90deg); }
-.panel .phead { display: flex; align-items: center; gap: 8px; }
-.panel .pmeta { font-size: 12px; color: var(--muted); font-weight: 400; display: flex; gap: 12px; align-items: center; }
-.panel .pbody { padding: 18px 20px; }
-
-/* 环状图双列网格 */
-.analytics-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;
-}
-@media (max-width: 960px) {
-  .analytics-grid { grid-template-columns: 1fr; }
-}
-.chart-box {
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 18px 20px; box-shadow: var(--shadow); display: flex; flex-direction: column;
-}
-.chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.chart-header .ch-title { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
-.chart-header .ch-sub { font-size: 12px; color: var(--muted); }
-.donut-wrap { display: flex; align-items: center; justify-content: space-around; flex-wrap: wrap; gap: 20px; }
-.donut-svg-box { width: 170px; height: 170px; position: relative; flex-shrink: 0; }
-.donut-legend { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
-.donut-legend-item { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
-.donut-legend-left { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
-.donut-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.donut-legend-val { font-weight: 600; color: var(--text); flex-shrink: 0; }
-
-/* 趋势柱状图 */
-.trend-wrap { position: relative; width: 100%; }
-.legend-line { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-right: 16px; margin-bottom: 12px; }
-.legend-line i { width: 12px; height: 4px; border-radius: 2px; display: inline-block; }
-
-/* 账号生产力排行表 */
-#rankTable { width: 100%; border-collapse: collapse; font-size: 13px; }
-#rankTable th, #rankTable td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
-#rankTable th { font-size: 12px; color: var(--muted); font-weight: 600; background: #f8fafc; }
-#rankTable tr:hover td { background: #f8fafc; }
-.rank-no { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: 50%; font-size: 11px; font-weight: 700; color: #fff; background: #94a3b8; }
-.rank-no.top1 { background: #ef4444; }
-.rank-no.top2 { background: #f97316; }
-.rank-no.top3 { background: #f59e0b; }
-.prog-wrap { min-width: 120px; }
-.prog { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-bottom: 3px; }
-.prog > i { display: block; height: 100%; border-radius: 3px; }
-
-/* 账号卡片与渠道分组 */
-.group { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
-.group > summary {
-  list-style: none; cursor: pointer; padding: 14px 20px; display: flex;
-  align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  font-weight: 700; font-size: 15px; user-select: none;
-}
-.group > summary::-webkit-details-marker { display: none; }
-.group > summary:hover { background: #f8fafc; }
-.group > summary .arrow { transition: transform .15s; color: var(--muted); font-size: 12px; margin-right: 6px; }
-.group[open] > summary .arrow { transform: rotate(90deg); }
-.group .gh-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.group .gh-meta { font-size: 12px; color: var(--muted); font-weight: 400; display: flex; gap: 16px; flex-wrap: wrap; }
-.group .gh-meta .v { font-weight: 600; color: var(--text); }
-.tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: #f1f5f9; color: var(--muted); }
-.tag.ok { background: #d1fae5; color: #065f46; }
-.tag.fail { background: #fee2e2; color: #991b1b; }
-.tag.warn { background: #fef3c7; color: #92400e; }
-.tag.purple { background: #ede9fe; color: #5b21b6; }
-.tag.blue { background: #dbeafe; color: #1e40af; }
-
-.acct { border-top: 1px solid var(--border); background: #ffffff; }
-.acct-head {
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
-  padding: 14px 20px; gap: 12px;
-}
-.acct-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.acct-title .name { font-size: 15px; font-weight: 700; }
-.acct-metrics { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; }
-.acct-metrics .m { display: flex; flex-direction: column; align-items: flex-end; }
-.acct-metrics .m .v { font-weight: 700; }
-.acct-metrics .m .l { font-size: 11px; color: var(--muted); }
-.acct-metrics .pos { color: var(--danger); }
-.acct-metrics .neg { color: var(--ok); }
-.acct-body { padding: 8px 20px 18px; }
-
-/* 外部接入卡片专属样式 */
-.external-acct {
-  padding: 16px 20px; border-top: 1px solid var(--border);
-  display: grid; grid-template-columns: 240px 1fr auto; gap: 20px; align-items: center;
-}
-@media (max-width: 800px) {
-  .external-acct { grid-template-columns: 1fr; }
-}
-.ext-col-title .title { font-size: 15px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
-.ext-col-title .sub { font-size: 12px; color: var(--muted); }
-.ext-col-models { display: flex; flex-wrap: wrap; gap: 6px; }
-.model-pill { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: #f1f5f9; border: 1px solid #e2e8f0; font-family: ui-monospace, monospace; }
-
-/* 到期日历 */
-.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(40px, 1fr)); gap: 6px; font-size: 11px; }
-.cal-ok { width: 100%; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px; background: #f8fafc; color: var(--muted); border: 1px solid #f1f5f9; }
-.cal-ok .d { font-weight: 700; font-size: 13px; color: var(--text); }
-.cal-ok.hit { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
-.cal-ok.hit.soon { background: #fef3c7; color: #92400e; border-color: #fde68a; }
-.cal-ok .who { font-size: 9px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* 空状态与错误 */
-.empty { text-align: center; padding: 40px 0; color: var(--muted); font-size: 13px; }
-.error { text-align: center; padding: 40px 0; color: var(--danger); }
-</style>
+<link rel="icon" href="./favicon.ico?v={{timestamp}}">
+<script src="./theme.js?v={{timestamp}}"></script>
+<link rel="stylesheet" href="./theme.css?v={{timestamp}}">
+<link rel="stylesheet" href="./usage.css?v={{timestamp}}">
 </head>
 <body>
 <div id="app">
@@ -202,14 +16,18 @@ body {
   <header class="topbar">
     <div class="brand">
       <div>
-        <div class="title">🪙 用量与 Token 资产监控 · ZeroGate</div>
+        <div class="title"><span data-ic="coins"></span>用量与 Token 资产监控 · ZeroGate</div>
         <div class="sub">Token 资产全景 · 全渠道纳管 · 外部服务桥接</div>
       </div>
     </div>
     <div class="top-right">
       <span class="updated" id="updated">正在拉取...</span>
       <button class="btn" id="btnToggle" onclick="window.__toggleAll()">全部收起</button>
-      <a class="btn btn-primary" href="./">← 返回主控制台</a>
+      <button class="btn theme-toggle" id="btnTheme" title="切换深浅主题" onclick="window.__toggleTheme()">
+        <svg class="ic ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        <svg class="ic ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+      </button>
+      <a class="btn primary" href="./">返回主控制台<span data-ic="arrowL" style="width:13px;height:13px;"></span></a>
     </div>
   </header>
 
@@ -229,14 +47,14 @@ body {
   <div class="analytics-grid">
     <div class="chart-box">
       <div class="chart-header">
-        <div class="ch-title">🍩 模型消耗占比 (Top Models)</div>
+        <div class="ch-title"><span data-ic="pie"></span>模型消耗占比 (Top Models)</div>
         <div class="ch-sub">按消耗 Token 聚合</div>
       </div>
       <div class="donut-wrap" id="donutModelWrap"><div class="empty">加载中...</div></div>
     </div>
     <div class="chart-box">
       <div class="chart-header">
-        <div class="ch-title">🍩 渠道消耗占比 (Channel Share)</div>
+        <div class="ch-title"><span data-ic="pie"></span>渠道消耗占比 (Channel Share)</div>
         <div class="ch-sub">各大平台贡献度</div>
       </div>
       <div class="donut-wrap" id="donutChannelWrap"><div class="empty">加载中...</div></div>
@@ -246,13 +64,13 @@ body {
   <!-- 全局近 14 天 Token 趋势堆叠柱状图 -->
   <details class="panel" id="panelTrend" open>
     <summary>
-      <span class="phead"><span class="arrow">▶</span><span>📊 近 14 天 Token 每日消耗趋势</span></span>
+      <span class="phead"><span class="arrow">▶</span><span><span data-ic="chart"></span>近 14 天 Token 每日消耗趋势</span></span>
       <span class="pmeta" id="trendStats"></span>
     </summary>
     <div class="pbody">
-      <div class="legend-line"><i style="background:#2563eb"></i>输入 Prompt</div>
-      <div class="legend-line"><i style="background:#10b981"></i>输出 Completion</div>
-      <div class="legend-line"><i style="background:#f59e0b"></i>节省 Cache</div>
+      <div class="legend-line"><i style="background:var(--chart-prompt)"></i>输入 Prompt</div>
+      <div class="legend-line"><i style="background:var(--chart-comp)"></i>输出 Completion</div>
+      <div class="legend-line"><i style="background:var(--chart-cache)"></i>节省 Cache</div>
       <div class="trend-wrap" id="trendChart"></div>
     </div>
   </details>
@@ -260,7 +78,7 @@ body {
   <!-- 账号 Token 生产力榜单 -->
   <details class="panel" id="panelRank" open>
     <summary>
-      <span class="phead"><span class="arrow">▶</span><span>⚡ 账号 Token 生产力榜单</span></span>
+      <span class="phead"><span class="arrow">▶</span><span><span data-ic="zap"></span>账号 Token 生产力榜单</span></span>
       <span class="pmeta">按实际产出 Token 降序</span>
     </summary>
     <div class="pbody">
@@ -284,24 +102,24 @@ body {
   <!-- 到期日历 -->
   <details class="panel" id="panelCal" open>
     <summary>
-      <span class="phead"><span class="arrow">▶</span><span>📅 到期日历</span><span id="calMeta" class="tag"></span></span>
+      <span class="phead"><span class="arrow">▶</span><span><span data-ic="calendar"></span>到期日历</span><span id="calMeta" class="tag"></span></span>
       <span class="pmeta">未来 30 天将到期的账号</span>
     </summary>
     <div class="pbody">
       <div class="cal-grid" id="calGrid"></div>
       <div style="display:flex; gap:16px; font-size:12px; color:var(--muted); margin-top:12px;">
-        <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fecaca;margin-right:4px;"></i>≤3 天到期</span>
-        <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fde68a;margin-right:4px;"></i>≤7 天到期</span>
-        <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fee2e2;margin-right:4px;"></i>30 天内到期</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--danger-soft);margin-right:4px;"></i>≤3 天到期</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--warn-soft);margin-right:4px;"></i>≤7 天到期</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--danger-soft);margin-right:4px;"></i>30 天内到期</span>
       </div>
     </div>
   </details>
 
   <!-- 接入指南 -->
   <details class="panel" id="panelGuide">
-    <summary><span class="phead"><span class="arrow">▶</span><span>🔌 接入指南与端口表 (BaseURL / Key / 模型)</span></span></summary>
+    <summary><span class="phead"><span class="arrow">▶</span><span><span data-ic="link"></span>接入指南与端口表 (BaseURL / Key / 模型)</span></span></summary>
     <div class="pbody">
-      <table id="rankTable">
+      <table id="guideTable">
         <thead><tr><th>服务</th><th>BaseURL</th><th>API Key</th><th>代表模型</th></tr></thead>
         <tbody>
           <tr><td><b>wild-work 主池</b></td><td><code>http://127.0.0.1:7863/v1</code></td><td><code>WildWorkAPI</code></td><td><code>traework/Doubao-Seed-2.1-Pro</code> · <code>deepseek-chat</code> · <code>qoder/glm-5.3-flash</code></td></tr>
@@ -322,6 +140,21 @@ body {
 <script>
 (async function () {
   const $ = (id) => document.getElementById(id);
+  if (window.__fillIcons) window.__fillIcons();
+
+  // 取色：优先 CSS 变量（双主题），回退固定值
+  function cssVar(name) { return window.__cssVar ? window.__cssVar(name) : ''; }
+  function chColor(kind) {
+    const v = cssVar('--ch-' + kind);
+    if (v) return v;
+    const fb = {
+      traework: '#2563eb', workbuddy: '#7c3aed', qoder: '#0891b2', codebuddy: '#16a34a',
+      wbintl: '#ea580c', zcode: '#6366f1', autoclaw: '#0d9488', atria: '#0284c7',
+      gpt_gemini: '#10b981', copilot: '#0284c7', doubao: '#f43f5e'
+    };
+    return fb[kind] || '#64748b';
+  }
+
   const PALETTE = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#64748b'];
 
   const KIND_LABEL = {
@@ -333,19 +166,6 @@ body {
     zcode: 'ZCode (智谱 Z.AI)',
     autoclaw: 'AutoClaw (自动爪)',
     atria: 'Atria'
-  };
-
-  const CHANNEL_COLORS = {
-    traework: '#2563eb',
-    workbuddy: '#8b5cf6',
-    qoder: '#06b6d4',
-    codebuddy: '#10b981',
-    wbintl: '#f97316',
-    zcode: '#6366f1',
-    autoclaw: '#0d9488',
-    gpt_gemini: '#10b981',
-    copilot: '#0284c7',
-    doubao: '#f43f5e'
   };
 
   let collapsedAll = false;
@@ -383,6 +203,9 @@ body {
     if (days <= 7) return { text: md + ' (剩' + days + '天)', cls: 'warn', title: '到期 ' + full };
     return { text: md + ' (剩' + days + '天)', cls: '', title: '到期 ' + full };
   }
+
+  // 主题切换时刷新大屏（图表取色随主题变化）
+  document.addEventListener('zg:themechange', () => load());
 
   // 主加载函数
   async function load() {
@@ -541,7 +364,7 @@ body {
         chItems.push({
           name: KIND_LABEL[k] || k,
           tokens: v,
-          color: CHANNEL_COLORS[k] || '#64748b'
+          color: chColor(k)
         });
       }
     }
@@ -557,6 +380,7 @@ body {
   // SVG 环状图构建器
   function createSvgDonut(items, total, centerSub) {
     const cx = 85, cy = 85, r = 60;
+    const track = cssVar('--chart-track') || '#eef1f6';
     const C = 2 * Math.PI * r;
     let offset = 0;
     let circles = '';
@@ -589,7 +413,7 @@ body {
     return `
       <div class="donut-svg-box">
         <svg viewBox="0 0 170 170" style="width:100%;height:100%;">
-          <circle cx="${cx}" cy="${cy}" r="${r}" fill="transparent" stroke="#f1f5f9" stroke-width="22" />
+          <circle cx="${cx}" cy="${cy}" r="${r}" fill="transparent" stroke="${track}" stroke-width="22" />
           ${circles}
           <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="16" font-weight="800" fill="var(--text)">${fmtToken(total)}</text>
           <text x="${cx}" y="${cy + 13}" text-anchor="middle" font-size="11" fill="var(--muted)">${centerSub}</text>
@@ -608,6 +432,11 @@ body {
       meta.textContent = '';
       return;
     }
+
+    const cP = cssVar('--chart-prompt') || '#2563eb';
+    const cC = cssVar('--chart-comp') || '#10b981';
+    const cK = cssVar('--chart-cache') || '#f59e0b';
+    const cGrid = cssVar('--chart-grid') || '#e2e8f0';
 
     const W = 1200, H = 180, PL = 12, PR = 12, PT = 14, PB = 26;
     const maxVal = Math.max(...trendList.map(d => d.total || 0), 10);
@@ -642,9 +471,9 @@ body {
 输出: ${fmtToken(comp)}
 缓存: ${fmtToken(cache)}
 请求: ${d.req_count || 0} 次</title>
-          <rect x="${x.toFixed(1)}" y="${yPrompt.toFixed(1)}" width="${bw.toFixed(1)}" height="${hP.toFixed(1)}" fill="#2563eb" rx="2" />
-          <rect x="${x.toFixed(1)}" y="${yComp.toFixed(1)}" width="${bw.toFixed(1)}" height="${hC.toFixed(1)}" fill="#10b981" rx="2" />
-          <rect x="${x.toFixed(1)}" y="${yCache.toFixed(1)}" width="${bw.toFixed(1)}" height="${hCa.toFixed(1)}" fill="#f59e0b" rx="2" />
+          <rect x="${x.toFixed(1)}" y="${yPrompt.toFixed(1)}" width="${bw.toFixed(1)}" height="${hP.toFixed(1)}" fill="${cP}" rx="2" />
+          <rect x="${x.toFixed(1)}" y="${yComp.toFixed(1)}" width="${bw.toFixed(1)}" height="${hC.toFixed(1)}" fill="${cC}" rx="2" />
+          <rect x="${x.toFixed(1)}" y="${yCache.toFixed(1)}" width="${bw.toFixed(1)}" height="${hCa.toFixed(1)}" fill="${cK}" rx="2" />
         </g>
       `;
 
@@ -658,7 +487,7 @@ body {
 
     box.innerHTML = `
       <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
-        <line x1="${PL}" x2="${W - PR}" y1="${H - PB}" y2="${H - PB}" stroke="#e2e8f0" stroke-width="1"/>
+        <line x1="${PL}" x2="${W - PR}" y1="${H - PB}" y2="${H - PB}" stroke="${cGrid}" stroke-width="1"/>
         ${bars}
         ${xLabels}
       </svg>
@@ -717,12 +546,12 @@ body {
           <td><span class="rank-no ${rankClass}">${no}</span></td>
           <td>
             <b style="font-size:14px">${esc(a.nickname)}</b>
-            <span class="tag" style="background:${CHANNEL_COLORS[a.kind] || '#e2e8f0'}15;color:${CHANNEL_COLORS[a.kind] || '#475569'};margin-left:6px">${KIND_LABEL[a.kind] || a.kind}</span>
+            <span class="tag ch-tag" style="--tch:${chColor(a.kind)};margin-left:6px">${KIND_LABEL[a.kind] || a.kind}</span>
           </td>
           <td><b style="font-size:15px;color:var(--text)">${fmtToken(a.totalTok)}</b></td>
           <td>
             <div class="prog-wrap">
-              <div class="prog"><i style="width:${Math.round(a.totalTok / maxTok * 100)}%;background:${CHANNEL_COLORS[a.kind] || '#2563eb'}"></i></div>
+              <div class="prog"><i style="width:${Math.round(a.totalTok / maxTok * 100)}%;background:${chColor(a.kind)}"></i></div>
               <div style="font-size:11px;color:var(--muted)">${pct}%</div>
             </div>
           </td>
@@ -782,7 +611,7 @@ body {
         <summary>
           <span class="gh-head">
             <span class="arrow">▶</span>
-            <span>🌐 外部接入桥接服务 (GPT / Gemini · Copilot · 豆包)</span>
+            <span><span>${I.globe}</span>外部接入桥接服务 (GPT / Gemini · Copilot · 豆包)</span>
             <span class="tag blue">3 个外部服务</span>
           </span>
           <span class="gh-meta">
@@ -907,7 +736,7 @@ body {
 
     // Qoder 专属提示
     const isQoder = a.kind === 'qoder';
-    const qoderHint = isQoder ? '<span style="font-size:11px;color:var(--ok);margin-left:8px;">💡 Flash 级模型官方 0 扣点</span>' : '';
+    const qoderHint = isQoder ? `<span style="font-size:11px;color:var(--ok);margin-left:8px;display:inline-flex;align-items:center;gap:4px;">${I.lightbulb} Flash 级模型官方 0 扣点</span>` : '';
 
     return `
       <div class="acct">

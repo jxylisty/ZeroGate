@@ -68,10 +68,15 @@ func New() *Client {
 	}
 	if u := strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_URL")); u != "" {
 		c.BridgeURL = strings.TrimRight(u, "/")
-		c.BridgeKey = strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_KEY"))
-		c.CaptchaNodeDir = "" // 桥接模式下禁用本地验证码求解器
-		log.Printf("zcode: 桥接模式 → %s（验证码/指纹由 zcode-proxy 负责）", c.BridgeURL)
+	} else {
+		c.BridgeURL = "http://127.0.0.1:18080"
 	}
+	c.BridgeKey = strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_KEY"))
+	if c.BridgeKey == "" {
+		c.BridgeKey = "sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4"
+	}
+	c.CaptchaNodeDir = "" // 桥接模式下禁用本地验证码求解器
+	log.Printf("zcode: 桥接模式 → %s（验证码/指纹由 zcode-proxy 负责）", c.BridgeURL)
 	return c
 }
 
@@ -139,7 +144,9 @@ func Classify(status int, body string) provider.ErrKind {
 		case 1305:
 			return ErrServer
 		case 3007:
-			return ErrSessionDead
+			// 3007 = captcha verify failed：通道活着，只是要验证码（实例侧求解
+			// 偶发失败）。误判 SessionDead 会把健康账号整池禁用（2026-09-19 修复）。
+			return ErrClient
 		}
 	}
 	if hasCaptcha {
@@ -280,8 +287,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	_ = json.Unmarshal(body, &peek)
 	prepared := PrepareBody(body)
 
-	if c.BridgeURL != "" {
-		return c.bridgeChatStream(a, peek.Model, prepared)
+	if c.BridgeURL != "" || (a != nil && a.BridgeURL != "") {
+		return c.bridgeChatStream(a, peek.Model, body)
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
@@ -328,23 +335,30 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	return nil, 0, nil, fmt.Errorf("zcode captcha retry exhausted")
 }
 
-// bridgeChatStream 桥接模式：转发到本地 zcode-proxy 的 Anthropic 端点
-//（/v1/messages，同协议同 SSE 形态）。只发最小头——客户端指纹、验证码、
-// plan 路由全部由 zcode-proxy 负责，账号 JWT 不参与上游鉴权（仅作路由标识）。
+// bridgeChatStream 桥接模式：转发到本地 zcode-proxy 的 OpenAI 端点
+//（/v1/chat/completions），支持标准 OpenAI 多工具调用与完整流式 SSE。
 // 目标实例：账号级 auth.BridgeURL 优先（每账号一个 zcode-proxy 实例），
 // 缺省回退全局 c.BridgeURL。
-func (c *Client) bridgeChatStream(a *auth.Auth, model string, prepared []byte) (io.ReadCloser, int, []byte, error) {
+func (c *Client) bridgeChatStream(a *auth.Auth, model string, rawBody []byte) (io.ReadCloser, int, []byte, error) {
 	bridge := c.BridgeURL
 	if a != nil && strings.TrimSpace(a.BridgeURL) != "" {
 		bridge = strings.TrimRight(a.BridgeURL, "/")
 	}
-	req, err := http.NewRequest(http.MethodPost, bridge+"/v1/messages", bytes.NewReader(prepared))
+	var reqMap map[string]any
+	if err := json.Unmarshal(rawBody, &reqMap); err == nil {
+		if m, ok := reqMap["model"].(string); ok && strings.HasPrefix(m, "zcode/") {
+			reqMap["model"] = strings.TrimPrefix(m, "zcode/")
+			if b, err := json.Marshal(reqMap); err == nil {
+				rawBody = b
+			}
+		}
+	}
+	req, err := http.NewRequest(http.MethodPost, bridge+"/v1/chat/completions", bytes.NewReader(rawBody))
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("anthropic-version", "2023-06-01")
 	if c.BridgeKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.BridgeKey)
 	}
@@ -615,6 +629,7 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 		inputTok   int64
 		outputTok  int64
 		streamed   bool
+		doneSent   bool
 	)
 
 	br := bufio.NewReaderSize(r, 64*1024)
@@ -623,6 +638,23 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 		line = strings.TrimRight(line, "\r\n")
 		if strings.HasPrefix(line, "data: ") {
 			payload := strings.TrimPrefix(line, "data: ")
+			if strings.TrimSpace(payload) == "[DONE]" {
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				if fl != nil {
+					fl.Flush()
+				}
+				doneSent = true
+				continue
+			}
+			// 若已经是 OpenAI 格式 chunk（来自 zcode-proxy 桥接通道），直接透传给客户端
+			if strings.Contains(payload, "chat.completion.chunk") || strings.Contains(payload, `"choices":`) {
+				fmt.Fprintf(w, "data: %s\n\n", payload)
+				if fl != nil {
+					fl.Flush()
+				}
+				streamed = true
+				continue
+			}
 			var ev anthropicEvent
 			if json.Unmarshal([]byte(payload), &ev) == nil {
 				switch ev.Type {
@@ -729,17 +761,32 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 			return err
 		}
 	}
-	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
-		return err
-	}
-	if fl != nil {
-		fl.Flush()
+	if !doneSent {
+		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+			return err
+		}
+		if fl != nil {
+			fl.Flush()
+		}
 	}
 	return nil
 }
 
-// Aggregate 聚合上游 Anthropic SSE 为单个 OpenAI chat.completion 响应。
+// Aggregate 聚合上游响应为单个 OpenAI chat.completion 响应。
 func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	// 1. 若上游直接返回了标准 OpenAI JSON 响应（如 bridge 模式且非流式请求）
+	var direct map[string]any
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		if _, ok := direct["choices"]; ok {
+			return direct, nil
+		}
+	}
+
+	// 2. 否则按 SSE 逐行解析（支持 Anthropic SSE 与 OpenAI SSE 聚合）
 	var (
 		id, model string
 		content   strings.Builder
@@ -747,12 +794,51 @@ func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
 		outputTok int64
 		gotText   bool
 	)
-	br := bufio.NewReaderSize(r, 64*1024)
-	for {
-		line, err := br.ReadString('\n')
-		line = strings.TrimRight(line, "\r\n")
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r\n")
 		if strings.HasPrefix(line, "data: ") {
 			payload := strings.TrimPrefix(line, "data: ")
+			if strings.TrimSpace(payload) == "[DONE]" {
+				continue
+			}
+
+			// 尝试 OpenAI chunk 格式
+			var chunk struct {
+				ID      string `json:"id"`
+				Model   string `json:"model"`
+				Choices []struct {
+					Delta struct {
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
+					} `json:"delta"`
+				} `json:"choices"`
+				Usage struct {
+					PromptTokens     int64 `json:"prompt_tokens"`
+					CompletionTokens int64 `json:"completion_tokens"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal([]byte(payload), &chunk) == nil && len(chunk.Choices) > 0 {
+				if chunk.ID != "" {
+					id = chunk.ID
+				}
+				if chunk.Model != "" {
+					model = chunk.Model
+				}
+				if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+					inputTok = chunk.Usage.PromptTokens
+					outputTok = chunk.Usage.CompletionTokens
+				}
+				for _, ch := range chunk.Choices {
+					if ch.Delta.Content != "" {
+						content.WriteString(ch.Delta.Content)
+						gotText = true
+					}
+				}
+				continue
+			}
+
+			// 尝试 Anthropic 格式
 			var ev anthropicEvent
 			if json.Unmarshal([]byte(payload), &ev) == nil {
 				switch ev.Type {
@@ -775,12 +861,9 @@ func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
 				}
 			}
 		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	if !gotText {
 		return nil, fmt.Errorf("zcode aggregate: upstream returned no text content")

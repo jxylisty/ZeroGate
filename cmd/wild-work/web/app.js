@@ -39,6 +39,17 @@ function shortUid(uid) {
   return uid.length <= 12 ? uid : uid.slice(0, 6) + "…" + uid.slice(-4);
 }
 
+// ---------- 图表取色（读 CSS 变量，双主题自动适配） ----------
+function cssVar(name) {
+  return window.__cssVar ? window.__cssVar(name) : "";
+}
+function chColor(kind) {
+  const v = cssVar("--ch-" + kind);
+  if (v) return v;
+  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", wbintl: "#ea580c", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7" };
+  return fb[kind] || "#64748b";
+}
+
 // groupMeta 返回渠道分组的展示元数据：{cls, name, checkin}。
 function groupMeta(g) {
   switch (g) {
@@ -216,19 +227,19 @@ function renderAccounts() {
       : (noCheckin ? '<span class="tag neutral">无签到</span>' : '<span class="tag neutral">未签到</span>');
 
     const exp = formatExpire(a.expire_at);
-    const expireTag = `<span class="tag ${exp.cls}" title="${esc(exp.full)}">⏳ ${esc(exp.text)}</span>`;
+    const expireTag = `<span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>`;
     const nextPickTag = a.is_next
-      ? `<span class="tag next-pick" title="ZeroGate 账号池优先调度候选 #1（快到期/低余额优先策略）">🎯 优先调度</span>`
+      ? `<span class="tag next-pick" title="ZeroGate 账号池优先调度候选 #1（快到期/低余额优先策略）">${I.target} 优先调度</span>`
       : "";
 
     const disabledClass = a.disabled ? " disabled" : "";
-    const disableIcon = a.disabled ? "▶" : "⏸";
+    const disableIcon = a.disabled ? I.play : I.pause;
     const disableTitle = a.disabled ? "启用" : "停用";
     const checkinBtn = noCheckin
-      ? `<span class="icon-op off" title="${groupName} 无签到活动" onclick="return false">✓</span>`
-      : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">✓</span>`;
+      ? `<span class="icon-op off" title="${groupName} 无签到活动" onclick="return false">${I.check}</span>`
+      : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">${I.check}</span>`;
     const growthBtn = a.group === "workbuddy"
-      ? `<span class="icon-op" title="成长中心（旅行/盲盒/任务领奖）" onclick="growth('${a.uid}')">🎁</span>`
+      ? `<span class="icon-op" title="成长中心（旅行/盲盒/任务领奖）" onclick="growth('${a.uid}')">${I.gift}</span>`
       : "";
 
     return `
@@ -242,9 +253,9 @@ function renderAccounts() {
         <div class="acct-ops">
           ${checkinBtn}
           ${growthBtn}
-          <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">↻</span>
+          <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">${I.refresh}</span>
           <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
-          <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">✕</span>
+          <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">${I.x}</span>
         </div>
       </div>
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
@@ -262,7 +273,7 @@ function renderAccounts() {
 function renderTimes() {
   const box = $("timesBox");
   box.innerHTML = (state.checkin_times || []).map((t) =>
-    `<span class="time-chip" title="点击删除" onclick="delTime('${t}')">${t} ✕</span>`).join("");
+    `<span class="time-chip" title="点击删除" onclick="delTime('${t}')">${t}${I.x}</span>`).join("");
   $("nextCheckin").textContent = state.next_checkin || "-";
 }
 
@@ -922,9 +933,6 @@ function bind() {
   $("btnAbout").onclick = openAbout;
   $("btnHelpClose").onclick = closeHelp;
   $("btnAboutClose").onclick = closeAbout;
-  
-  // Token 用量统计
-  if ($("btnUsageStats")) $("btnUsageStats").onclick = openUsageStats;
 
   // 登录确认弹层
   $("btnLoginConfirm").onclick = confirmLogin;
@@ -1088,7 +1096,7 @@ async function loadClients() {
       return `
         <tr>
           <td><strong>${esc(c.name)}</strong></td>
-          <td><span class="client-key-code" onclick="copyText('${esc(c.key)}', '${esc(c.name)} Key')" title="点击复制">${esc(c.key.slice(0, 10))}...${esc(c.key.slice(-4))} 📋</span></td>
+          <td><span class="client-key-code" onclick="copyText('${esc(c.key)}', '${esc(c.name)} Key')" title="点击复制">${esc(c.key.slice(0, 10))}...${esc(c.key.slice(-4))}${I.copy}</span></td>
           <td><b>${fmtTotal(c.total_tokens || 0)}</b></td>
           <td style="font-size:12px; color:var(--muted)">${lastUsed}</td>
           <td>
@@ -1172,7 +1180,7 @@ function renderRedirects() {
     const cands = currentRedirects[k] || [];
     const candTags = cands.map((c, i) => `
       <span class="cand-tag">${esc(c)}</span>
-      ${i < cands.length - 1 ? '<span class="cand-arrow">➔</span>' : ''}
+      ${i < cands.length - 1 ? `<span class="cand-arrow">${I.chevron}</span>` : ''}
     `).join("");
     return `
       <div class="router-item">
@@ -1254,9 +1262,13 @@ async function resetRedirects() {
 
 // ---------- 初始化 ----------
 (async function init() {
+  if (window.__fillIcons) window.__fillIcons();
   initTabs();
   bind();
   setupAuditLogsPolling();
+  document.addEventListener("zg:themechange", () => {
+    if (localStorage.getItem("zg_active_tab") === "usage") loadTokenAnalytics();
+  });
   try {
     await loadState();
     await loadDashboard();
@@ -1394,12 +1406,14 @@ function renderTokenTrend(auditDaily, accounts) {
   const chartH = H - padTop - padBottom;
 
   let gridLines = "";
+  const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
+  const cP = cssVar("--chart-prompt"), cC = cssVar("--chart-comp"), cK = cssVar("--chart-cache");
   for (let step = 0; step <= 4; step++) {
     const yVal = Math.round((maxTotal / 4) * step);
     const y = padTop + chartH - (step / 4) * chartH;
     gridLines += `
-      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="#e2e8f0" stroke-dasharray="4" />
-      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">${fmtTokens(yVal)}</text>
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">${fmtTokens(yVal)}</text>
     `;
   }
 
@@ -1422,10 +1436,10 @@ function renderTokenTrend(auditDaily, accounts) {
     bars += `
       <g class="chart-bar-group">
         <title>${esc(tip)}</title>
-        <rect x="${x}" y="${pY}" width="${barW}" height="${pHeight}" fill="#3b82f6" rx="2" />
-        <rect x="${x}" y="${cY}" width="${barW}" height="${cHeight}" fill="#10b981" rx="2" />
-        <rect x="${x}" y="${kY}" width="${barW}" height="${kHeight}" fill="#f59e0b" rx="2" />
-        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#64748b">${d.label}</text>
+        <rect x="${x}" y="${pY}" width="${barW}" height="${pHeight}" fill="${cP}" rx="2" />
+        <rect x="${x}" y="${cY}" width="${barW}" height="${cHeight}" fill="${cC}" rx="2" />
+        <rect x="${x}" y="${kY}" width="${barW}" height="${kHeight}" fill="${cK}" rx="2" />
+        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
       </g>
     `;
   });
@@ -1449,8 +1463,8 @@ function renderChannelDonut(channelTokens) {
     const tokens = typeof val === "object" ? Number(val.total_tokens || 0) : Number(val || 0);
     if (tokens > 0) {
       total += tokens;
-      const meta = CHANNEL_METAS[k] || { name: k, color: "#64748b" };
-      items.push({ kind: k, name: meta.name, color: meta.color, tokens });
+      const meta = CHANNEL_METAS[k] || { name: k };
+      items.push({ kind: k, name: meta.name, color: chColor(k), tokens });
     }
   }
 
@@ -1494,7 +1508,7 @@ function renderChannelDonut(channelTokens) {
   wrap.innerHTML = `
     <div style="width:190px; height:190px; position:relative; flex-shrink:0;">
       <svg viewBox="0 0 190 190" style="width:100%; height:100%;">
-        <circle cx="${cx}" cy="${cy}" r="${r}" fill="transparent" stroke="#f1f5f9" stroke-width="26" />
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="transparent" stroke="${cssVar("--chart-track")}" stroke-width="26" />
         ${circles}
         <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="16" font-weight="700" fill="var(--text)">${fmtTokens(total)}</text>
         <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="11" fill="var(--muted)">总产出</text>
@@ -1560,7 +1574,7 @@ function renderTopClients(clients) {
             <span class="rank-val">${fmtTokens(c.total_tokens)} <span style="font-weight:400;color:var(--muted)">(${c.req_count || 0}次)</span></span>
           </div>
           <div class="rank-bar-bg">
-            <div class="rank-bar-fill" style="width:${pct}%; background:linear-gradient(90deg, #10b981, #34d399)"></div>
+            <div class="rank-bar-fill" style="width:${pct}%; background:linear-gradient(90deg, var(--chart-comp), var(--ok))"></div>
           </div>
         </div>
       </div>
@@ -1594,11 +1608,11 @@ function renderAcctProductivity(accounts) {
   tbody.innerHTML = list.map(a => {
     const gm = groupMeta(a.kind);
     const exp = formatExpire(a.expire_at);
-    const expireTag = `<span class="tag ${exp.cls}">⏳ ${esc(exp.text)}</span>`;
+    const expireTag = `<span class="tag ${exp.cls}">${I.clock} ${esc(exp.text)}</span>`;
     const stateAcct = (state && state.accounts ? state.accounts : []).find(s => s.uid === a.uid && s.group === a.kind);
     const isNext = stateAcct && stateAcct.is_next;
     const statusTag = isNext
-      ? `<span class="tag next-pick">🎯 优先调度 #1</span>`
+      ? `<span class="tag next-pick">${I.target} 优先调度 #1</span>`
       : (stateAcct && stateAcct.disabled ? `<span class="tag danger">已停用</span>` : `<span class="tag neutral">就绪待命</span>`);
 
     return `

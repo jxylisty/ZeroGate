@@ -4,8 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ZeroGate 管理面板</title>
+<link rel="icon" href="./favicon.ico?v={{timestamp}}">
+<script src="./theme.js?v={{timestamp}}"></script>
+<link rel="stylesheet" href="./theme.css?v={{timestamp}}">
 <link rel="stylesheet" href="./style.css?v={{timestamp}}">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <div id="app">
@@ -23,53 +25,57 @@
       <div class="info-cell">
         <span class="info-label">OpenAI接口</span>
         <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
-        <span class="icon-edit" title="修改">✎</span>
+        <span class="icon-edit" title="修改"><span data-ic="pencil"></span></span>
       </div>
       <div class="info-cell">
         <span class="info-label">API-Key</span>
         <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
-        <span class="icon-edit" title="修改">✎</span>
+        <span class="icon-edit" title="修改"><span data-ic="pencil"></span></span>
       </div>
     </div>
     <div class="top-icons">
-      <a class="icon-link" href="./usage.html" title="用量监控">📈</a>
-      <span class="icon-link" id="btnDoubao" title="豆包保活续期">🔄</span>
-      <span class="icon-link" id="btnHelp" title="帮助">?</span>
-      <span class="icon-link" id="btnAbout" title="关于">i</span>
+      <a class="icon-link" href="./usage.html" title="用量监控大屏"><span data-ic="chart"></span></a>
+      <span class="icon-link" id="btnDoubao" title="豆包保活续期"><span data-ic="heart"></span></span>
+      <span class="icon-link" id="btnHelp" title="帮助"><span data-ic="help"></span></span>
+      <span class="icon-link" id="btnAbout" title="关于"><span data-ic="info"></span></span>
+      <button class="icon-link theme-toggle" id="btnTheme" title="切换深浅主题" onclick="window.__toggleTheme()">
+        <svg class="ic ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        <svg class="ic ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+      </button>
     </div>
   </header>
 
   <!-- 顶部导航 Tab -->
   <nav class="nav-tabs" id="navTabs">
-    <button class="nav-tab active" data-tab="dashboard">📊 概览看板</button>
-    <button class="nav-tab" data-tab="arsenal">🤖 账号矩阵</button>
-    <button class="nav-tab" data-tab="router">🔀 模型路由</button>
-    <button class="nav-tab" data-tab="logs">📜 调用流水</button>
-    <button class="nav-tab" data-tab="clients">🔑 客户端 Key</button>
-    <button class="nav-tab" data-tab="usage">📈 Token 资产大屏</button>
-    <button class="nav-tab" data-tab="settings">⚙️ 系统设置</button>
+    <button class="nav-tab active" data-tab="dashboard"><span data-ic="grid"></span>概览看板</button>
+    <button class="nav-tab" data-tab="arsenal"><span data-ic="bot"></span>账号矩阵</button>
+    <button class="nav-tab" data-tab="router"><span data-ic="shuffle"></span>模型路由</button>
+    <button class="nav-tab" data-tab="logs"><span data-ic="scroll"></span>调用流水</button>
+    <button class="nav-tab" data-tab="clients"><span data-ic="key"></span>客户端 Key</button>
+    <button class="nav-tab" data-tab="usage"><span data-ic="trend"></span>Token 资产大屏</button>
+    <button class="nav-tab" data-tab="settings"><span data-ic="settings"></span>系统设置</button>
   </nav>
 
   <!-- Tab 1: 概览看板 -->
   <div class="tab-pane active" id="tab-dashboard">
     <div class="stat-cards">
       <div class="stat-card">
-        <div class="stat-title">今日总请求</div>
+        <div class="stat-title"><span data-ic="zap"></span>今日总请求</div>
         <div class="stat-val" id="statReqs">0</div>
         <div class="stat-sub">次调用</div>
       </div>
       <div class="stat-card">
-        <div class="stat-title">今日消耗 Token</div>
+        <div class="stat-title"><span data-ic="coins"></span>今日消耗 Token</div>
         <div class="stat-val" id="statTokens">0</div>
         <div class="stat-sub">Prompt + Completion</div>
       </div>
       <div class="stat-card">
-        <div class="stat-title">今日异常/失败</div>
+        <div class="stat-title"><span data-ic="alert"></span>今日异常/失败</div>
         <div class="stat-val" id="statFails" style="color:var(--danger)">0</div>
         <div class="stat-sub">HTTP 4xx / 5xx</div>
       </div>
       <div class="stat-card">
-        <div class="stat-title">在线账号池</div>
+        <div class="stat-title"><span data-ic="shield"></span>在线账号池</div>
         <div class="stat-val" id="statAccounts" style="color:var(--ok)">0</div>
         <div class="stat-sub">个正常就绪账号</div>
       </div>
@@ -78,42 +84,42 @@
     <!-- 快速接入指引 -->
     <section class="panel">
       <div class="panel-head">
-        <h2>🚀 客户端接入指引</h2>
+        <h2><span data-ic="link"></span>客户端接入指引</h2>
       </div>
       <div style="font-size:13px; line-height:1.8; color:var(--text)">
         <p>在 Cursor、Windsurf、Cherry Studio、NextChat、Claude Code 等工具中配置：</p>
-        <div style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin:10px 0; font-family:ui-monospace, monospace; font-size:12px;">
+        <div class="code-block" style="margin:10px 0;">
           <div><strong>Base URL</strong>: <code id="quickBaseUrl" style="color:var(--primary)">http://127.0.0.1:7863/v1</code></div>
           <div style="margin-top:4px;"><strong>API Key</strong>: <code id="quickApiKey" style="color:var(--primary)">WildWorkAPI</code> (或在「客户端 Key」生成独立专属 Key)</div>
           <div style="margin-top:4px;"><strong>模型名推荐</strong>: <code>claude-3-5-sonnet</code>、<code>claude-3-7-sonnet</code>、<code>deepseek-chat</code>、<code>deepseek-reasoner</code>、<code>gpt-4o</code></div>
         </div>
-        <p class="hint">💡 提示：请求标准模型名将自动触发跨平台智能故障转移（Fallback），免去手动切换渠道前缀。</p>
+        <p class="hint"><span data-ic="lightbulb"></span>提示：请求标准模型名将自动触发跨平台智能故障转移（Fallback），免去手动切换渠道前缀。</p>
       </div>
     </section>
 
     <!-- 渠道健康概况 -->
     <section class="panel">
       <div class="panel-head">
-        <h2>⚡ 渠道在线状况</h2>
+        <h2><span data-ic="activity"></span>渠道在线状况</h2>
       </div>
       <div id="channelBadges" style="display:flex; gap:10px; flex-wrap:wrap;"></div>
     </section>
   </div>
 
-  <!-- Tab 2: 账号矩阵 (原账号管理) -->
+  <!-- Tab 2: 账号矩阵 -->
   <div class="tab-pane" id="tab-arsenal">
     <section class="panel">
       <div class="panel-head">
-        <h2>账号管理</h2>
+        <h2><span data-ic="bot"></span>账号管理</h2>
         <div class="panel-actions">
           <button class="btn primary" id="btnRefreshAll">刷新积分</button>
           <button class="btn" id="btnCheckinAll">批量签到</button>
-          <button class="btn primary" id="btnAddWB">＋ WorkBuddy</button>
-          <button class="btn primary alt" id="btnAddTrae">＋ TraeWork</button>
-          <button class="btn primary alt qoder" id="btnAddQoder">＋ Qoder</button>
+          <button class="btn primary" id="btnAddWB"><span data-ic="plus"></span>WorkBuddy</button>
+          <button class="btn primary alt" id="btnAddTrae"><span data-ic="plus"></span>TraeWork</button>
+          <button class="btn primary alt qoder" id="btnAddQoder"><span data-ic="plus"></span>Qoder</button>
         </div>
       </div>
-      <p class="hint" style="margin-bottom:12px;">💡 <strong>智能调度机制</strong>：网关自动遵循【快到期优先】策略（有到期时间优先于长期有效，越早到期越优先消耗，平手时余额低者优先）。带 <span class="tag next-pick" style="font-size:10px; padding:1px 6px;">🎯 优先调度</span> 为当前渠道第一顺位；可在「📜 调用流水」核对每次请求实际调用的账号 UID。</p>
+      <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span><strong>智能调度机制</strong>：网关自动遵循【快到期优先】策略（有到期时间优先于长期有效，越早到期越优先消耗，平手时余额低者优先）。带 <span class="tag next-pick" style="font-size:10px; padding:1px 6px;"><span data-ic="target"></span>优先调度</span> 为当前渠道第一顺位；可在「调用流水」核对每次请求实际调用的账号 UID。</p>
       <div id="acctList" class="acct-grid"></div>
       <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
     </section>
@@ -123,11 +129,11 @@
   <div class="tab-pane" id="tab-router">
     <section class="panel">
       <div class="panel-head">
-        <h2>模型别名与跨渠道容灾映射</h2>
+        <h2><span data-ic="shuffle"></span>模型别名与跨渠道容灾映射</h2>
         <button class="btn small" id="btnResetRedirects">恢复默认映射</button>
       </div>
       <p class="hint" style="margin-bottom:12px;">当客户端请求左侧标准模型时，网关将按顺序优先尝试候选渠道；若主渠道额度用尽或遭遇 429 限流，将自动透明切换至下一个备选渠道。</p>
-      <div class="client-form" style="background:#f8fafc; padding:12px; border-radius:8px; border:1px solid var(--border);">
+      <div class="client-form form-card">
         <input class="input" id="inAliasName" placeholder="标准模型名（如 claude-3-5-sonnet）" style="width:240px">
         <input class="input" id="inAliasTargets" placeholder="候选顺序逗号隔开（如 traework/claude-3-5-sonnet, wbintl/claude-3-5-sonnet）" style="flex:1">
         <button class="btn small primary" id="btnAddRedirect">添加/保存规则</button>
@@ -140,7 +146,7 @@
   <div class="tab-pane" id="tab-logs">
     <section class="panel">
       <div class="panel-head">
-        <h2>实时调用审计流水</h2>
+        <h2><span data-ic="scroll"></span>实时调用审计流水</h2>
         <div class="panel-actions">
           <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer;">
             <input type="checkbox" id="chkAutoRefreshLogs" checked> 自动刷新 (5s)
@@ -174,12 +180,12 @@
   <div class="tab-pane" id="tab-clients">
     <section class="panel">
       <div class="panel-head">
-        <h2>极简客户端 Key 管理</h2>
+        <h2><span data-ic="key"></span>极简客户端 Key 管理</h2>
       </div>
-      <p class="hint" style="margin-bottom:12px;">为不同设备或软件（如 Cursor、CherryStudio、手机端）创建简易 Key，以便区分客户端并统计各自的白嫖用量。保留主 Key 同时生效。</p>
+      <p class="hint" style="margin-bottom:12px;">为不同设备或软件（如 Cursor、CherryStudio、手机端）创建简易 Key，以便区分客户端并统计各自的用量。保留主 Key 同时生效。</p>
       <div class="client-form">
         <input class="input" id="inClientName" placeholder="客户端标签/备注（如 Cursor-笔记本）" style="width:240px">
-        <button class="btn small primary" id="btnCreateClient">＋ 生成客户端 Key</button>
+        <button class="btn small primary" id="btnCreateClient"><span data-ic="plus"></span>生成客户端 Key</button>
       </div>
       <div class="data-table-wrap">
         <table class="data-table">
@@ -207,15 +213,15 @@
     <div class="token-hero">
       <div class="token-hero-top">
         <div>
-          <div class="token-hero-title">🪙 Token 资产与战果总览</div>
+          <div class="token-hero-title"><span data-ic="coins"></span>Token 资产与战果总览</div>
           <div class="token-hero-sub">全网关累计通过免费渠道生产的大模型 Token 总量与商业价值折算</div>
         </div>
         <div class="token-hero-actions">
-          <button class="btn small" id="btnRefreshTokens">↻ 刷新数据</button>
-          <a class="btn small" href="./usage.html" target="_blank" style="text-decoration:none">独立大屏 ↗</a>
+          <button class="btn small" id="btnRefreshTokens"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新数据</button>
+          <a class="btn small" href="./usage.html" target="_blank" style="text-decoration:none">独立大屏<span data-ic="external" style="width:13px;height:13px;"></span></a>
         </div>
       </div>
-      
+
       <div class="token-metrics-grid">
         <div class="token-metric-card main">
           <div class="tm-lbl">累计生产总 Token</div>
@@ -245,11 +251,11 @@
       <div class="analytics-col chart-col">
         <div class="panel">
           <div class="panel-head">
-            <h2>📊 近 14 天 Token 每日消耗趋势</h2>
+            <h2><span data-ic="chart"></span>近 14 天 Token 每日消耗趋势</h2>
             <div class="legend-group">
-              <span class="legend-item"><i style="background:#3b82f6"></i>输入 (Prompt)</span>
-              <span class="legend-item"><i style="background:#10b981"></i>输出 (Completion)</span>
-              <span class="legend-item"><i style="background:#f59e0b"></i>缓存命中 (Cache)</span>
+              <span class="legend-item"><i style="background:var(--chart-prompt)"></i>输入 (Prompt)</span>
+              <span class="legend-item"><i style="background:var(--chart-comp)"></i>输出 (Completion)</span>
+              <span class="legend-item"><i style="background:var(--chart-cache)"></i>缓存命中 (Cache)</span>
             </div>
           </div>
           <div id="tokenTrendChartWrap" class="svg-chart-container">
@@ -260,7 +266,7 @@
       <div class="analytics-col donut-col">
         <div class="panel">
           <div class="panel-head">
-            <h2>🥧 白嫖渠道贡献占比</h2>
+            <h2><span data-ic="pie"></span>白嫖渠道贡献占比</h2>
           </div>
           <div id="channelDonutWrap" class="donut-chart-container">
             <div class="empty-chart">加载中…</div>
@@ -274,7 +280,7 @@
       <div class="analytics-col">
         <div class="panel">
           <div class="panel-head">
-            <h2>🤖 热门模型白嫖榜 TOP 5</h2>
+            <h2><span data-ic="bot"></span>热门模型白嫖榜 TOP 5</h2>
           </div>
           <div id="topModelsList" class="rank-list">
             <div class="empty-hint">暂无模型调用数据</div>
@@ -284,7 +290,7 @@
       <div class="analytics-col">
         <div class="panel">
           <div class="panel-head">
-            <h2>🔑 客户端用量排行 TOP 5</h2>
+            <h2><span data-ic="key"></span>客户端用量排行 TOP 5</h2>
           </div>
           <div id="topClientsList" class="rank-list">
             <div class="empty-hint">暂无客户端调用数据</div>
@@ -296,7 +302,7 @@
     <!-- 账号 Token 生产力明细 -->
     <section class="panel">
       <div class="panel-head">
-        <h2>⚡ 账号 Token 生产力榜单</h2>
+        <h2><span data-ic="zap"></span>账号 Token 生产力榜单</h2>
       </div>
       <p class="hint" style="margin-bottom:12px;">查看账号池中每一个活跃账号的实际产出贡献，结合到期倒计时，合理调度家庭多账号资产。</p>
       <div class="data-table-wrap">
@@ -324,12 +330,12 @@
   <div class="tab-pane" id="tab-settings">
     <!-- 自动签到 + 开机自启 -->
     <section class="panel">
-      <div class="panel-head"><h2>自动签到</h2></div>
+      <div class="panel-head"><h2><span data-ic="calendar"></span>自动签到</h2></div>
       <div class="config-grid">
         <div class="config-left">
           <div class="row wrap">
             <div id="timesBox" class="times"></div>
-            <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+            <button class="icon-btn" id="btnAddTime" title="增加一个签到时间"><span data-ic="plus"></span></button>
           </div>
           <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
         </div>
@@ -346,14 +352,14 @@
     <!-- 渠道费率 -->
     <section class="panel">
       <div class="panel-head">
-        <h2>渠道费率</h2>
-        <button class="btn small" id="btnRefreshFees">刷新费率</button>
+        <h2><span data-ic="coins"></span>渠道费率</h2>
+        <button class="btn small" id="btnRefreshFees"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新费率</button>
       </div>
       <div id="feesBox" class="fees"></div>
     </section>
   </div>
 
-  <div class="footer">ZeroGate — 个人专用白嫖多渠道聚合中转站 · 右键托盘图标退出</div>
+  <div class="footer">ZeroGate — 个人专用多渠道聚合中转站 · 右键托盘图标退出</div>
 </div>
 
 <!-- 添加账号确认弹层 -->
@@ -361,10 +367,10 @@
   <div class="modal">
     <div class="modal-title" id="wbtTitle">添加国际版账号</div>
     <div style="display:flex;flex-direction:column;gap:10px;margin:14px 0;">
-      <textarea class="input" id="wbtToken" rows="4" placeholder="粘贴 accessToken（JWT，登录 workbuddy.ai / codebuddy.ai 后获取）" style="font-family:monospace;font-size:12px;"></textarea>
-      <input class="input" id="wbtRefresh" placeholder="refreshToken（可选，用于保活；没有可留空）" style="font-family:monospace;font-size:12px;" />
+      <textarea class="input" id="wbtToken" rows="4" placeholder="粘贴 accessToken（JWT，登录 workbuddy.ai / codebuddy.ai 后获取）" style="font-family:var(--mono);font-size:12px;resize:vertical;"></textarea>
+      <input class="input" id="wbtRefresh" placeholder="refreshToken（可选，用于保活；没有可留空）" style="font-family:var(--mono);font-size:12px;" />
       <input class="input" id="wbtName" placeholder="备注名（可选）" />
-      <p class="text-muted" id="wbtMsg" style="font-size:12px;"></p>
+      <p class="muted" id="wbtMsg" style="font-size:12px;"></p>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:8px;">
       <button class="btn small" id="wbtCancel">取消</button>
@@ -381,7 +387,7 @@
         <input class="input" id="aclCode" placeholder="短信验证码" autocomplete="off" style="flex:1" />
         <button class="btn small" id="aclSend">发送验证码</button>
       </div>
-      <p class="text-muted" id="aclMsg" style="font-size:12px;"></p>
+      <p class="muted" id="aclMsg" style="font-size:12px;"></p>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:8px;">
       <button class="btn small" id="aclCancel">取消</button>
@@ -448,7 +454,7 @@
         <input id="inPort" class="input port" type="number" min="1" max="65535">
       </div>
       <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.168.1.100" spellcheck="false"></div>
-      <div class="risk-tip">⚠️ 监听 0.0.0.0 时，局域网内任何设备都可访问本 API 与账号管理，风险请自行评估。</div>
+      <div class="risk-tip"><span data-ic="alert"></span>监听 0.0.0.0 时，局域网内任何设备都可访问本 API 与账号管理，风险请自行评估。</div>
     </div>
     <div class="modal-actions">
       <button class="btn small" id="btnApiCancel">取消</button>
@@ -493,8 +499,8 @@
 <!-- 关于弹层 -->
 <div class="overlay hidden" id="aboutOverlay">
   <div class="modal" style="text-align:center">
-    <img class="logo" src="./logo64.png" alt="logo" style="width:64px;height:64px;margin-bottom:12px">
-    <div class="modal-title">ZeroGate</div>
+    <img class="logo" src="./logo64.png" alt="logo" style="width:64px;height:64px;margin-bottom:12px;margin-left:auto;margin-right:auto;">
+    <div class="modal-title" style="justify-content:center">ZeroGate</div>
     <div class="modal-body" style="color:var(--muted)">
       <p>版本 <span id="aboutVer"></span></p>
       <p>多渠道账号聚合工具</p>
@@ -548,21 +554,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-
-<!-- Token 用量统计图表 -->
-<div class="overlay hidden" id="usageOverlay">
-  <div class="modal modal-wide">
-    <div class="modal-title">Token 用量统计</div>
-    <div class="usage-toolbar">
-      <select id="usageAccountSelect" class="form-control"></select>
-      <button class="btn small primary" id="btnUsageRefresh">刷新</button>
-      <button class="btn small" id="btnUsageClose">关闭</button>
-    </div>
-    <div style="height:400px;margin-top:16px">
-      <canvas id="usageChart"></canvas>
-    </div>
-  </div>
-</div>
 
 <script src="./app.js?v={{timestamp}}"></script>
 </body>
