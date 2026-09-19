@@ -54,13 +54,14 @@ type Status struct {
 }
 
 type entry struct {
-	a        *auth.Auth
-	credits  int64
-	expireAt int64 // 最早到期套餐时间（Unix 秒）；0=长期有效
-	disabled bool
-	reason   string
-	until    time.Time
-	errCount int
+	a           *auth.Auth
+	placeholder bool
+	credits     int64
+	expireAt    int64 // 最早到期套餐时间（Unix 秒）；0=长期有效
+	disabled    bool
+	reason      string
+	until       time.Time
+	errCount    int
 
 	lastCheckinOK  bool
 	lastCheckinAt  time.Time
@@ -68,6 +69,9 @@ type entry struct {
 }
 
 func (e *entry) healthy(now time.Time) bool {
+	if e.placeholder {
+		return false
+	}
 	if e.disabled {
 		return false
 	}
@@ -115,6 +119,7 @@ func (p *Pool) Add(a *auth.Auth) {
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[a.UID]; ok {
 		e.a = a // 保留 credits/cooling 状态
+		e.placeholder = false
 		return
 	}
 	p.byUID[a.UID] = &entry{a: a}
@@ -129,6 +134,7 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 		seen[a.UID] = true
 		if e, ok := p.byUID[a.UID]; ok {
 			e.a = a
+			e.placeholder = false
 		} else {
 			p.byUID[a.UID] = &entry{a: a}
 		}
@@ -391,6 +397,7 @@ func (p *Pool) load() {
 	for uid, s := range sf.Accounts {
 		p.byUID[uid] = &entry{
 			a:              &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
+			placeholder:    true,
 			credits:        s.Credits,
 			expireAt:       s.ExpireAt,
 			disabled:       s.Disabled,

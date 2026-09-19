@@ -12,7 +12,7 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr :%_PORT% ^| findstr LISTENING
     echo    结束 PID %%p
     taskkill /f /pid %%p >nul 2>&1
 )
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 
 echo [2/3] 重新编译...
 cd /d %~dp0
@@ -25,8 +25,8 @@ if errorlevel 1 (
 echo    编译成功 daemon.exe
 
 echo [3/3] 启动...
-rem ZCode 桥接：上游走本地 zcode-proxy（18080，进程内验证码求解）
-set ZCODE_BRIDGE_URL=http://127.0.0.1:18080
+rem ZCode 桥接：上游走本地 zcode-proxy（默认 18083 实例，账号文件 bridgeUrl 优先）
+set ZCODE_BRIDGE_URL=http://127.0.0.1:18083
 set ZCODE_BRIDGE_KEY=sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4
 start "" "%~dp0daemon.exe" --no-tray
 echo    已启动，几秒后访问 http://127.0.0.1:%_PORT%/

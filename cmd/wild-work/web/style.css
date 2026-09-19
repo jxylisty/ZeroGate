@@ -432,3 +432,76 @@ html[data-theme="dark"] .token-hero-sub { color: var(--muted); }
   .acct-grid { grid-template-columns: 1fr; }
   .top-icons { margin-left: auto; }
 }
+/* ============================================================
+   账号矩阵 · 分区与渠道手风琴
+   ============================================================ */
+.acct-list { display: flex; flex-direction: column; gap: 18px; }
+
+.acct-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 14px; padding: 10px 12px;
+  background: var(--bg-sub); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.acct-toolbar .toolbar-spacer { flex: 1; }
+.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  border: 1px solid var(--border); background: var(--card); color: var(--muted);
+  border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; transition: all .15s;
+}
+.chip:hover { color: var(--primary); border-color: var(--primary); }
+.chip.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+
+.mode-section { display: flex; flex-direction: column; gap: 10px; }
+.mode-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.mode-name { font-size: 15px; font-weight: 700; }
+.mode-count {
+  font-size: 11px; font-weight: 700; color: var(--primary);
+  background: var(--primary-soft); border-radius: 999px; padding: 2px 8px;
+}
+.mode-desc { font-size: 12px; color: var(--muted); }
+
+/* 渠道手风琴（details/summary，样式移植自 usage.css .group） */
+.acct-group {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.acct-group > summary {
+  list-style: none; cursor: pointer; padding: 12px 16px; display: flex;
+  align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  font-weight: 700; font-size: 14px; user-select: none; transition: background .12s ease;
+}
+.acct-group > summary::-webkit-details-marker { display: none; }
+.acct-group > summary:hover { background: var(--bg-sub); }
+.acct-group .arrow { transition: transform .15s; color: var(--muted); display: inline-flex; }
+.acct-group[open] > summary .arrow { transform: rotate(90deg); }
+.acct-group .gh-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.acct-group .gh-count {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  background: var(--bg-sub); border-radius: 999px; padding: 1px 8px;
+}
+.acct-group .gh-meta { font-size: 12px; color: var(--muted); font-weight: 400; display: flex; gap: 14px; flex-wrap: wrap; }
+.acct-group .gh-meta .v { font-weight: 600; color: var(--text); }
+.acct-group .gh-warn .v { color: var(--warn); }
+.acct-group .gh-bad .v { color: var(--danger); }
+.acct-group .acct-group-body { padding: 14px 16px; border-top: 1px solid var(--border); }
+
+.ch-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+/* 添加账号下拉菜单 */
+.dropdown { position: relative; display: inline-block; }
+.dropdown .caret { display: inline-flex; margin-left: 4px; transition: transform .15s; transform: rotate(90deg); }
+.dropdown .caret .ic { width: 14px; height: 14px; }
+.dropdown.open .caret { transform: rotate(270deg); }
+.dropdown-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; min-width: 240px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.dropdown-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: none; background: none; text-align: left; cursor: pointer;
+  padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--text); transition: background .12s;
+}
+.dropdown-item:hover { background: var(--primary-soft); }
+.dropdown-item .di-name { font-weight: 600; }
+.dropdown-item .di-hint { margin-left: auto; font-size: 11px; color: var(--muted); }

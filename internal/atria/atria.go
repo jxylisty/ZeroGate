@@ -203,6 +203,15 @@ func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
 	return upstream.Aggregate(r)
 }
 
+// StreamWithThink / AggregateWithThink 实现 provider.ThinkPassthrough。
+func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
+	return upstream.StreamWithThink(w, r, passthrough)
+}
+
+func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
+	return upstream.AggregateWithThink(r, keepReasoning)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

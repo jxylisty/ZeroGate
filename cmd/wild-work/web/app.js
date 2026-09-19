@@ -206,68 +206,219 @@ function formatExpire(expireAt) {
   }
 }
 
+// ---------- 账号矩阵：模式分区 + 渠道手风琴 ----------
+// mode 由后端 /api/state 下发：proxy 反代 / bridge 桥接（zcode-proxy）/ direct 直连 API。
+// 缺省回退按渠道判定，与后端 channelDefaultMode 保持一致。
+const MODE_SECTIONS = [
+  { key: "proxy",  name: "反代账号", desc: "网关持有网页版/客户端凭证，模拟官方客户端转发" },
+  { key: "bridge", name: "桥接账号", desc: "转发到本地 zcode-proxy 实例，网关不直接持有凭证" },
+  { key: "direct", name: "直连账号", desc: "官方 API Key 直连，非反代，独立管理" },
+];
+const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw", "atria"];
+const GROUP_KEY_LS = "zg_acct_groups";
+let acctSearchQ = "";
+let acctFilterKey = "all";
+
+function acctMode(a) {
+  return MODE_SECTIONS.some(s => s.key === a.mode) ? a.mode : "proxy";
+}
+
+function acctMatches(a) {
+  if (acctSearchQ) {
+    const gm = groupMeta(a.group);
+    const hay = `${a.nickname || ""} ${a.uid || ""} ${a.group || ""} ${gm.name}`.toLowerCase();
+    if (!hay.includes(acctSearchQ)) return false;
+  }
+  const expiring = a.expire_at > 0 && a.expire_at <= Math.floor(Date.now() / 1000) + 3 * 86400;
+  switch (acctFilterKey) {
+    case "ok": return !a.disabled && !a.cooling;
+    case "cooling": return !a.disabled && a.cooling;
+    case "expiring": return !a.disabled && expiring;
+    case "disabled": return a.disabled;
+    default: return true;
+  }
+}
+
+function loadGroupOpen() {
+  try { return JSON.parse(localStorage.getItem(GROUP_KEY_LS)) || {}; } catch (e) { return {}; }
+}
+
+function saveGroupOpen(gkey, open) {
+  const m = loadGroupOpen();
+  m[gkey] = open;
+  try { localStorage.setItem(GROUP_KEY_LS, JSON.stringify(m)); } catch (e) { /* ignore */ }
+}
+
+function setAllGroups(open) {
+  const m = loadGroupOpen();
+  state.accounts.forEach(a => { m[`${acctMode(a)}:${a.group}`] = open; });
+  try { localStorage.setItem(GROUP_KEY_LS, JSON.stringify(m)); } catch (e) { /* ignore */ }
+  renderAccounts();
+}
+
+function renderAcctGroupHTML(modeKey, group, list) {
+  const gm = groupMeta(group);
+  const okN = list.filter(x => !x.disabled && !x.cooling).length;
+  const coolN = list.filter(x => !x.disabled && x.cooling).length;
+  const disN = list.filter(x => x.disabled).length;
+  const posExp = list.map(x => x.expire_at).filter(t => t > 0);
+  const expText = posExp.length ? formatExpire(Math.min(...posExp)).text : "长期有效";
+  const gkey = `${modeKey}:${group}`;
+  const open = loadGroupOpen()[gkey] !== false;
+  return `
+  <details class="acct-group" data-gkey="${gkey}"${open ? " open" : ""}>
+    <summary>
+      <div class="gh-head">
+        <span class="arrow">${I.chevron}</span>
+        <span class="ch-dot" style="background:${chColor(group)}"></span>
+        <span class="gh-name">${esc(gm.name)}</span>
+        <span class="gh-count">${list.length}</span>
+      </div>
+      <div class="gh-meta">
+        <span>正常 <span class="v">${okN}</span></span>
+        ${coolN ? `<span class="gh-warn">冷却 <span class="v">${coolN}</span></span>` : ""}
+        ${disN ? `<span class="gh-bad">停用 <span class="v">${disN}</span></span>` : ""}
+        <span>最早到期 <span class="v">${esc(expText)}</span></span>
+      </div>
+    </summary>
+    <div class="acct-grid acct-group-body">${list.map(acctCardHTML).join("")}</div>
+  </details>`;
+}
+
 function renderAccounts() {
-  const grid = $("acctList");
+  const wrap = $("acctList");
   const empty = $("acctEmpty");
   if (!state.accounts.length) {
-    grid.innerHTML = "";
+    wrap.innerHTML = "";
     empty.classList.remove("hidden");
     return;
   }
   empty.classList.add("hidden");
 
-  grid.innerHTML = state.accounts.map((a) => {
-    const gm = groupMeta(a.group);
-    const group = gm.cls;
-    const groupName = gm.name;
-    const noCheckin = gm.checkin;
+  const matched = state.accounts.filter(acctMatches);
+  if (!matched.length) {
+    wrap.innerHTML = `<div class="empty">没有匹配的账号，试试调整搜索词或筛选条件</div>`;
+    return;
+  }
 
-    const checkinTag = a.last_checkin_at
-      ? `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`
-      : (noCheckin ? '<span class="tag neutral">无签到</span>' : '<span class="tag neutral">未签到</span>');
+  let html = "";
+  for (const sec of MODE_SECTIONS) {
+    const all = state.accounts.filter(a => acctMode(a) === sec.key);
+    if (!all.length) continue; // 该模式没有任何账号：不渲染分区
+    const shown = matched.filter(a => acctMode(a) === sec.key);
+    const groups = [...new Set(shown.map(a => a.group))]
+      .sort((x, y) => {
+        const ix = CHANNEL_ORDER.indexOf(x), iy = CHANNEL_ORDER.indexOf(y);
+        return (ix < 0 ? 99 : ix) - (iy < 0 ? 99 : iy);
+      });
+    html += `
+    <div class="mode-section">
+      <div class="mode-head">
+        <span class="mode-name">${sec.name}</span>
+        <span class="mode-count">${shown.length}/${all.length}</span>
+        <span class="mode-desc">${esc(sec.desc)}</span>
+      </div>`;
+    if (!shown.length) {
+      html += `<div class="empty">该分区无匹配账号</div>`;
+    } else {
+      for (const g of groups) {
+        html += renderAcctGroupHTML(sec.key, g, shown.filter(a => a.group === g));
+      }
+    }
+    html += `</div>`;
+  }
+  wrap.innerHTML = html;
 
-    const exp = formatExpire(a.expire_at);
-    const expireTag = `<span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>`;
-    const nextPickTag = a.is_next
-      ? `<span class="tag next-pick" title="ZeroGate 账号池优先调度候选 #1（快到期/低余额优先策略）">${I.target} 优先调度</span>`
-      : "";
+  // details 的 toggle 事件不冒泡，逐个绑定开合记忆
+  wrap.querySelectorAll("details.acct-group").forEach(d => {
+    d.addEventListener("toggle", () => saveGroupOpen(d.dataset.gkey, d.open));
+  });
+}
 
-    const disabledClass = a.disabled ? " disabled" : "";
-    const disableIcon = a.disabled ? I.play : I.pause;
-    const disableTitle = a.disabled ? "启用" : "停用";
-    const checkinBtn = noCheckin
-      ? `<span class="icon-op off" title="${groupName} 无签到活动" onclick="return false">${I.check}</span>`
-      : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">${I.check}</span>`;
-    const growthBtn = a.group === "workbuddy"
-      ? `<span class="icon-op" title="成长中心（旅行/盲盒/任务领奖）" onclick="growth('${a.uid}')">${I.gift}</span>`
-      : "";
+function acctCardHTML(a) {
+  const gm = groupMeta(a.group);
+  const group = gm.cls;
+  const groupName = gm.name;
+  const noCheckin = gm.checkin;
 
-    return `
-    <div class="acct-card${disabledClass}">
-      <div class="acct-top">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          <span class="badge ${group}">${groupName}</span>
-          <span class="acct-name">${esc(a.nickname || shortUid(a.uid))}</span>
-          ${nextPickTag}
-        </div>
-        <div class="acct-ops">
-          ${checkinBtn}
-          ${growthBtn}
-          <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">${I.refresh}</span>
-          <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
-          <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">${I.x}</span>
-        </div>
+  const checkinTag = a.last_checkin_at
+    ? `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`
+    : (noCheckin ? '<span class="tag neutral">无签到</span>' : '<span class="tag neutral">未签到</span>');
+
+  const exp = formatExpire(a.expire_at);
+  const expireTag = `<span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>`;
+  const nextPickTag = a.is_next
+    ? `<span class="tag next-pick" title="ZeroGate 账号池优先调度候选 #1（快到期/低余额优先策略）">${I.target} 优先调度</span>`
+    : "";
+
+  const disabledClass = a.disabled ? " disabled" : "";
+  const disableIcon = a.disabled ? I.play : I.pause;
+  const disableTitle = a.disabled ? "启用" : "停用";
+  const checkinBtn = noCheckin
+    ? `<span class="icon-op off" title="${groupName} 无签到活动" onclick="return false">${I.check}</span>`
+    : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">${I.check}</span>`;
+  const growthBtn = a.group === "workbuddy"
+    ? `<span class="icon-op" title="成长中心（旅行/盲盒/任务领奖）" onclick="growth('${a.uid}')">${I.gift}</span>`
+    : "";
+
+  return `
+  <div class="acct-card${disabledClass}">
+    <div class="acct-top">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span class="badge ${group}">${groupName}</span>
+        <span class="acct-name">${esc(a.nickname || shortUid(a.uid))}</span>
+        ${nextPickTag}
       </div>
-      <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
-      <div class="acct-mid">
-        <div class="acct-credits" onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()">${a.credits}<span>积分</span></div>
-        <div class="acct-tags">
-          ${expireTag}
-          ${checkinTag}
-        </div>
+      <div class="acct-ops">
+        ${checkinBtn}
+        ${growthBtn}
+        <span class="icon-op" title="刷新积分" onclick="refreshOne('${a.uid}')">${I.refresh}</span>
+        <span class="icon-op warn" title="${disableTitle}" onclick="toggleDisable('${a.uid}',${a.disabled})">${disableIcon}</span>
+        <span class="icon-op danger" title="删除账号" onclick="removeAcct('${a.uid}')">${I.x}</span>
       </div>
-    </div>`;
+    </div>
+    <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
+    <div class="acct-mid">
+      <div class="acct-credits" onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()">${a.credits}<span>积分</span></div>
+      <div class="acct-tags">
+        ${expireTag}
+        ${checkinTag}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ---------- 添加账号下拉菜单 ----------
+const ADD_CHANNELS = [
+  { ch: "workbuddy", name: "WorkBuddy",        hint: "浏览器登录" },
+  { ch: "traework",  name: "TraeWork",         hint: "浏览器登录" },
+  { ch: "qoder",     name: "Qoder",            hint: "浏览器登录" },
+  { ch: "codebuddy", name: "CodeBuddy (国际)", hint: "粘贴 Token" },
+  { ch: "wbintl",    name: "WorkBuddy (国际)", hint: "粘贴 Token" },
+  { ch: "zcode",     name: "ZCode (Z.AI)",     hint: "浏览器登录 · 桥接" },
+  { ch: "autoclaw",  name: "AutoClaw",         hint: "手机验证码" },
+];
+
+function renderAddMenu() {
+  const menu = $("addAcctMenu");
+  if (!menu) return;
+  menu.innerHTML = ADD_CHANNELS.map(c => {
+    const gm = groupMeta(c.ch);
+    return `<button class="dropdown-item" data-channel="${c.ch}">
+      <span class="ch-dot" style="background:${chColor(c.ch)}"></span>
+      <span class="di-name">${esc(c.name)}</span>
+      <span class="di-hint">${esc(c.hint)}</span>
+    </button>`;
   }).join("");
+}
+
+function toggleAddMenu(show) {
+  const menu = $("addAcctMenu");
+  if (!menu) return;
+  const open = show === undefined ? menu.classList.contains("hidden") : show;
+  menu.classList.toggle("hidden", !open);
+  const drop = $("addAcctDrop");
+  if (drop) drop.classList.toggle("open", open);
 }
 
 function renderTimes() {
@@ -890,9 +1041,29 @@ function confirmDialog(msg, onOk) {
 
 // ---------- 事件绑定 ----------
 function bind() {
-  $("btnAddWB").onclick = () => promptLogin("workbuddy");
-  $("btnAddTrae").onclick = () => promptLogin("traework");
-  $("btnAddQoder").onclick = () => promptLogin("qoder");
+  $("btnAddAcct").onclick = (e) => { e.stopPropagation(); toggleAddMenu(); };
+  $("addAcctMenu").addEventListener("click", (e) => {
+    const item = e.target.closest(".dropdown-item");
+    if (!item) return;
+    toggleAddMenu(false);
+    promptLogin(item.dataset.channel);
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#addAcctDrop")) toggleAddMenu(false);
+  });
+  $("acctSearch").addEventListener("input", (e) => {
+    acctSearchQ = e.target.value.trim().toLowerCase();
+    renderAccounts();
+  });
+  document.querySelectorAll("#acctFilter .chip").forEach(c => {
+    c.addEventListener("click", () => {
+      acctFilterKey = c.dataset.filter;
+      document.querySelectorAll("#acctFilter .chip").forEach(x => x.classList.toggle("active", x === c));
+      renderAccounts();
+    });
+  });
+  $("btnExpandAll").onclick = () => setAllGroups(true);
+  $("btnCollapseAll").onclick = () => setAllGroups(false);
   $("btnCheckinAll").onclick = openCheckinDialog;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
@@ -1010,10 +1181,10 @@ async function loadDashboard() {
     const channels = {};
     if (state && state.accounts) {
       state.accounts.forEach(a => {
-        if (!a.disabled && (!a.cooldown || a.cooldown === "none" || a.cooldown === "")) {
+        if (!a.disabled && !a.cooling) {
           activeAccs++;
         }
-        channels[a.kind] = (channels[a.kind] || 0) + 1;
+        channels[a.group] = (channels[a.group] || 0) + 1;
       });
     }
     if ($("statAccounts")) $("statAccounts").textContent = activeAccs;
@@ -1265,6 +1436,7 @@ async function resetRedirects() {
   if (window.__fillIcons) window.__fillIcons();
   initTabs();
   bind();
+  renderAddMenu();
   setupAuditLogsPolling();
   document.addEventListener("zg:themechange", () => {
     if (localStorage.getItem("zg_active_tab") === "usage") loadTokenAnalytics();
@@ -1319,10 +1491,10 @@ async function loadTokenAnalytics() {
       api("/api/usage").catch(() => ({ accounts: [] })),
     ]);
 
-    renderTokenHero(tokenData.summary || {});
+    renderTokenHero(tokenData.summary || {}, tokenData.models || {});
     renderTokenTrend(auditAnalytics.daily_trend || [], usageData.accounts || []);
     renderChannelDonut(tokenData.channels || auditAnalytics.channel_tokens || {});
-    renderTopModels(auditAnalytics.top_models || []);
+    renderTopModels(auditAnalytics.top_models || [], tokenData.summary || {});
     renderTopClients(auditAnalytics.top_clients || []);
     renderAcctProductivity(usageData.accounts || []);
   } catch (e) {
@@ -1330,8 +1502,73 @@ async function loadTokenAnalytics() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 模型官方 API 单价（2026-09-19 网上检索，USD / 1M tokens；人民币计价模型按 7.2 汇率折算）
+// 匹配：模型名小数点归一为 - 后按数组顺序找第一个子串命中（注意具体型号必须排在系列名前）。
+// 来源：docs.z.ai / api-docs.deepseek.com / developers.openai.com / volcengine /
+//       help.aliyun.com(百炼) / platform.kimi.com / anthropic.com / ai.google.dev 转述
+// ---------------------------------------------------------------------------
+const USD_CNY = 7.2;
+const MODEL_PRICES = [
+  { re: "glm-5-3-flash",       in: 0.15, cache: 0.03,  out: 0.50 },  // Z.AI GLM-5.3-Flash
+  { re: "glm-5-3-flashx",      in: 0.30, cache: 0.06,  out: 1.00 },  // 估计档（介于 Flash 与标准之间）
+  { re: "glm-5-3",             in: 1.40, cache: 0.26,  out: 4.40 },  // Z.AI GLM-5.3（5.2 同价）
+  { re: "glm-5-2",             in: 1.40, cache: 0.26,  out: 4.40 },
+  { re: "glm-4",               in: 0.60, cache: 0.11,  out: 2.20 },  // GLM-4.6 档
+  { re: "doubao-seed-2-1-pro",   in: 0.83, cache: 0.17, out: 4.17 }, // 火山 ¥6 / 缓存¥1.2 / ¥30
+  { re: "doubao-seed-2-1-turbo", in: 0.42, cache: 0.08, out: 2.08 }, // 火山 ¥3 / 缓存¥0.6 / ¥15
+  { re: "doubao",                in: 0.42, cache: 0.08, out: 2.08 }, // 豆包其余型号按 Turbo 档估
+  { re: "deepseek-v4-pro",     in: 1.32, cache: 0.044, out: 3.96 },  // DeepSeek 官方峰时
+  { re: "deepseek",            in: 0.30, cache: 0.006, out: 1.20 },  // DeepSeek V4.1-Flash 峰时（含 deepseek-chat）
+  { re: "gpt-5-6-sol",         in: 4.00, cache: 1.00,  out: 20.00 }, // OpenAI GPT-5.6 Sol（降价后）
+  { re: "gpt-5-6-terra",       in: 2.50, cache: 0.25,  out: 15.00 },
+  { re: "gpt-5-6-luna",        in: 1.00, cache: 0.10,  out: 5.00 },  // 输出价为发布档估计
+  { re: "gpt-5",               in: 1.25, cache: 0.13,  out: 10.00 }, // GPT-5.5 等旧档估计
+  { re: "gpt-4o",              in: 2.50, cache: 1.25,  out: 10.00 },
+  { re: "claude-3-7-sonnet",   in: 3.00, cache: 0.30,  out: 15.00 },
+  { re: "claude-3-5-sonnet",   in: 3.00, cache: 0.30,  out: 15.00 },
+  { re: "claude-3-5-haiku",    in: 0.80, cache: 0.08,  out: 4.00 },
+  { re: "claude-opus",         in: 15.00, cache: 1.50, out: 75.00 },
+  { re: "qwen3-8-max",         in: 1.67, cache: 0.21,  out: 6.25 },  // 百炼 ¥12 / 缓存¥1.5 / ¥44.97
+  { re: "qwen3-8-flash",       in: 0.14, cache: 0.03,  out: 0.42 },  // 百炼 ¥1 / ¥3
+  { re: "kimi-k3",             in: 2.78, cache: 0.28,  out: 13.89 }, // Kimi ¥20 / 缓存¥2 / ¥100
+  { re: "kimi",                in: 1.67, cache: 0.28,  out: 6.94 },  // K2.6 等旧档估计
+  { re: "gemini-3-5-flash",    in: 1.50, cache: 0.15,  out: 9.00 },
+  { re: "gemini",              in: 0.60, cache: 0.06,  out: 3.00 },  // Flash-Lite 档
+  // 渠道主力模型档：历史 CSV 行没记模型名，后端以 "<渠道> (历史)" 记账，
+  // 按该渠道实际跑的主力模型档估算（必须排在上面型号条目之后，避免抢匹配 "渠道/模型" 前缀）。
+  { re: "zcode",                in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "atria",                in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "autoclaw",             in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "traework",             in: 0.42, cache: 0.08,  out: 2.08 },
+  { re: "workbuddy",            in: 0.30, cache: 0.006, out: 1.20 },
+  { re: "wbintl",               in: 1.40, cache: 0.26,  out: 4.40 },
+  { re: "codebuddy",            in: 4.00, cache: 1.00,  out: 20.00 },
+  { re: "qoder",                in: 0.14, cache: 0.03,  out: 0.42 },
+];
+// 未收录且无渠道前缀的模型：按中档模型估计
+const FALLBACK_PRICE = { re: "", in: 1.00, cache: 0.10, out: 4.00 };
+
+function modelPrice(model) {
+  const n = String(model || "").toLowerCase().replace(/\./g, "-");
+  for (const p of MODEL_PRICES) {
+    if (n.includes(p.re)) return p;
+  }
+  return FALLBACK_PRICE;
+}
+
+// 按 输入/输出/缓存命中 用量折算官方 API 美元成本（单价 USD/1M）。
+// GLM/DeepSeek/OpenAI 的 prompt_tokens 通常【包含】缓存命中部分，而 Anthropic 两者分开：
+// 统一按 "缓存命中 ≤ 输入 则从输入中扣除" 归一，避免缓存被按输入价重复计费。
+function priceUSD(model, prompt, completion, cacheRead) {
+  const p = modelPrice(model);
+  const cache = Math.max(0, Math.min(cacheRead, prompt));
+  const plainInput = prompt - cache;
+  return (plainInput * p.in + completion * p.out + cache * p.cache) / 1e6;
+}
+
 // 1. Hero 财富看板与价值折算
-function renderTokenHero(summary) {
+function renderTokenHero(summary, models) {
   const total = Number(summary.total_tokens || 0);
   const prompt = Number(summary.prompt_tokens || 0);
   const comp = Number(summary.completion_tokens || 0);
@@ -1350,12 +1587,42 @@ function renderTokenHero(summary) {
   if ($("tkHeroCompPct")) $("tkHeroCompPct").textContent = `占比 ${compPct}%`;
   if ($("tkHeroCacheRate")) $("tkHeroCacheRate").textContent = `命中率 ${cacheRate}%`;
 
-  // 估算节省金额：市场商业云平均价（以 Claude 3.5 / DeepSeek 混合基准）
-  // 输入约 $3/M (~￥21/M), 输出约 $15/M (~￥105/M), 缓存读取约 $0.3/M (~￥2.1/M)
-  const savingsYuan = (prompt * 0.000021 + comp * 0.000105 + cache * 0.000003).toFixed(2);
-  const savingsUsd = (savingsYuan / 7.2).toFixed(2);
+  // 白嫖节省：优先用 token_usage 的按模型全量统计 × 各模型官方 API 单价逐模型折算；
+  // 没有按模型数据（旧版后端）时退回全局 输入/输出/缓存 拆分 × 中档单价。
+  let savingsUsd = 0;
+  const breakdown = [];
+  const modelEntries = Object.entries(models || {});
+  if (modelEntries.length > 0) {
+    for (const [name, m] of modelEntries) {
+      const usd = priceUSD(
+        name,
+        Number(m.prompt_tokens || 0),
+        Number(m.completion_tokens || 0),
+        Number(m.cache_read_tokens || 0),
+      );
+      savingsUsd += usd;
+      if (usd > 0.0001) {
+        const label = name.includes(" (历史)")
+          ? name.replace(" (历史)", "·历史用量（按渠道主力模型档）")
+          : (name || "未知模型");
+        breakdown.push({ name: label, usd, tokens: Number(m.total_tokens || 0) });
+      }
+    }
+  } else {
+    savingsUsd = priceUSD("", prompt, comp, cache);
+    breakdown.push({ name: "全局拆分估算", usd: savingsUsd, tokens: total });
+  }
+  breakdown.sort((a, b) => b.usd - a.usd);
+
+  const tipLines = breakdown.slice(0, 6).map(b =>
+    `${b.name}：¥${(b.usd * USD_CNY).toFixed(2)}（${fmtTokens(b.tokens)} tokens）`);
+  const tip = `按各模型官方 API 单价折算（2026-09 检索，汇率 1 USD=${USD_CNY} CNY）\n${tipLines.join("\n")}`;
+
+  const savingsYuan = (savingsUsd * USD_CNY).toFixed(2);
+  const savingsUsdStr = savingsUsd.toFixed(2);
   if ($("tkHeroSavings")) {
-    $("tkHeroSavings").textContent = `约为你白嫖节省: ￥${savingsYuan} (约 $${savingsUsd})`;
+    $("tkHeroSavings").textContent = `约为你白嫖节省: ￥${savingsYuan} (约 $${savingsUsdStr})`;
+    $("tkHeroSavings").title = tip;
   }
 }
 
@@ -1521,7 +1788,7 @@ function renderChannelDonut(channelTokens) {
 }
 
 // 4. 热门模型白嫖榜 TOP 5
-function renderTopModels(models) {
+function renderTopModels(models, summary) {
   const box = $("topModelsList");
   if (!box) return;
   if (!models || models.length === 0) {
@@ -1532,8 +1799,28 @@ function renderTopModels(models) {
   const max = top5[0].total_tokens || 1;
   const badges = ["top1", "top2", "top3", "", ""];
 
+  // 全局 输入/输出/缓存 占比：把各模型的总量拆成三段后按官方单价折算节省金额
+  const tot = Number(summary && summary.total_tokens || 0);
+  const shares = tot > 0 ? {
+    p: Number(summary.prompt_tokens || 0) / tot,
+    c: Number(summary.completion_tokens || 0) / tot,
+    cr: Number(summary.cache_read_tokens || 0) / tot,
+  } : null;
+
   box.innerHTML = top5.map((m, idx) => {
     const pct = Math.max(8, Math.round((m.total_tokens / max) * 100));
+    let savingsHtml = "";
+    if (shares) {
+      const usd = priceUSD(
+        m.model,
+        m.total_tokens * shares.p,
+        m.total_tokens * shares.c,
+        m.total_tokens * shares.cr,
+      );
+      if (usd > 0.0001) {
+        savingsHtml = ` <span style="font-weight:600;color:var(--ok)">省 ¥${(usd * USD_CNY).toFixed(2)}</span>`;
+      }
+    }
     return `
       <div class="rank-item">
         <span class="rank-num ${badges[idx]}">${idx + 1}</span>
@@ -1545,6 +1832,7 @@ function renderTopModels(models) {
           <div class="rank-bar-bg">
             <div class="rank-bar-fill" style="width:${pct}%"></div>
           </div>
+          ${savingsHtml ? `<div style="font-size:11px;margin-top:2px;">${savingsHtml}</div>` : ""}
         </div>
       </div>
     `;

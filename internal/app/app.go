@@ -322,8 +322,8 @@ func (a *App) SetHandler(h *server.Handler) {
 	a.handler = h
 	// 注入 Token 用量回调：反代转发成功后记录实际消耗（按天聚合到 usage）。
 	if h != nil {
-		h.SetTokenRecorder(func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64) {
-			a.usage.RecordTokens(kind, uid, prompt, completion, cacheRead, cacheWrite)
+		h.SetTokenRecorder(func(kind, uid, model string, prompt, completion, cacheRead, cacheWrite int64) {
+			a.usage.RecordTokens(kind, uid, model, prompt, completion, cacheRead, cacheWrite)
 		})
 		// 注入 UsageRecorder 供 /api/token_usage 查询累计用量
 		h.SetUsageRecorder(a.usage)
@@ -1144,6 +1144,7 @@ func (a *App) LoginBusy() bool {
 type AccountView struct {
 	UID            string `json:"uid"`
 	Group          string `json:"group"` // workbuddy | traework | qoder ...
+	Mode           string `json:"mode"`  // proxy 反代 | bridge 桥接 | direct 直连 API
 	Nickname       string `json:"nickname"`
 	Credits        int64  `json:"credits"`
 	ExpireAt       int64  `json:"expire_at"` // 最早到期套餐时间（Unix 秒，0=长期有效）
@@ -1191,6 +1192,21 @@ func (a *App) GetState() State {
 	return st
 }
 
+// channelDefaultMode 渠道缺省接入方式：zcode 走本地 zcode-proxy 桥接，
+// atria 是纯 API Key 直连，其余渠道均为网关持有凭证的反代。
+// auth 文件里账号级 account.mode 可覆盖（见 auth.Parse）。
+var channelDefaultMode = map[string]string{
+	"zcode": "bridge",
+	"atria": "direct",
+}
+
+func defaultChannelMode(kind string) string {
+	if m, ok := channelDefaultMode[kind]; ok {
+		return m
+	}
+	return "proxy"
+}
+
 func (a *App) accountViews() []AccountView {
 	// 按渠道 pool 遍历：codebuddy 与 wbintl 可能同 uid（同后端同账户），
 	// 必须带上 rt.Kind 才能区分分组，不能仅凭 uid。
@@ -1198,6 +1214,7 @@ func (a *App) accountViews() []AccountView {
 		kind   string
 		s      pool.Status
 		isNext bool
+		mode   string
 	}
 	var items []sv
 	for _, rt := range a.runtimes {
@@ -1210,10 +1227,18 @@ func (a *App) accountViews() []AccountView {
 			nextUID = nextAuth.UID
 		}
 		for _, s := range rt.Pool.List() {
+			mode := ""
+			if au := rt.Pool.AuthByUID(s.UID); au != nil {
+				mode = au.Mode
+			}
+			if mode == "" {
+				mode = defaultChannelMode(string(rt.Kind))
+			}
 			items = append(items, sv{
 				kind:   string(rt.Kind),
 				s:      s,
 				isNext: s.UID == nextUID && !s.Disabled && !s.Cooling,
+				mode:   mode,
 			})
 		}
 	}
@@ -1224,6 +1249,7 @@ func (a *App) accountViews() []AccountView {
 		out = append(out, AccountView{
 			UID:            s.UID,
 			Group:          it.kind,
+			Mode:           it.mode,
 			Nickname:       s.Nickname,
 			Credits:        s.Credits,
 			ExpireAt:       s.ExpireAt,

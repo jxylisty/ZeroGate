@@ -99,6 +99,14 @@ type Upstream interface {
 	Aggregate(r io.Reader) (map[string]any, error)
 }
 
+// ThinkPassthrough 可选能力：请求体带 "think": true 的客户端（chatui 等）
+// 可索取思考流（reasoning_content）。实现该接口的上游在转发时保留思考字段；
+// 未实现的渠道按默认行为处理（多数本就不剥离，如 qoder/traework）。
+type ThinkPassthrough interface {
+	StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error
+	AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error)
+}
+
 // ResourceItem 积分明细条目。
 type ResourceItem struct {
 	Name     string `json:"name"`

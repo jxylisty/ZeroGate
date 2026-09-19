@@ -118,38 +118,31 @@ func main() {
 	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, codebuddy=%d, wbintl=%d, zcode=%d, autoclaw=%d, atria=%d from %s", len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(cbAuths), len(wbAuthsI), len(zcAuths), len(acAuths), len(atriaAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
-	for _, a := range wbAuths {
-		wbPool.Add(a)
-	}
+	wbPool.SyncToDir(wbAuths)
+
 	trPool := pool.New(filepath.Join(stateDir, "state-traework.json"))
-	for _, a := range trAuths {
-		trPool.Add(a)
-	}
+	trPool.SyncToDir(trAuths)
+
 	qdPool := pool.New(filepath.Join(stateDir, "state-qoder.json"))
 	for _, a := range qdAuths {
 		qoder.EnsureFingerprint(a) // 老凭证补机器指纹
-		qdPool.Add(a)
 	}
+	qdPool.SyncToDir(qdAuths)
+
 	cbPool := pool.New(filepath.Join(stateDir, "state-codebuddy.json"))
-	for _, a := range cbAuths {
-		cbPool.Add(a)
-	}
+	cbPool.SyncToDir(cbAuths)
+
 	wbIntlPool := pool.New(filepath.Join(stateDir, "state-wbintl.json"))
-	for _, a := range wbAuthsI {
-		wbIntlPool.Add(a)
-	}
+	wbIntlPool.SyncToDir(wbAuthsI)
+
 	zcPool := pool.New(filepath.Join(stateDir, "state-zcode.json"))
-	for _, a := range zcAuths {
-		zcPool.Add(a)
-	}
+	zcPool.SyncToDir(zcAuths)
+
 	acPool := pool.New(filepath.Join(stateDir, "state-autoclaw.json"))
-	for _, a := range acAuths {
-		acPool.Add(a)
-	}
+	acPool.SyncToDir(acAuths)
+
 	atriaPool := pool.New(filepath.Join(stateDir, "state-atria.json"))
-	for _, a := range atriaAuths {
-		atriaPool.Add(a)
-	}
+	atriaPool.SyncToDir(atriaAuths)
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second

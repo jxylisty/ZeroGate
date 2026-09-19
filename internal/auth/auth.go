@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +37,10 @@ type Auth struct {
 	// BridgeURL zcode 渠道桥接模式专用：账号级上游（本地 zcode-proxy 实例，
 	// 每账号一个实例/端口/凭证目录）。缺省走全局 ZCODE_BRIDGE_URL。
 	BridgeURL string
+
+	// Mode 账号接入方式标记（面板分区用）："proxy" 反代 / "bridge" 桥接 /
+	// "direct" 直连 API。空 = 未指定，由调用方按渠道缺省回退。
+	Mode string
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -86,6 +91,7 @@ func (a *Auth) NeedsRefresh(within time.Duration) bool {
 //	嵌套形 {"auth":{...},"account":{...}}  （插件 OAuth 输出）
 //	扁平形 {"accessToken":...,"uid":...}   （CPA 面板手建）
 func Parse(raw []byte) (*Auth, error) {
+	raw = bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("empty auth storage")
 	}
@@ -113,6 +119,7 @@ func Parse(raw []byte) (*Auth, error) {
 				EnterpriseID string `json:"enterpriseId"`
 				Nickname     string `json:"nickname"`
 				BridgeURL    string `json:"bridgeUrl"`
+				Mode         string `json:"mode"`
 			} `json:"account"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
@@ -136,6 +143,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID: n.Account.EnterpriseID,
 			Nickname:     n.Account.Nickname,
 			BridgeURL:    strings.TrimSpace(n.Account.BridgeURL),
+			Mode:         strings.TrimSpace(n.Account.Mode),
 		}
 	} else {
 		var f struct {
@@ -153,6 +161,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
 			BridgeURL    string `json:"bridgeUrl"`
+			Mode         string `json:"mode"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -175,6 +184,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID: f.EnterpriseID,
 			Nickname:     f.Nickname,
 			BridgeURL:    strings.TrimSpace(f.BridgeURL),
+			Mode:         strings.TrimSpace(f.Mode),
 		}
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {
@@ -213,6 +223,8 @@ func (a *Auth) saveAtomicLocked() error {
 			"uid":          a.UID,
 			"enterpriseId": a.EnterpriseID,
 			"nickname":     a.Nickname,
+			"bridgeUrl":    a.BridgeURL,
+			"mode":         a.Mode,
 		},
 	}
 	raw, err := json.MarshalIndent(doc, "", "  ")

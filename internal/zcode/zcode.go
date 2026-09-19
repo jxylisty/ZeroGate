@@ -69,7 +69,7 @@ func New() *Client {
 	if u := strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_URL")); u != "" {
 		c.BridgeURL = strings.TrimRight(u, "/")
 	} else {
-		c.BridgeURL = "http://127.0.0.1:18080"
+		c.BridgeURL = "http://127.0.0.1:18083"
 	}
 	c.BridgeKey = strings.TrimSpace(os.Getenv("ZCODE_BRIDGE_KEY"))
 	if c.BridgeKey == "" {

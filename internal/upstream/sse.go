@@ -14,7 +14,14 @@ import (
 // Aggregate 读取完整 SSE 流，聚合 delta.content 为单个 OpenAI chat.completion 响应。
 // 分片/半行由 bufio.Reader.ReadString 处理；遇到 "data: [DONE]" 结束。
 // tool_calls 以流式 delta 到达（按 index 合并：首片带 id/type/name，后续只带 arguments 片段）。
+// 默认丢弃思考字段（reasoning_content），保留请用 AggregateWithThink。
 func Aggregate(r io.Reader) (map[string]any, error) {
+	return AggregateWithThink(r, false)
+}
+
+// AggregateWithThink 聚合 SSE；keepReasoning=true 时把 reasoning_content 并入
+// message.reasoning_content 返回。
+func AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	var (
 		id, model     string
@@ -118,9 +125,12 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		"role":    role,
 		"content": content.String(),
 	}
-	// 思考文本（reasoning_content）不返回客户端：ZCode 等客户端会把它当
+	// 思考文本（reasoning_content）默认不返回客户端：ZCode 等客户端会把它当
 	// 正文渲染（逐词换行）并计入上下文，挤占窗口。模型照常思考，只是不
-	// 透传思考过程。如需透传，把下面三行改回 message["reasoning_content"]。
+	// 透传思考过程。请求体带 "think": true 时经 AggregateWithThink 保留。
+	if keepReasoning && reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String()
+	}
 	if len(toolOrder) > 0 {
 		sortInts(toolOrder)
 		calls := make([]map[string]any, 0, len(toolOrder))
@@ -241,7 +251,15 @@ func stripReasoningFromChunk(line string) string {
 
 // Stream 透传上游 SSE 到 w（每行 flush），保证至少写一个 [DONE]。
 // 调用方必须先设置过 status 200；本函数自设 SSE headers。
+// 默认剥离思考字段（reasoning_content/reasoning）：ZCode 等客户端会把思考
+// 当正文渲染（逐词换行）并计入上下文。请求体带 "think": true 的客户端
+// （如 chatui）走 StreamWithThink 显式索取思考流。
 func Stream(w http.ResponseWriter, r io.Reader) error {
+	return StreamWithThink(w, r, false)
+}
+
+// StreamWithThink 透传上游 SSE；passthrough=true 时保留 reasoning 字段原样透传。
+func StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -256,7 +274,10 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 			if strings.HasPrefix(strings.TrimRight(line, "\r\n"), "data: [DONE]") {
 				sawDone = true
 			}
-			if _, werr := io.WriteString(w, stripReasoningFromChunk(line)); werr != nil {
+			if !passthrough {
+				line = stripReasoningFromChunk(line)
+			}
+			if _, werr := io.WriteString(w, line); werr != nil {
 				return werr
 			}
 			if fl != nil {

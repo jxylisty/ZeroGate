@@ -505,6 +505,15 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error { return Strea
 // Aggregate 实现 provider.Upstream（WorkBuddy OpenAI SSE 聚合）。
 func (c *Client) Aggregate(r io.Reader) (map[string]any, error) { return Aggregate(r) }
 
+// StreamWithThink / AggregateWithThink 实现 provider.ThinkPassthrough。
+func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
+	return StreamWithThink(w, r, passthrough)
+}
+
+func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
+	return AggregateWithThink(r, keepReasoning)
+}
+
 // FetchModelPricing 从 /console/enterprises/personal/models 拉取模型积分倍率。
 // 返回全量模型定价（含 credits 字段），不受 cli agent 过滤限制。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {

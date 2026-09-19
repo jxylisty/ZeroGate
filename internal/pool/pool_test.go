@@ -225,3 +225,28 @@ func TestRecordCheckinAndRemove(t *testing.T) {
 		t.Error("account should be removed")
 	}
 }
+
+func TestPlaceholderNeverPicked(t *testing.T) {
+	dir := t.TempDir()
+	stateFp := filepath.Join(dir, "state.json")
+	// Simulate state with an account that has no auth file
+	p1 := New(stateFp)
+	p1.byUID["phantom"] = &entry{
+		a:           &auth.Auth{UID: "phantom"},
+		placeholder: true,
+		credits:     100,
+	}
+	p1.saveLocked()
+
+	// Reopen pool from state
+	p2 := New(stateFp)
+	if got := p2.Pick(); got != nil {
+		t.Fatalf("placeholder account should never be picked, got %+v", got)
+	}
+
+	// Once valid auth added, should be picked
+	p2.Add(&auth.Auth{UID: "phantom", AccessToken: "tok"})
+	if got := p2.Pick(); got == nil || got.UID != "phantom" {
+		t.Fatalf("valid account should be picked after Add, got %+v", got)
+	}
+}

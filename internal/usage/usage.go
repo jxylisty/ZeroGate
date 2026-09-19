@@ -4,6 +4,8 @@ package usage
 
 import (
 	"encoding/csv"
+	"io"
+	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -49,10 +51,21 @@ type AccountUsage struct {
 	Today          int64        `json:"today"`               // 今日净消耗（正=消耗，负=入账签到）
 	Daily          []DailyUsage `json:"daily"`               // 按天聚合（近 maxDaily 天）
 	Tokens         []TokenDay   `json:"tokens,omitempty"`    // 按天 Token 用量（升序）
+	Models         []ModelUsage `json:"models,omitempty"`    // 按模型累计（供计价，总量降序）
 	LastCheckinOK  bool         `json:"last_checkin_ok"`
 	LastCheckinAt  string       `json:"last_checkin_at"`
 	LastCheckinMsg string       `json:"last_checkin_msg"`
 	Snapshots      []Snapshot   `json:"snapshots"` // 近 N 条
+}
+
+// ModelUsage 单模型累计 Token（按模型计价用；空模型名 = 未记录模型的历史行）。
+type ModelUsage struct {
+	Model      string `json:"model"`
+	Prompt     int64  `json:"prompt"`
+	Completion int64  `json:"completion"`
+	CacheRead  int64  `json:"cache_read"`
+	CacheWrite int64  `json:"cache_write"`
+	Total      int64  `json:"total"`
 }
 
 const (
@@ -73,9 +86,61 @@ type account struct {
 	ExpireAt            int64
 	Snapshots           []Snapshot
 	Tokens              map[string]*TokenDay // 按天
+	Models              map[string]*modelAcc // 按模型累计（计价用）
 	LastCheckinOK       bool
 	LastCheckinAt       string
 	LastCheckinMsg      string
+}
+
+type modelAcc struct {
+	prompt, completion, cacheRead, cacheWrite int64
+}
+
+// addTokens 归加一次用量到按天与按模型两个聚合；返回落盘用的模型名（空 = 未记录）。
+func (acc *account) addTokens(day, model string, prompt, completion, cacheRead, cacheWrite int64) {
+	if acc.Tokens == nil {
+		acc.Tokens = map[string]*TokenDay{}
+	}
+	t := acc.Tokens[day]
+	if t == nil {
+		t = &TokenDay{Day: day}
+		acc.Tokens[day] = t
+	}
+	t.Prompt += prompt
+	t.Completion += completion
+	t.Total += prompt + completion
+	t.CacheRead += cacheRead
+	t.CacheWrite += cacheWrite
+
+	if acc.Models == nil {
+		acc.Models = map[string]*modelAcc{}
+	}
+	m := acc.Models[model]
+	if m == nil {
+		m = &modelAcc{}
+		acc.Models[model] = m
+	}
+	m.prompt += prompt
+	m.completion += completion
+	m.cacheRead += cacheRead
+	m.cacheWrite += cacheWrite
+}
+
+// modelsSorted 输出按总量降序的按模型累计。
+func modelsSorted(models map[string]*modelAcc) []ModelUsage {
+	out := make([]ModelUsage, 0, len(models))
+	for name, m := range models {
+		out = append(out, ModelUsage{
+			Model:      name,
+			Prompt:     m.prompt,
+			Completion: m.completion,
+			CacheRead:  m.cacheRead,
+			CacheWrite: m.cacheWrite,
+			Total:      m.prompt + m.completion + m.cacheRead + m.cacheWrite,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Total > out[j].Total })
+	return out
 }
 
 // New 构建记录器；fp 非空时加载历史 CSV。
@@ -133,8 +198,8 @@ func (r *Recorder) SetExpire(uid string, expireAt int64) {
 	}
 }
 
-// RecordTokens 记录一次反代请求的 Token 用量（按天聚合，追加落盘 tokens.csv）。
-func (r *Recorder) RecordTokens(kind, uid string, prompt, completion, cacheRead, cacheWrite int64) {
+// RecordTokens 记录一次反代请求的 Token 用量（按天 + 按模型聚合，追加落盘 tokens.csv）。
+func (r *Recorder) RecordTokens(kind, uid, model string, prompt, completion, cacheRead, cacheWrite int64) {
 	if prompt < 0 {
 		prompt = 0
 	}
@@ -154,19 +219,7 @@ func (r *Recorder) RecordTokens(kind, uid string, prompt, completion, cacheRead,
 		r.byUID[uid] = acc
 	}
 	day := time.Now().Format("2006-01-02")
-	if acc.Tokens == nil {
-		acc.Tokens = map[string]*TokenDay{}
-	}
-	t := acc.Tokens[day]
-	if t == nil {
-		t = &TokenDay{Day: day}
-		acc.Tokens[day] = t
-	}
-	t.Prompt += prompt
-	t.Completion += completion
-	t.Total += prompt + completion
-	t.CacheRead += cacheRead
-	t.CacheWrite += cacheWrite
+	acc.addTokens(day, model, prompt, completion, cacheRead, cacheWrite)
 	fp := r.tokenFP
 	r.mu.Unlock()
 
@@ -179,11 +232,12 @@ func (r *Recorder) RecordTokens(kind, uid string, prompt, completion, cacheRead,
 	}
 	defer f.Close()
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{day, kind, uid, strconv.FormatInt(prompt, 10), strconv.FormatInt(completion, 10), strconv.FormatInt(cacheRead, 10), strconv.FormatInt(cacheWrite, 10)})
+	_ = w.Write([]string{day, kind, uid, strconv.FormatInt(prompt, 10), strconv.FormatInt(completion, 10), strconv.FormatInt(cacheRead, 10), strconv.FormatInt(cacheWrite, 10), model})
 	w.Flush()
 }
 
-// loadTokens 从 tokens.csv 恢复按天 Token 统计：day,kind,uid,prompt,completion（可重复行，聚合）。
+// loadTokens 从 tokens.csv 恢复按天 Token 统计：day,kind,uid,prompt,completion[,cacheRead[,cacheWrite[,model]]]。
+// 逐行容错：坏行/字段数不符的行跳过（2026-09 加过 model 列，新旧行混存，禁止一行错全放弃）。
 func (r *Recorder) loadTokens() {
 	if r.tokenFP == "" {
 		return
@@ -193,12 +247,16 @@ func (r *Recorder) loadTokens() {
 		return
 	}
 	defer f.Close()
-	rows, err := csv.NewReader(f).ReadAll()
-	if err != nil {
-		return
-	}
-	for _, row := range rows {
-		if len(row) < 5 {
+	skipped := 0
+	rd := csv.NewReader(f)
+	rd.FieldsPerRecord = -1 // 列数可变（历史格式演进），按行内下标取值
+	for {
+		row, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || len(row) < 5 {
+			skipped++
 			continue
 		}
 		uid := row[2]
@@ -207,29 +265,23 @@ func (r *Recorder) loadTokens() {
 			acc = &account{UID: uid, Kind: row[1]}
 			r.byUID[uid] = acc
 		}
-		if acc.Tokens == nil {
-			acc.Tokens = map[string]*TokenDay{}
-		}
-		day := row[0]
-		t := acc.Tokens[day]
-		if t == nil {
-			t = &TokenDay{Day: day}
-			acc.Tokens[day] = t
-		}
 		p, _ := strconv.ParseInt(row[3], 10, 64)
-			c, _ := strconv.ParseInt(row[4], 10, 64)
-			cr, cw := int64(0), int64(0)
-			if len(row) >= 6 {
-				cr, _ = strconv.ParseInt(row[5], 10, 64)
-			}
-			if len(row) >= 7 {
-				cw, _ = strconv.ParseInt(row[6], 10, 64)
-			}
-			t.Prompt += p
-			t.Completion += c
-			t.Total += p + c
-			t.CacheRead += cr
-			t.CacheWrite += cw
+		c, _ := strconv.ParseInt(row[4], 10, 64)
+		cr, cw := int64(0), int64(0)
+		if len(row) >= 6 {
+			cr, _ = strconv.ParseInt(row[5], 10, 64)
+		}
+		if len(row) >= 7 {
+			cw, _ = strconv.ParseInt(row[6], 10, 64)
+		}
+		model := ""
+		if len(row) >= 8 {
+			model = row[7]
+		}
+		acc.addTokens(row[0], model, p, c, cr, cw)
+	}
+	if skipped > 0 {
+		log.Printf("[usage] tokens.csv 跳过 %d 行无效记录", skipped)
 	}
 }
 
@@ -267,6 +319,9 @@ func (r *Recorder) Report() []AccountUsage {
 				au.Tokens = tokensSorted(acc.Tokens)
 			}
 			au.Snapshots = append([]Snapshot(nil), acc.Snapshots...)
+		}
+		if len(acc.Models) > 0 {
+			au.Models = modelsSorted(acc.Models)
 		}
 		out = append(out, au)
 	}
@@ -331,18 +386,24 @@ func dailyUsage(snaps []Snapshot) (today int64, daily []DailyUsage) {
 // ---------------------------------------------------------------------------
 
 // load 从 CSV 恢复：ts,kind,uid,nickname,remain,total,checkin_ok,checkin_at,checkin_msg
+// 逐行容错：坏行跳过，避免硬杀留下的半行把全部余额快照历史拖垮。
 func (r *Recorder) load() {
+	if r.fp == "" {
+		return
+	}
 	f, err := os.Open(r.fp)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	rows, err := csv.NewReader(f).ReadAll()
-	if err != nil {
-		return
-	}
-	for _, row := range rows {
-		if len(row) < 6 {
+	rd := csv.NewReader(f)
+	rd.FieldsPerRecord = -1
+	for {
+		row, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || len(row) < 6 {
 			continue
 		}
 		ts, err := time.Parse(time.RFC3339, row[0])

@@ -643,6 +643,15 @@ func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
 	return upstream.Aggregate(r)
 }
 
+// StreamWithThink / AggregateWithThink 实现 provider.ThinkPassthrough。
+func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
+	return upstream.StreamWithThink(w, r, passthrough)
+}
+
+func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
+	return upstream.AggregateWithThink(r, keepReasoning)
+}
+
 // StaticModels 静态模型兜底（FetchModels 拉取失败时用）。
 func StaticModels() []provider.ModelInfo {
 	var out []provider.ModelInfo

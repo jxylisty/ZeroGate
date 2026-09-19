@@ -147,3 +147,14 @@ func TestLoadAtriaDir(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBOM(t *testing.T) {
+	raw := append([]byte("\xef\xbb\xbf"), []byte(`{"accessToken":"tok_bom","uid":"u_bom"}`)...)
+	a, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("parse with BOM failed: %v", err)
+	}
+	if a.UID != "u_bom" || a.AccessToken != "tok_bom" {
+		t.Fatalf("unexpected auth: %+v", a)
+	}
+}

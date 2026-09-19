@@ -114,14 +114,28 @@
         <div class="panel-actions">
           <button class="btn primary" id="btnRefreshAll">刷新积分</button>
           <button class="btn" id="btnCheckinAll">批量签到</button>
-          <button class="btn primary" id="btnAddWB"><span data-ic="plus"></span>WorkBuddy</button>
-          <button class="btn primary alt" id="btnAddTrae"><span data-ic="plus"></span>TraeWork</button>
-          <button class="btn primary alt qoder" id="btnAddQoder"><span data-ic="plus"></span>Qoder</button>
+          <div class="dropdown" id="addAcctDrop">
+            <button class="btn primary alt" id="btnAddAcct"><span data-ic="plus"></span>添加账号<span class="caret" data-ic="chevron"></span></button>
+            <div class="dropdown-menu hidden" id="addAcctMenu"></div>
+          </div>
         </div>
       </div>
       <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span><strong>智能调度机制</strong>：网关自动遵循【快到期优先】策略（有到期时间优先于长期有效，越早到期越优先消耗，平手时余额低者优先）。带 <span class="tag next-pick" style="font-size:10px; padding:1px 6px;"><span data-ic="target"></span>优先调度</span> 为当前渠道第一顺位；可在「调用流水」核对每次请求实际调用的账号 UID。</p>
-      <div id="acctList" class="acct-grid"></div>
-      <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
+      <div class="acct-toolbar">
+        <input class="input" id="acctSearch" placeholder="搜索昵称 / UID / 渠道…" style="width:220px">
+        <div class="chip-row" id="acctFilter">
+          <button class="chip active" data-filter="all">全部</button>
+          <button class="chip" data-filter="ok">正常</button>
+          <button class="chip" data-filter="cooling">冷却</button>
+          <button class="chip" data-filter="expiring">即将到期</button>
+          <button class="chip" data-filter="disabled">停用</button>
+        </div>
+        <span class="toolbar-spacer"></span>
+        <button class="btn small" id="btnExpandAll">全部展开</button>
+        <button class="btn small" id="btnCollapseAll">全部收起</button>
+      </div>
+      <div id="acctList" class="acct-list"></div>
+      <div id="acctEmpty" class="empty hidden">还没有账号，点击上方「添加账号」添加</div>
     </section>
   </div>
 

@@ -431,6 +431,17 @@ func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
 	return aggregate(r, c.lastClientModel())
 }
 
+// StreamWithThink / AggregateWithThink 实现 provider.ThinkPassthrough。
+// qoder 的 OpenAI 化输出本就原样保留 reasoning_content（不剥离），
+// 两个变体直接复用原实现。
+func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
+	return Stream(w, r, c.lastClientModel())
+}
+
+func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
+	return aggregate(r, c.lastClientModel())
+}
+
 // ---------------------------------------------------------------------------
 // 错误分类
 // ---------------------------------------------------------------------------

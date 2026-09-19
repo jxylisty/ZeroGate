@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wild-work/internal/audit"
@@ -60,8 +61,8 @@ type Config struct {
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
 
-	// RecordTokens 每次成功转发后回调 Token 用量（可空 = 不统计）。
-	RecordTokens func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)
+	// RecordTokens 每次成功转发后回调 Token 用量（可空 = 不统计）。model 为实际路由到的上游模型名。
+	RecordTokens func(kind, uid, model string, prompt, completion, cacheRead, cacheWrite int64)
 
 	// UsageRecorder token 用量记录器（可空）。
 	UsageRecorder any // *usage.Recorder
@@ -94,7 +95,10 @@ type Handler struct {
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
 
-	recordTokens func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)
+	rrMu     sync.Mutex                // 保护 bridgeRR
+	bridgeRR map[string]*atomic.Uint64 // 桥接渠道轮转计数（runtimeKind → 计数器）
+
+	recordTokens func(kind, uid, model string, prompt, completion, cacheRead, cacheWrite int64)
 
 	clientKeys     *clientkey.Store
 	auditRec       *audit.Recorder
@@ -103,7 +107,7 @@ type Handler struct {
 }
 
 // SetTokenRecorder 注入 Token 用量回调（由 app 装配，统计反代请求实际消耗）。
-func (h *Handler) SetTokenRecorder(fn func(kind, uid string, prompt, completion, cacheRead, cacheWrite int64)) {
+func (h *Handler) SetTokenRecorder(fn func(kind, uid, model string, prompt, completion, cacheRead, cacheWrite int64)) {
 	h.recordTokens = fn
 }
 
@@ -169,7 +173,9 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
-	h.mux.HandleFunc("GET /api/token_usage", h.withAuth(h.tokenUsage))
+	// 管理面板与用量大屏都要匿名读取（与其余 /api/* 管理端点一致），
+	// 之前挂在 withAuth 下导致面板 401 被吞、大屏恒为 0。
+	h.mux.HandleFunc("GET /api/token_usage", h.tokenUsage)
 	if cfg.WebUI != nil {
 		// 所有 .html 页面均替换 {{timestamp}} 为当前时间戳（css/js 缓存破坏用）
 		webFS := http.FS(cfg.WebUI)
@@ -215,6 +221,49 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.Serv
 // stickyKey 粘性路由 key（按渠道独立）
 func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 
+// pickBridgeRotation 桥接渠道（zcode）不走长粘性：按「到期时间升序」轮转 healthy 账号。
+// 集中单账号会把并发顶到 start-plan 每账号 5 并发上限（表现为并发时断流），
+// 轮转让并发分摊到多账号、各账号额度同步消耗；同到期时间的按 UID 稳定排序。
+func (h *Handler) pickBridgeRotation(rt *Runtime) *auth.Auth {
+	auths := rt.Pool.Auths()
+	if len(auths) == 0 {
+		return nil
+	}
+	type cand struct {
+		a   *auth.Auth
+		exp int64
+	}
+	list := make([]cand, 0, len(auths))
+	for _, a := range auths {
+		st, ok := rt.Pool.Status(a.UID)
+		if !ok || st.Cooling || st.Disabled {
+			continue
+		}
+		list = append(list, cand{a: a, exp: st.ExpireAt})
+	}
+	if len(list) == 0 {
+		return rt.Pool.Pick()
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].exp != list[j].exp {
+			return list[i].exp < list[j].exp
+		}
+		return list[i].a.UID < list[j].a.UID
+	})
+	h.rrMu.Lock()
+	if h.bridgeRR == nil {
+		h.bridgeRR = make(map[string]*atomic.Uint64)
+	}
+	ctr, ok := h.bridgeRR[string(rt.Kind)]
+	if !ok {
+		ctr = &atomic.Uint64{}
+		h.bridgeRR[string(rt.Kind)] = ctr
+	}
+	n := ctr.Add(1)
+	h.rrMu.Unlock()
+	return list[int(n-1)%len(list)].a
+}
+
 // pickWithSticky 粘性路由选择账号。
 // 优先使用上次成功路由的账号，直到：
 //   - 账号进入冷却/禁用状态
@@ -223,6 +272,11 @@ func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 // 任一条件触发则降级为 Pick() 选新账号并重置粘性记录。
 func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 	const defaultMaxReqs = 50
+
+	// 桥接渠道（zcode）：并发集中单账号易撞每账号并发上限，且烧额度应齐烧。
+	if rt.Kind == provider.ZCode {
+		return h.pickBridgeRotation(rt)
+	}
 
 	h.stickyMu.RLock()
 	sticky := h.sticky[h.stickyKey(rt.Kind)]
@@ -518,9 +572,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	var peek struct {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
+		Think  bool   `json:"think"` // chatui 等客户端显式索取思考流（reasoning_content 透传）
 	}
 	_ = json.Unmarshal(body, &peek)
 	requestedModel := strings.TrimSpace(peek.Model)
+
+	// 剔除私有字段 think，避免上游对未知字段报错
+	if peek.Think {
+		var m map[string]any
+		if json.Unmarshal(body, &m) == nil {
+			delete(m, "think")
+			if nb, err := json.Marshal(m); err == nil {
+				body = nb
+			}
+		}
+	}
 
 	// 解析候选列表：命中别名则展开为候选链；否则为单项候选
 	redirects := h.GetModelRedirects()
@@ -657,19 +723,38 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 			if peek.Stream {
 				track := &tokenTrackingReader{r: rc}
-				_ = rt.Upstream.Stream(w, track)
+				// 客户端带 think:true 且渠道支持时透传思考字段（reasoning_content），
+				// 否则维持剥离（ZCode 等客户端会把思考当正文渲染）
+				if tp, ok := rt.Upstream.(provider.ThinkPassthrough); ok && peek.Think {
+					_ = tp.StreamWithThink(w, track, true)
+				} else {
+					_ = rt.Upstream.Stream(w, track)
+				}
 				track.finish()
 				var p, c, cr, cw int64
 				if pr, crk, crd, cwr, ok := track.ScanResult(); ok {
 					p, c, cr, cw = pr, crk, crd, cwr
 				}
+				// 流以 200 干净结束却零 token 且总时长超过 1 分钟：上游实际没吐任何
+				// 内容（典型：桥接实例签发卡死挂满自身 120s 超时）。按一次上游错误
+				// 计账触发熔断，防止路由持续把流量打进"假成功"的账号；审计记 502。
+				degraded := p == 0 && c == 0 && time.Since(startTime) >= time.Minute
+				if degraded {
+					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					log.Printf("zero-token long stream platform=%s uid=%s elapsed=%dms — counted as upstream error",
+						rt.Kind, acct.UID, time.Since(startTime).Milliseconds())
+				}
 				if rec := h.recordTokens; rec != nil && (p > 0 || c > 0) {
-					rec(kind, uid, p, c, cr, cw)
+					rec(kind, uid, targetModel, p, c, cr, cw)
 				}
 				if h.clientKeys != nil && (p > 0 || c > 0) {
 					h.clientKeys.RecordUsage(caller.Key, p+c)
 				}
 				if h.auditRec != nil {
+					auditStatus := http.StatusOK
+					if degraded {
+						auditStatus = http.StatusBadGateway
+					}
 					h.auditRec.Record(audit.Entry{
 						Client:           caller.Name,
 						KeySnippet:       keySnippet,
@@ -682,7 +767,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						CacheTokens:      cr,
 						TotalTokens:      p + c,
 						DurationMs:       time.Since(startTime).Milliseconds(),
-						Status:           http.StatusOK,
+						Status:           auditStatus,
 						Stream:           true,
 					})
 				}
@@ -690,7 +775,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// 非流式
-			resp, err := rt.Upstream.Aggregate(rc)
+			var resp map[string]any
+			var err error
+			if tp, ok := rt.Upstream.(provider.ThinkPassthrough); ok && peek.Think {
+				resp, err = tp.AggregateWithThink(rc, true)
+			} else {
+				resp, err = rt.Upstream.Aggregate(rc)
+			}
 			if err != nil {
 				writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 				return
@@ -717,7 +808,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if rec := h.recordTokens; rec != nil && (p > 0 || c > 0) {
-				rec(kind, uid, p, c, cr, cw)
+				rec(kind, uid, targetModel, p, c, cr, cw)
 			}
 			if h.clientKeys != nil && (p > 0 || c > 0) {
 				h.clientKeys.RecordUsage(caller.Key, p+c)
@@ -881,27 +972,16 @@ func (t *tokenTrackingReader) scan(chunk []byte) {
 }
 
 func (t *tokenTrackingReader) parseLine(line []byte) {
+	// 1. OpenAI 兼容：行内嵌 "usage":{...}（扁平结构：zcode/glm、trae 等）
 	if m := usageObjRe.FindSubmatch(line); m != nil {
-		// OpenAI 兼容：行内嵌 "usage":{...}
+		t.has = true
 		for _, kv := range usageNumRe.FindAllSubmatch(m[1], -1) {
 			v, _ := strconv.ParseInt(string(kv[2]), 10, 64)
-			switch string(kv[1]) {
-			case "prompt_tokens":
-				t.prompt = v
-			case "completion_tokens":
-				t.completion = v
-			case "total_tokens":
-				t.total = v
-			case "prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens":
-				t.cacheRead = v
-			case "prompt_cache_write_tokens", "cache_creation_input_tokens":
-				t.cacheWrite = v
-			}
+			t.applyField(string(kv[1]), v)
 		}
-		t.has = true
 		return
 	}
-	// SOLO 原生：token_usage 事件的 data 行 {"prompt_tokens":..,"completion_tokens":..}
+	// 2. data:{...} 行：SOLO 原生或 qoder 嵌套封装
 	m := dataObjRe.FindSubmatch(line)
 	if m == nil {
 		return
@@ -910,30 +990,71 @@ func (t *tokenTrackingReader) parseLine(line []byte) {
 	if json.Unmarshal(m[1], &obj) != nil {
 		return
 	}
-	p, ok := obj["prompt_tokens"].(float64)
-	if !ok {
+	// 2a. qoder：data:{"body":"<内层 JSON 字符串>"} —— usage 藏在转义的内层 JSON 里，
+	//     且 usage 自带嵌套 details 对象，正则截断不可靠，必须完整解析。
+	if body, ok := obj["body"].(string); ok && body != "" {
+		var inner map[string]any
+		if json.Unmarshal([]byte(body), &inner) != nil {
+			return
+		}
+		if u, ok := inner["usage"].(map[string]any); ok {
+			t.has = true
+			t.applyUsageMap(u)
+		}
 		return
 	}
-	t.prompt = int64(p)
-	if c, ok := obj["completion_tokens"].(float64); ok {
-		t.completion = int64(c)
+	// 2b. SOLO 原生：{"prompt_tokens":..,"completion_tokens":..}（无 usage 键）
+	if p, ok := obj["prompt_tokens"].(float64); ok {
+		t.has = true
+		t.applyField("prompt_tokens", int64(p))
+		if c, ok := obj["completion_tokens"].(float64); ok {
+			t.applyField("completion_tokens", int64(c))
+		}
+		if tt, ok := obj["total_tokens"].(float64); ok {
+			t.applyField("total_tokens", int64(tt))
+		}
+		if cr, ok := obj["prompt_cache_hit_tokens"].(float64); ok {
+			t.applyField("prompt_cache_hit_tokens", int64(cr))
+		} else if cr, ok := obj["cache_read_input_tokens"].(float64); ok {
+			t.applyField("cache_read_input_tokens", int64(cr))
+		} else if cr, ok := obj["cached_tokens"].(float64); ok {
+			t.applyField("cached_tokens", int64(cr))
+		}
+		if cw, ok := obj["prompt_cache_write_tokens"].(float64); ok {
+			t.applyField("prompt_cache_write_tokens", int64(cw))
+		} else if cw, ok := obj["cache_creation_input_tokens"].(float64); ok {
+			t.applyField("cache_creation_input_tokens", int64(cw))
+		}
 	}
-	if tt, ok := obj["total_tokens"].(float64); ok {
-		t.total = int64(tt)
+}
+
+// applyField 按 usage 字段名写入对应计数。
+func (t *tokenTrackingReader) applyField(name string, v int64) {
+	switch name {
+	case "prompt_tokens":
+		t.prompt = v
+	case "completion_tokens":
+		t.completion = v
+	case "total_tokens":
+		t.total = v
+	case "prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens":
+		t.cacheRead = v
+	case "prompt_cache_write_tokens", "cache_creation_input_tokens":
+		t.cacheWrite = v
 	}
-	if cr, ok := obj["prompt_cache_hit_tokens"].(float64); ok {
-		t.cacheRead = int64(cr)
-	} else if cr, ok := obj["cache_read_input_tokens"].(float64); ok {
-		t.cacheRead = int64(cr)
-	} else if cr, ok := obj["cached_tokens"].(float64); ok {
-		t.cacheRead = int64(cr)
+}
+
+// applyUsageMap 从完整 usage 对象提取字段（qoder 嵌套 details 结构安全）。
+func (t *tokenTrackingReader) applyUsageMap(u map[string]any) {
+	for _, k := range []string{
+		"prompt_tokens", "completion_tokens", "total_tokens",
+		"prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens",
+		"prompt_cache_write_tokens", "cache_creation_input_tokens",
+	} {
+		if v, ok := asInt(u[k]); ok {
+			t.applyField(k, v)
+		}
 	}
-	if cw, ok := obj["prompt_cache_write_tokens"].(float64); ok {
-		t.cacheWrite = int64(cw)
-	} else if cw, ok := obj["cache_creation_input_tokens"].(float64); ok {
-		t.cacheWrite = int64(cw)
-	}
-	t.has = true
 }
 
 // asInt 把 JSON 反序列化的数字（float64 或 string）安全转成 int64。
@@ -1010,11 +1131,11 @@ func (h *Handler) tokenUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type tokenStats struct {
-		Prompt      int64 `json:"prompt_tokens"`
-		Completion  int64 `json:"completion_tokens"`
-		CacheRead   int64 `json:"cache_read_tokens"`
-		CacheWrite  int64 `json:"cache_write_tokens"`
-		Total       int64 `json:"total_tokens"`
+		Prompt     int64 `json:"prompt_tokens"`
+		Completion int64 `json:"completion_tokens"`
+		CacheRead  int64 `json:"cache_read_tokens"`
+		CacheWrite int64 `json:"cache_write_tokens"`
+		Total      int64 `json:"total_tokens"`
 	}
 	stats := make(map[string]*tokenStats)
 	for kind := range h.cfg.Runtimes {
@@ -1045,8 +1166,30 @@ func (h *Handler) tokenUsage(w http.ResponseWriter, r *http.Request) {
 		totalCacheRead += s.CacheRead
 		totalCacheWrite += s.CacheWrite
 	}
+	// 按模型累计（供前端按模型官方单价折算节省金额）；
+	// 旧格式 CSV 行没有模型名，记成 "<渠道> (历史)"，前端按渠道主力模型档估算。
+	modelStats := make(map[string]*tokenStats)
+	for _, au := range report {
+		for _, mu := range au.Models {
+			key := mu.Model
+			if key == "" {
+				key = au.Kind + " (历史)"
+			}
+			ms := modelStats[key]
+			if ms == nil {
+				ms = &tokenStats{}
+				modelStats[key] = ms
+			}
+			ms.Prompt += mu.Prompt
+			ms.Completion += mu.Completion
+			ms.CacheRead += mu.CacheRead
+			ms.CacheWrite += mu.CacheWrite
+			ms.Total = ms.Prompt + ms.Completion + ms.CacheRead + ms.CacheWrite
+		}
+	}
 	out := map[string]any{
 		"channels": stats,
+		"models":   modelStats,
 		"summary": map[string]int64{
 			"prompt_tokens":      totalPrompt,
 			"completion_tokens":  totalCompletion,

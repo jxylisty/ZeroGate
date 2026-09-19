@@ -600,6 +600,17 @@ func (c *Client) Classify(status int, body string) provider.ErrKind { return Cla
 func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error   { return Stream(w, r) }
 func (c *Client) Aggregate(r io.Reader) (map[string]any, error)     { return Aggregate(r) }
 
+// StreamWithThink / AggregateWithThink 实现 provider.ThinkPassthrough。
+// SOLO 协议的思考链在 OpenAI 化输出里本就带 reasoning_content，无剥离动作，
+// 这里直接复用原实现（passthrough 参数不影响行为）。
+func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
+	return Stream(w, r)
+}
+
+func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
+	return Aggregate(r)
+}
+
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) > n {
