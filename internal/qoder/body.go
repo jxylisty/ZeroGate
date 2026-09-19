@@ -56,13 +56,13 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, ena
 		"is_reply":         true,
 		"image_urls":       nil,
 		"session_type":     "qodercli",
-		"model_config":     map[string]any{"key": modelKey, "is_reasoning": enableReasoning},
+		"model_config":     qoderModelConfig(modelKey, enableReasoning, reasoningEffort),
 		"chat_context": map[string]any{
 			"chatPrompt": "",
 			"text":       map[string]any{"type": "text", "text": prompt},
 			"extra": map[string]any{
 				"context":         []any{},
-				"modelConfig":     map[string]any{"key": modelKey, "is_reasoning": enableReasoning},
+				"modelConfig":     qoderModelConfig(modelKey, enableReasoning, reasoningEffort),
 				"originalContent": map[string]any{"type": "text", "text": prompt},
 			},
 			"features":  []any{},
@@ -81,6 +81,15 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, ena
 	}
 
 	return json.Marshal(base)
+}
+
+// qoderModelConfig 组装 model_config：强度非空时带上（上游是否识别待验证，未知字段应被忽略）。
+func qoderModelConfig(modelKey string, enableReasoning bool, reasoningEffort string) map[string]any {
+	mc := map[string]any{"key": modelKey, "is_reasoning": enableReasoning}
+	if reasoningEffort != "" {
+		mc["reasoning_effort"] = reasoningEffort
+	}
+	return mc
 }
 
 // truncateRunes 截断到 n 个 rune。
