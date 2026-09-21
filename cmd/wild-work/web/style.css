@@ -202,20 +202,20 @@
   justify-content: center; font-size: 13px; font-weight: 700; color: #fff; flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
 }
-.fee-card-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.fee-card-name { font-size: 15px; font-weight: 600; color: var(--text); }
 .fee-body { padding: 12px; }
-.fee-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.fee-table th { text-align: left; padding: 6px 8px; font-size: 11px; color: var(--muted); font-weight: 500; border-bottom: 2px solid var(--border); }
+.fee-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.fee-table th { text-align: left; padding: 6px 8px; font-size: 12px; color: var(--muted); font-weight: 500; border-bottom: 2px solid var(--border); }
 .fee-table td { padding: 8px 8px; border-bottom: 1px dashed var(--border); vertical-align: middle; }
 .fee-table tr:last-child td { border-bottom: none; }
 .fee-model-cell { font-weight: 500; color: var(--text); min-width: 200px; max-width: 300px; word-break: break-word; }
-.fee-rate-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.fee-rate-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 12px; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .fee-rate-badge.free { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .fee-rate-badge.low { background: color-mix(in srgb, var(--primary) 16%, transparent); color: var(--primary); }
 .fee-rate-badge.normal { background: color-mix(in srgb, var(--warn) 17%, transparent); color: var(--warn); }
 .fee-rate-badge.high { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
 .fee-note-tag {
-  display: inline-block; margin-top: 4px; font-size: 11px; color: var(--muted);
+  display: inline-block; margin-top: 4px; font-size: 12px; color: var(--muted);
   background: var(--bg-sub); padding: 2px 8px; border-radius: 6px;
   word-break: break-word; white-space: normal; max-width: 100%;
 }
@@ -228,7 +228,7 @@
 .fee-copy:hover { color: var(--primary); border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); }
 .fee-copy .ic { width: 12px; height: 12px; }
 .fee-id {
-  font-family: var(--mono); font-size: 11.5px; color: var(--text); cursor: pointer;
+  font-family: var(--mono); font-size: 13px; color: var(--text); cursor: pointer;
   user-select: all; word-break: break-all; background: var(--bg-sub); padding: 2px 6px; border-radius: 5px;
 }
 .fee-id:hover { color: var(--primary); }
@@ -397,6 +397,27 @@ html[data-theme="dark"] .token-hero-sub { color: var(--muted); }
 
 /* SVG 图表容器 */
 .svg-chart-container { width: 100%; min-height: 250px; position: relative; overflow-x: auto; }
+
+/* Token 日历热力图（GitHub 贡献图风格） */
+.heatmap-container { overflow-x: auto; padding: 6px 2px 2px; }
+.heatmap-scroll { display: inline-block; min-width: 100%; }
+.heatmap-grid { display: inline-block; border-collapse: separate; border-spacing: 3px; }
+.heatmap-cell { width: 11px; height: 11px; border-radius: 3px; display: inline-block; background: var(--bg-sub); }
+.heatmap-cell.lvl0 { background: var(--bg-sub); }
+.heatmap-cell.lvl1 { background: color-mix(in srgb, var(--ok) 28%, var(--bg-sub)); }
+.heatmap-cell.lvl2 { background: color-mix(in srgb, var(--ok) 52%, var(--bg-sub)); }
+.heatmap-cell.lvl3 { background: color-mix(in srgb, var(--ok) 76%, var(--bg-sub)); }
+.heatmap-cell.lvl4 { background: var(--ok); }
+.heatmap-month-row { display: flex; gap: 0; font-size: 10px; color: var(--muted); margin-bottom: 2px; user-select: none; }
+.heatmap-month-lbl { position: absolute; top: -14px; font-size: 10px; color: var(--muted); white-space: nowrap; }
+.heatmap-flex { display: flex; gap: 6px; align-items: flex-start; position: relative; padding-top: 16px; }
+.heatmap-weekday-col { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--muted); user-select: none; flex-shrink: 0; padding-top: 1px; }
+.heatmap-weekday-col span { height: 11px; line-height: 11px; }
+.heatmap-weeks { display: flex; gap: 3px; flex-shrink: 0; }
+.heatmap-week { display: flex; flex-direction: column; gap: 3px; }
+.heatmap-week .heatmap-cell:hover { outline: 1.5px solid var(--primary); outline-offset: 0; }
+html[data-theme="dark"] .heatmap-cell.lvl0 { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.heatmap-empty-hint { font-size: 12px; color: var(--muted); padding: 6px 2px; }
 .donut-chart-container {
   width: 100%; min-height: 250px; display: flex; align-items: center;
   justify-content: space-around; gap: 16px; flex-wrap: wrap; padding: 10px 0;
@@ -535,6 +556,44 @@ html[data-theme="dark"] .token-hero-sub { color: var(--muted); }
 .gac-meta .gac-time { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gac-empty { font-size: 12px; color: var(--muted); }
 .gac-run { align-self: flex-start; }
+
+/* 本地桥管理（growthCheckinBox 复用 gac 卡片：gac-head 内含 badge） */
+.bridge-group { margin-bottom: 18px; }
+.bg-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.bg-name { font-weight: 700; font-size: 14px; color: var(--text); }
+.bg-count { font-size: 12px; color: var(--primary); font-weight: 600; }
+.bg-desc { font-size: 12px; color: var(--muted); }
+.bridge-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;
+}
+.bridge-card {
+  background: var(--bg-sub); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.bridge-card.is-online { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.br-head { display: flex; align-items: center; gap: 8px; }
+.br-name { font-weight: 600; font-size: 14px; color: var(--text); }
+.br-port { font-size: 12px; color: var(--muted); }
+.br-desc { font-size: 12px; color: var(--muted); }
+.br-detail { font-size: 12px; color: var(--text); background: var(--bg); border-radius: 6px; padding: 5px 8px; word-break: break-all; }
+.br-last { font-size: 11px; color: var(--muted); }
+.br-ops { display: flex; gap: 8px; margin-top: 2px; }
+.bridge-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  background: var(--muted); opacity: .5;
+}
+.bridge-dot.on { background: var(--ok); opacity: 1; box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent); }
+.bridge-dot.mid { background: var(--warn, #f59e0b); opacity: 1; }
+
+/* ZCode 周末包领取汇总 */
+.claim-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; background: var(--bg-sub); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
+.cs-item { display: flex; flex-direction: column; gap: 2px; }
+.cs-label { font-size: 11px; color: var(--muted); }
+.cs-item b { font-size: 14px; }
+
+/* 签到卡片（成长中心页）：gac-head 同时容纳 badge 与名字 */
+.growth-acct-card .gac-head .badge { flex-shrink: 0; font-size: 10px; padding: 2px 7px; }
+.growth-acct-card .gac-status .gac-credits { margin-left: auto; color: var(--primary); font-weight: 600; }
 
 .growth-summary {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;

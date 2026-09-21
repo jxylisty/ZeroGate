@@ -1542,6 +1542,7 @@ async function loadTokenAnalytics() {
 
     renderTokenHero(tokenData.summary || {}, tokenData.models || {}, tokenData.channels || {});
     renderTokenTrend(auditAnalytics.daily_trend || [], usageData.accounts || []);
+    renderTokenHeatmap(auditAnalytics.daily_trend || [], usageData.accounts || []);
     renderChannelDonut(tokenData.channels || auditAnalytics.channel_tokens || {});
     renderTopModels(auditAnalytics.top_models || [], tokenData.summary || {});
     renderTopClients(auditAnalytics.top_clients || []);
@@ -1780,6 +1781,83 @@ function renderTokenTrend(auditDaily, accounts) {
       ${gridLines}
       ${bars}
     </svg>
+  `;
+}
+
+// 2.5 Token 日历热力图（GitHub 贡献图风格：近 26 周格子，色阶=当日 Token 量）
+function renderTokenHeatmap(auditDaily, accounts) {
+  const wrap = $("tokenHeatmapWrap");
+  if (!wrap) return;
+
+  // 与趋势图同口径的双数据源合并
+  const dayMap = {};
+  (auditDaily || []).forEach(d => {
+    if (!d.day) return;
+    dayMap[d.day] = (dayMap[d.day] || 0) + Number(d.total || 0);
+  });
+  (accounts || []).forEach(a => {
+    (a.tokens || []).forEach(t => {
+      if (!t.day) return;
+      dayMap[t.day] = Math.max(dayMap[t.day] || 0, Number(t.total || 0));
+    });
+  });
+
+  // 构建近 26 周网格：列=周（周日开头），行=星期几
+  const WEEKS = 26;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const end = new Date(today);
+  end.setDate(end.getDate() + (6 - end.getDay())); // 对齐到本周周六
+  const start = new Date(end);
+  start.setDate(start.getDate() - (WEEKS * 7 - 1));
+
+  const tokensOf = d => dayMap[localYMD(d)] || 0;
+  const allVals = Object.values(dayMap).filter(v => v > 0).sort((a, b) => a - b);
+  const q = p => allVals.length ? allVals[Math.min(allVals.length - 1, Math.floor(allVals.length * p))] : 0;
+  const t1 = Math.max(q(0.25), 1), t2 = Math.max(q(0.5), t1 + 1), t3 = Math.max(q(0.75), t2 + 1);
+  const level = v => v <= 0 ? 0 : v < t1 ? 1 : v < t2 ? 2 : v < t3 ? 3 : 4;
+  const fmtDay = d => `${localYMD(d)}\n${fmtTokens(tokensOf(d))} tokens`;
+
+  let weeksHtml = "";
+  const monthMarks = []; // {colIndex, label}
+  let lastMonth = -1;
+  for (let w = 0; w < WEEKS; w++) {
+    let col = "";
+    for (let dow = 0; dow < 7; dow++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + w * 7 + dow);
+      const future = d > today;
+      if (future) {
+        col += `<span class="heatmap-cell" style="visibility:hidden"></span>`;
+        continue;
+      }
+      const lv = level(tokensOf(d));
+      col += `<span class="heatmap-cell lvl${lv}" title="${esc(fmtDay(d))}"></span>`;
+    }
+    const firstOfMonth = new Date(start);
+    firstOfMonth.setDate(firstOfMonth.getDate() + w * 7);
+    if (firstOfMonth.getMonth() !== lastMonth) {
+      lastMonth = firstOfMonth.getMonth();
+      monthMarks.push({ col: w, label: (lastMonth + 1) + "月" });
+    }
+    weeksHtml += `<div class="heatmap-week">${col}</div>`;
+  }
+
+  // 月份标签按列位置绝对布局
+  const CELL = 14; // 11px 格子 + 3px 间距
+  const monthHtml = monthMarks.map(m =>
+    `<span class="heatmap-month-lbl" style="left:${m.col * CELL}px">${esc(m.label)}</span>`).join("");
+
+  wrap.innerHTML = `
+    <div class="heatmap-scroll">
+      <div class="heatmap-flex">
+        <div style="position:absolute; top:0; left:34px; right:0; height:14px;">${monthHtml}</div>
+        <div class="heatmap-weekday-col">
+          <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+        </div>
+        <div class="heatmap-weeks">${weeksHtml}</div>
+      </div>
+    </div>
   `;
 }
 
