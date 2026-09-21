@@ -518,9 +518,8 @@ func (s *Scheduler) RunGrowthNow() {
 			continue
 		}
 		r := s.growthOne(st.UID)
-		log.Printf("growth result platform=%s uid=%s travel=%s lottery=%s tasks=%s credits=%d coupons=%d", 
+		log.Printf("growth result platform=%s uid=%s travel=%s lottery=%s tasks=%s credits=%d coupons=%d",
 			name, st.UID, r.Travel, r.Lottery, r.Tasks, r.TotalCredits, r.CouponCount)
-		s.notifyGrowth(r)
 	}
 	log.Printf("growth batch done platform=%s", name)
 }
@@ -551,19 +550,30 @@ func (s *Scheduler) growthOne(uid string) GrowthResult {
 	// 执行每日旅行
 	tr := ""
 	if err := s.cfg.Upstream.GrowthTravel(a); err != nil {
-		tr = fmt.Sprintf("error: %s", shortErr(err))
-		log.Printf("growth travel failed platform=%s uid=%s err=%v", name, uid, err)
+		// skip: 前缀 = 正常跳过（如旅行在途），原样展示；否则记为失败。
+		if strings.HasPrefix(err.Error(), "skip: ") {
+			tr = err.Error()
+			log.Printf("growth travel skip platform=%s uid=%s msg=%s", name, uid, err)
+		} else {
+			tr = fmt.Sprintf("error: %s", shortErr(err))
+			log.Printf("growth travel failed platform=%s uid=%s err=%v", name, uid, err)
+		}
 	} else {
 		tr = "ok"
 		log.Printf("growth travel success platform=%s uid=%s", name, uid)
 	}
 	r.Travel = tr
-	
+
 	// 执行幸运抽奖
 	lo := ""
 	if err := s.cfg.Upstream.GrowthLottery(a); err != nil {
-		lo = fmt.Sprintf("error: %s", shortErr(err))
-		log.Printf("growth lottery failed platform=%s uid=%s err=%v", name, uid, err)
+		if strings.HasPrefix(err.Error(), "skip: ") {
+			lo = err.Error()
+			log.Printf("growth lottery skip platform=%s uid=%s msg=%s", name, uid, err)
+		} else {
+			lo = fmt.Sprintf("error: %s", shortErr(err))
+			log.Printf("growth lottery failed platform=%s uid=%s err=%v", name, uid, err)
+		}
 	} else {
 		lo = "ok"
 		log.Printf("growth lottery success platform=%s uid=%s", name, uid)
