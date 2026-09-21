@@ -396,6 +396,7 @@ const ADD_CHANNELS = [
   { ch: "wbintl",    name: "WorkBuddy (国际)", hint: "粘贴 Token" },
   { ch: "zcode",     name: "ZCode (Z.AI)",     hint: "浏览器登录 · 桥接" },
   { ch: "autoclaw",  name: "AutoClaw",         hint: "手机验证码" },
+  { ch: "atria",     name: "Atria (官方 Key)", hint: "粘贴 atr_ Key" },
 ];
 
 function renderAddMenu() {
@@ -867,6 +868,7 @@ function promptLogin(channel) {
   const name = groupMeta(channel).name;
   if (channel === "autoclaw") { openAutoclawDialog(); return; }
   if (channel === "wbintl" || channel === "codebuddy") { openWbtDialog(channel); return; }
+  if (channel === "atria") { openAtriaDialog(); return; }
   const row = $("zcodeProviderRow");
   if (channel === "zcode") {
     pendingProvider = "zai";
@@ -1113,6 +1115,21 @@ function bind() {
   $("selGrowthLimit").onchange = loadGrowthRecords;
   $("btnGrowthDetailClose").onclick = closeGrowthDetail;
   $("growthDetailOverlay").onclick = (e) => { if (e.target === $("growthDetailOverlay")) closeGrowthDetail(); };
+  // 成长中心 · 签到与 ZCode 周末包领取
+  $("btnGrowthBatchCheckin").onclick = openCheckinDialog;
+  $("btnClaimRefresh").onclick = loadClaimStatus;
+  $("btnClaimNow").onclick = runClaimNow;
+
+  // 本地桥
+  $("btnBridgeRefresh").onclick = loadBridges;
+  $("btnBridgeStartAll").onclick = bridgeStartAll;
+
+  // Atria Key 管理
+  $("btnAtriaAdd").onclick = addAtriaKey;
+  $("btnAtriaBatch").onclick = addAtriaBatch;
+  $("btnAtriaClose").onclick = closeAtriaDialog;
+  $("atriaOverlay").onclick = (e) => { if (e.target === $("atriaOverlay")) closeAtriaDialog(); };
+  $("atriaKey").addEventListener("keydown", (e) => { if (e.key === "Enter") addAtriaKey(); });
 
   $("apiAddr").onclick = () => {
     const v = $("apiAddr").querySelector(".val").textContent;
@@ -1169,6 +1186,7 @@ function bind() {
   if ($("inClientName")) $("inClientName").addEventListener("keydown", (e) => { if (e.key === "Enter") createClient(); });
   if ($("btnAddRedirect")) $("btnAddRedirect").onclick = saveRedirect;
   if ($("btnResetRedirects")) $("btnResetRedirects").onclick = resetRedirects;
+  if ($("btnRefreshTokens")) $("btnRefreshTokens").onclick = loadTokenAnalytics;
 }
 
 // ---------- Tab 导航控制 ----------
@@ -1182,10 +1200,12 @@ function initTabs() {
     panes.forEach(p => p.classList.toggle("active", p.id === `tab-${name}`));
     localStorage.setItem("zg_active_tab", name);
     if (name === "dashboard") loadDashboard();
+    else if (name === "usage") loadTokenAnalytics();
     else if (name === "logs") loadAuditLogs();
     else if (name === "clients") loadClients();
     else if (name === "router") loadRedirects();
     else if (name === "growth") initGrowthTab();
+    else if (name === "bridges") loadBridges();
     else if (name === "models") loadFees();
   }
 
@@ -1466,6 +1486,9 @@ async function resetRedirects() {
   bind();
   renderAddMenu();
   setupAuditLogsPolling();
+  document.addEventListener("zg:themechange", () => {
+    if (localStorage.getItem("zg_active_tab") === "usage") loadTokenAnalytics();
+  });
   try {
     await loadState();
     await loadDashboard();
@@ -1486,6 +1509,479 @@ function fmtTokens(n) {
 
 function fmtTotal(n) {
   return fmtTokens(n);
+}
+
+// ============================================================
+// Token 资产大屏与高级图表引擎 (纯原生 SVG，零依赖，高颜值)
+// ============================================================
+
+const CHANNEL_METAS = {
+  workbuddy: { name: "WorkBuddy", color: "#7c3aed" },
+  traework:  { name: "TraeWork",  color: "#2563eb" },
+  qoder:     { name: "Qoder",     color: "#0891b2" },
+  codebuddy: { name: "CodeBuddy", color: "#16a34a" },
+  wbintl:    { name: "WBIntl",    color: "#ea580c" },
+  zcode:     { name: "ZCode",     color: "#6366f1" },
+  autoclaw:  { name: "AutoClaw",  color: "#0d9488" },
+  atria:     { name: "Atria",     color: "#0284c7" },
+};
+
+// 本地时区 YMD（后端按日聚合用本地日期，不能用 toISOString 的 UTC 日期）
+function localYMD(d) {
+  const t = d || new Date();
+  return t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+}
+
+async function loadTokenAnalytics() {
+  try {
+    const [tokenData, auditAnalytics, usageData] = await Promise.all([
+      api("/api/token_usage").catch(() => ({})),
+      api("/api/audit/analytics").catch(() => ({})),
+      api("/api/usage").catch(() => ({ accounts: [] })),
+    ]);
+
+    renderTokenHero(tokenData.summary || {}, tokenData.models || {}, tokenData.channels || {});
+    renderTokenTrend(auditAnalytics.daily_trend || [], usageData.accounts || []);
+    renderChannelDonut(tokenData.channels || auditAnalytics.channel_tokens || {});
+    renderTopModels(auditAnalytics.top_models || [], tokenData.summary || {});
+    renderTopClients(auditAnalytics.top_clients || []);
+    renderAcctProductivity(usageData.accounts || []);
+  } catch (e) {
+    console.error("loadTokenAnalytics error:", e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 模型官方 API 单价（2026-09-19 网上检索，USD / 1M tokens；人民币计价模型按 7.2 汇率折算）
+// 匹配：模型名小数点归一为 - 后按数组顺序找第一个子串命中（注意具体型号必须排在系列名前）。
+// 来源：docs.z.ai / api-docs.deepseek.com / developers.openai.com / volcengine /
+//       help.aliyun.com(百炼) / platform.kimi.com / anthropic.com / ai.google.dev 转述
+// ---------------------------------------------------------------------------
+const USD_CNY = 7.2;
+const MODEL_PRICES = [
+  { re: "glm-5-3-flash",       in: 0.15, cache: 0.03,  out: 0.50 },  // Z.AI GLM-5.3-Flash
+  { re: "glm-5-3-flashx",      in: 0.30, cache: 0.06,  out: 1.00 },  // 估计档（介于 Flash 与标准之间）
+  { re: "glm-5-3",             in: 1.40, cache: 0.26,  out: 4.40 },  // Z.AI GLM-5.3（5.2 同价）
+  { re: "glm-5-2",             in: 1.40, cache: 0.26,  out: 4.40 },
+  { re: "glm-4",               in: 0.60, cache: 0.11,  out: 2.20 },  // GLM-4.6 档
+  { re: "doubao-seed-2-1-pro",   in: 0.83, cache: 0.17, out: 4.17 }, // 火山 ¥6 / 缓存¥1.2 / ¥30
+  { re: "doubao-seed-2-1-turbo", in: 0.42, cache: 0.08, out: 2.08 }, // 火山 ¥3 / 缓存¥0.6 / ¥15
+  { re: "doubao",                in: 0.42, cache: 0.08, out: 2.08 }, // 豆包其余型号按 Turbo 档估
+  { re: "deepseek-v4-pro",     in: 1.32, cache: 0.044, out: 3.96 },  // DeepSeek 官方峰时
+  { re: "deepseek",            in: 0.30, cache: 0.006, out: 1.20 },  // DeepSeek V4.1-Flash 峰时（含 deepseek-chat）
+  { re: "gpt-5-6-sol",         in: 4.00, cache: 1.00,  out: 20.00 }, // OpenAI GPT-5.6 Sol（降价后）
+  { re: "gpt-5-6-terra",       in: 2.50, cache: 0.25,  out: 15.00 },
+  { re: "gpt-5-6-luna",        in: 1.00, cache: 0.10,  out: 5.00 },  // 输出价为发布档估计
+  { re: "gpt-5",               in: 1.25, cache: 0.13,  out: 10.00 }, // GPT-5.5 等旧档估计
+  { re: "gpt-4o",              in: 2.50, cache: 1.25,  out: 10.00 },
+  { re: "claude-3-7-sonnet",   in: 3.00, cache: 0.30,  out: 15.00 },
+  { re: "claude-3-5-sonnet",   in: 3.00, cache: 0.30,  out: 15.00 },
+  { re: "claude-3-5-haiku",    in: 0.80, cache: 0.08,  out: 4.00 },
+  { re: "claude-opus",         in: 15.00, cache: 1.50, out: 75.00 },
+  { re: "qwen3-8-max",         in: 1.67, cache: 0.21,  out: 6.25 },  // 百炼 ¥12 / 缓存¥1.5 / ¥44.97
+  { re: "qwen3-8-flash",       in: 0.14, cache: 0.03,  out: 0.42 },  // 百炼 ¥1 / ¥3
+  { re: "kimi-k3",             in: 2.78, cache: 0.28,  out: 13.89 }, // Kimi ¥20 / 缓存¥2 / ¥100
+  { re: "kimi",                in: 1.67, cache: 0.28,  out: 6.94 },  // K2.6 等旧档估计
+  { re: "gemini-3-5-flash",    in: 1.50, cache: 0.15,  out: 9.00 },
+  { re: "gemini",              in: 0.60, cache: 0.06,  out: 3.00 },  // Flash-Lite 档
+  // 渠道主力模型档：历史 CSV 行没记模型名，后端以 "<渠道> (历史)" 记账，
+  // 按该渠道实际跑的主力模型档估算（必须排在上面型号条目之后，避免抢匹配 "渠道/模型" 前缀）。
+  { re: "zcode",                in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "atria",                in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "autoclaw",             in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "traework",             in: 0.42, cache: 0.08,  out: 2.08 },
+  { re: "workbuddy",            in: 0.30, cache: 0.006, out: 1.20 },
+  { re: "wbintl",               in: 1.40, cache: 0.26,  out: 4.40 },
+  { re: "codebuddy",            in: 4.00, cache: 1.00,  out: 20.00 },
+  { re: "qoder",                in: 0.14, cache: 0.03,  out: 0.42 },
+];
+// 未收录且无渠道前缀的模型：按中档模型估计
+const FALLBACK_PRICE = { re: "", in: 1.00, cache: 0.10, out: 4.00 };
+
+function modelPrice(model) {
+  const n = String(model || "").toLowerCase().replace(/\./g, "-");
+  for (const p of MODEL_PRICES) {
+    if (n.includes(p.re)) return p;
+  }
+  return FALLBACK_PRICE;
+}
+
+// 按 输入/输出/缓存命中 用量折算官方 API 美元成本（单价 USD/1M）。
+// GLM/DeepSeek/OpenAI 的 prompt_tokens 通常【包含】缓存命中部分，而 Anthropic 两者分开：
+// 统一按 "缓存命中 ≤ 输入 则从输入中扣除" 归一，避免缓存被按输入价重复计费。
+function priceUSD(model, prompt, completion, cacheRead) {
+  const p = modelPrice(model);
+  const cache = Math.max(0, Math.min(cacheRead, prompt));
+  const plainInput = prompt - cache;
+  return (plainInput * p.in + completion * p.out + cache * p.cache) / 1e6;
+}
+
+// 1. Hero 财富看板与价值折算
+function renderTokenHero(summary, models, channels) {
+  const total = Number(summary.total_tokens || 0);
+  const prompt = Number(summary.prompt_tokens || 0);
+  const comp = Number(summary.completion_tokens || 0);
+  const cache = Number(summary.cache_read_tokens || 0);
+
+  if ($("tkHeroTotal")) $("tkHeroTotal").textContent = fmtTokens(total);
+  if ($("tkHeroPrompt")) $("tkHeroPrompt").textContent = fmtTokens(prompt);
+  if ($("tkHeroComp")) $("tkHeroComp").textContent = fmtTokens(comp);
+  if ($("tkHeroCache")) $("tkHeroCache").textContent = fmtTokens(cache);
+
+  const promptPct = total > 0 ? Math.round((prompt / total) * 100) : 0;
+  const compPct = total > 0 ? Math.round((comp / total) * 100) : 0;
+  const cacheRate = (prompt + cache) > 0 ? Math.round((cache / (prompt + cache)) * 100) : 0;
+
+  if ($("tkHeroPromptPct")) $("tkHeroPromptPct").textContent = `占比 ${promptPct}%`;
+  if ($("tkHeroCompPct")) $("tkHeroCompPct").textContent = `占比 ${compPct}%`;
+
+  // 分渠道缓存命中率：同一「命中率 X%」数字会掩盖渠道差异——qoder/workbuddy
+  // 等上游不回传缓存字段（命中率显示 0% 是统计缺失而非无缓存），traework 有真实命中。
+  if ($("tkHeroCacheRate")) {
+    const chRates = Object.entries(channels || {})
+      .filter(([, s]) => (Number(s.prompt_tokens) + Number(s.cache_read_tokens)) > 0)
+      .map(([k, s]) => {
+        const p = Number(s.prompt_tokens) || 0;
+        const c = Number(s.cache_read_tokens) || 0;
+        if (c === 0 && p > 0) return `${k} 未上报`;
+        return `${k} ${Math.round((c / (p + c)) * 100)}%`;
+      });
+    $("tkHeroCacheRate").textContent = `命中率 ${cacheRate}%`;
+    if (chRates.length > 0) {
+      $("tkHeroCacheRate").title = `分渠道缓存命中率：${chRates.join("、")}\n（未上报 = 上游 usage 不含缓存字段，非真实无缓存）`;
+    }
+  }
+
+  // 白嫖节省：优先用 token_usage 的按模型全量统计 × 各模型官方 API 单价逐模型折算；
+  // 没有按模型数据（旧版后端）时退回全局 输入/输出/缓存 拆分 × 中档单价。
+  let savingsUsd = 0;
+  const breakdown = [];
+  const modelEntries = Object.entries(models || {});
+  if (modelEntries.length > 0) {
+    for (const [name, m] of modelEntries) {
+      const usd = priceUSD(
+        name,
+        Number(m.prompt_tokens || 0),
+        Number(m.completion_tokens || 0),
+        Number(m.cache_read_tokens || 0),
+      );
+      savingsUsd += usd;
+      if (usd > 0.0001) {
+        const label = name.includes(" (历史)")
+          ? name.replace(" (历史)", "·历史用量（按渠道主力模型档）")
+          : (name || "未知模型");
+        breakdown.push({ name: label, usd, tokens: Number(m.total_tokens || 0) });
+      }
+    }
+  } else {
+    savingsUsd = priceUSD("", prompt, comp, cache);
+    breakdown.push({ name: "全局拆分估算", usd: savingsUsd, tokens: total });
+  }
+  breakdown.sort((a, b) => b.usd - a.usd);
+
+  const tipLines = breakdown.slice(0, 6).map(b =>
+    `${b.name}：¥${(b.usd * USD_CNY).toFixed(2)}（${fmtTokens(b.tokens)} tokens）`);
+  const tip = `按各模型官方 API 单价折算（2026-09 检索，汇率 1 USD=${USD_CNY} CNY）\n${tipLines.join("\n")}`;
+
+  const savingsYuan = (savingsUsd * USD_CNY).toFixed(2);
+  const savingsUsdStr = savingsUsd.toFixed(2);
+  if ($("tkHeroSavings")) {
+    $("tkHeroSavings").textContent = `约为你白嫖节省: ￥${savingsYuan} (约 $${savingsUsdStr})`;
+    $("tkHeroSavings").title = tip;
+  }
+}
+
+// 2. 近 14 天 Token 每日消耗趋势（SVG 堆叠柱状图）
+function renderTokenTrend(auditDaily, accounts) {
+  const wrap = $("tokenTrendChartWrap");
+  if (!wrap) return;
+
+  const dayMap = {};
+
+  // 来源 A: auditDaily（audit_daily.json 落盘的按日聚合，含历史明细）
+  (auditDaily || []).forEach(d => {
+    if (!d.day) return;
+    dayMap[d.day] = dayMap[d.day] || { prompt: 0, comp: 0, cache: 0, total: 0 };
+    dayMap[d.day].prompt += Number(d.prompt || 0);
+    dayMap[d.day].comp += Number(d.completion || 0);
+    dayMap[d.day].cache += Number(d.cache || 0);
+    dayMap[d.day].total += Number(d.total || 0);
+  });
+
+  // 来源 B: accounts.tokens（各账号自带的按日历史，与 A 取 max 合并避免双计）
+  (accounts || []).forEach(a => {
+    (a.tokens || []).forEach(t => {
+      if (!t.day) return;
+      dayMap[t.day] = dayMap[t.day] || { prompt: 0, comp: 0, cache: 0, total: 0 };
+      dayMap[t.day].prompt = Math.max(dayMap[t.day].prompt, Number(t.prompt || 0));
+      dayMap[t.day].comp = Math.max(dayMap[t.day].comp, Number(t.completion || 0));
+      dayMap[t.day].cache = Math.max(dayMap[t.day].cache, Number(t.cache_read || 0));
+      dayMap[t.day].total = Math.max(dayMap[t.day].total, Number(t.total || 0));
+    });
+  });
+
+  // 生成近 14 天序列（本地时区日期，与后端 audit_daily.json 的日 key 对齐）
+  const days = [];
+  const now = new Date();
+  for (let i = 13; i >= 0; i--) {
+    const key = localYMD(new Date(now.getTime() - i * 86400 * 1000));
+    const item = dayMap[key] || { prompt: 0, comp: 0, cache: 0, total: 0 };
+    days.push({ day: key, label: key.slice(5), ...item });
+  }
+
+  const maxTotal = Math.max(...days.map(d => d.total + d.cache), 1000);
+
+  const W = 740, H = 220;
+  const padLeft = 55, padRight = 15, padTop = 20, padBottom = 28;
+  const chartW = W - padLeft - padRight;
+  const chartH = H - padTop - padBottom;
+
+  let gridLines = "";
+  const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
+  const cP = cssVar("--chart-prompt"), cC = cssVar("--chart-comp"), cK = cssVar("--chart-cache");
+  for (let step = 0; step <= 4; step++) {
+    const yVal = Math.round((maxTotal / 4) * step);
+    const y = padTop + chartH - (step / 4) * chartH;
+    gridLines += `
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">${fmtTokens(yVal)}</text>
+    `;
+  }
+
+  const stepW = chartW / days.length;
+  const barW = Math.max(16, Math.min(30, stepW * 0.62));
+  let bars = "";
+
+  days.forEach((d, i) => {
+    const x = padLeft + i * stepW + (stepW - barW) / 2;
+    const pHeight = (d.prompt / maxTotal) * chartH;
+    const cHeight = (d.comp / maxTotal) * chartH;
+    const kHeight = (d.cache / maxTotal) * chartH;
+
+    const pY = padTop + chartH - pHeight;
+    const cY = pY - cHeight;
+    const kY = cY - kHeight;
+
+    const tip = `${d.day}\n总计: ${fmtTokens(d.total + d.cache)}\n输入: ${fmtTokens(d.prompt)}\n输出: ${fmtTokens(d.comp)}\n缓存: ${fmtTokens(d.cache)}`;
+
+    bars += `
+      <g class="chart-bar-group">
+        <title>${esc(tip)}</title>
+        <rect x="${x}" y="${pY}" width="${barW}" height="${pHeight}" fill="${cP}" rx="2" />
+        <rect x="${x}" y="${cY}" width="${barW}" height="${cHeight}" fill="${cC}" rx="2" />
+        <rect x="${x}" y="${kY}" width="${barW}" height="${kHeight}" fill="${cK}" rx="2" />
+        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
+      </g>
+    `;
+  });
+
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
+      ${gridLines}
+      ${bars}
+    </svg>
+  `;
+}
+
+// 3. 白嫖渠道贡献占比（SVG 环形 Donut 图）
+function renderChannelDonut(channelTokens) {
+  const wrap = $("channelDonutWrap");
+  if (!wrap) return;
+
+  let total = 0;
+  const items = [];
+  for (const [k, val] of Object.entries(channelTokens)) {
+    const tokens = typeof val === "object" ? Number(val.total_tokens || 0) : Number(val || 0);
+    if (tokens > 0) {
+      total += tokens;
+      const meta = CHANNEL_METAS[k] || { name: k };
+      items.push({ kind: k, name: meta.name, color: chColor(k), tokens });
+    }
+  }
+
+  if (total === 0 || items.length === 0) {
+    wrap.innerHTML = `<div class="empty-chart">暂无各渠道 Token 消耗记录</div>`;
+    return;
+  }
+
+  items.sort((a, b) => b.tokens - a.tokens);
+
+  const cx = 95, cy = 95, r = 68;
+  const C = 2 * Math.PI * r;
+  let offset = 0;
+  let circles = "";
+  let legend = "";
+
+  items.forEach(it => {
+    const pct = ((it.tokens / total) * 100).toFixed(1);
+    const dash = (it.tokens / total) * C;
+    circles += `
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="transparent"
+        stroke="${it.color}" stroke-width="26"
+        stroke-dasharray="${dash} ${C - dash}" stroke-dashoffset="${-offset}"
+        transform="rotate(-90 ${cx} ${cy})">
+        <title>${esc(it.name)}: ${fmtTokens(it.tokens)} (${pct}%)</title>
+      </circle>
+    `;
+    offset += dash;
+
+    legend += `
+      <div class="donut-legend-item">
+        <div class="left">
+          <span class="donut-legend-dot" style="background:${it.color}"></span>
+          <span>${esc(it.name)}</span>
+        </div>
+        <div class="donut-legend-val">${pct}% <span style="font-size:11px;color:var(--muted);font-weight:400">(${fmtTokens(it.tokens)})</span></div>
+      </div>
+    `;
+  });
+
+  wrap.innerHTML = `
+    <div style="width:190px; height:190px; position:relative; flex-shrink:0;">
+      <svg viewBox="0 0 190 190" style="width:100%; height:100%;">
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="transparent" stroke="${cssVar("--chart-track")}" stroke-width="26" />
+        ${circles}
+        <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="16" font-weight="700" fill="var(--text)">${fmtTokens(total)}</text>
+        <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="11" fill="var(--muted)">总产出</text>
+      </svg>
+    </div>
+    <div class="donut-legend">
+      ${legend}
+    </div>
+  `;
+}
+
+// 4. 热门模型白嫖榜 TOP 5
+function renderTopModels(models, summary) {
+  const box = $("topModelsList");
+  if (!box) return;
+  if (!models || models.length === 0) {
+    box.innerHTML = `<div class="empty-hint">暂无模型调用数据</div>`;
+    return;
+  }
+  const top5 = models.slice(0, 5);
+  const max = top5[0].total_tokens || 1;
+  const badges = ["top1", "top2", "top3", "", ""];
+
+  // 全局 输入/输出/缓存 占比：把各模型的总量拆成三段后按官方单价折算节省金额
+  const tot = Number(summary && summary.total_tokens || 0);
+  const shares = tot > 0 ? {
+    p: Number(summary.prompt_tokens || 0) / tot,
+    c: Number(summary.completion_tokens || 0) / tot,
+    cr: Number(summary.cache_read_tokens || 0) / tot,
+  } : null;
+
+  box.innerHTML = top5.map((m, idx) => {
+    const pct = Math.max(8, Math.round((m.total_tokens / max) * 100));
+    let savingsHtml = "";
+    if (shares) {
+      const usd = priceUSD(
+        m.model,
+        m.total_tokens * shares.p,
+        m.total_tokens * shares.c,
+        m.total_tokens * shares.cr,
+      );
+      if (usd > 0.0001) {
+        savingsHtml = ` <span style="font-weight:600;color:var(--ok)">省 ¥${(usd * USD_CNY).toFixed(2)}</span>`;
+      }
+    }
+    return `
+      <div class="rank-item">
+        <span class="rank-num ${badges[idx]}">${idx + 1}</span>
+        <div class="rank-info">
+          <div class="rank-header">
+            <span class="rank-name" title="${esc(m.model)}">${esc(m.model)}</span>
+            <span class="rank-val">${fmtTokens(m.total_tokens)} <span style="font-weight:400;color:var(--muted)">(${m.req_count || 0}次)</span></span>
+          </div>
+          <div class="rank-bar-bg">
+            <div class="rank-bar-fill" style="width:${pct}%"></div>
+          </div>
+          ${savingsHtml ? `<div style="font-size:11px;margin-top:2px;">${savingsHtml}</div>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// 5. 客户端排行 TOP 5
+function renderTopClients(clients) {
+  const box = $("topClientsList");
+  if (!box) return;
+  if (!clients || clients.length === 0) {
+    box.innerHTML = `<div class="empty-hint">暂无客户端调用数据</div>`;
+    return;
+  }
+  const top5 = clients.slice(0, 5);
+  const max = top5[0].total_tokens || 1;
+  const badges = ["top1", "top2", "top3", "", ""];
+
+  box.innerHTML = top5.map((c, idx) => {
+    const pct = Math.max(8, Math.round((c.total_tokens / max) * 100));
+    return `
+      <div class="rank-item">
+        <span class="rank-num ${badges[idx]}">${idx + 1}</span>
+        <div class="rank-info">
+          <div class="rank-header">
+            <span class="rank-name">${esc(c.client || "Default")}</span>
+            <span class="rank-val">${fmtTokens(c.total_tokens)} <span style="font-weight:400;color:var(--muted)">(${c.req_count || 0}次)</span></span>
+          </div>
+          <div class="rank-bar-bg">
+            <div class="rank-bar-fill" style="width:${pct}%; background:linear-gradient(90deg, var(--chart-comp), var(--ok))"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// 6. 账号 Token 生产力榜单
+function renderAcctProductivity(accounts) {
+  const tbody = $("acctProductivityBody");
+  if (!tbody) return;
+  if (!accounts || accounts.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--muted)">暂无账号生产力数据</td></tr>`;
+    return;
+  }
+
+  const list = [...accounts].map(a => {
+    let sumPrompt = 0, sumComp = 0, sumCache = 0, sumTotal = 0;
+    (a.tokens || []).forEach(t => {
+      sumPrompt += Number(t.prompt || 0);
+      sumComp += Number(t.completion || 0);
+      sumCache += Number(t.cache_read || 0);
+      sumTotal += Number(t.total || 0);
+    });
+    const hitRate = (sumPrompt + sumCache) > 0 ? Math.round((sumCache / (sumPrompt + sumCache)) * 100) : null;
+    return { ...a, sumTotal, sumCache, hitRate };
+  });
+
+  list.sort((a, b) => b.sumTotal - a.sumTotal);
+
+  tbody.innerHTML = list.map(a => {
+    const gm = groupMeta(a.kind);
+    const exp = formatExpire(a.expire_at);
+    const expireTag = `<span class="tag ${exp.cls}">${I.clock} ${esc(exp.text)}</span>`;
+    const stateAcct = (state && state.accounts ? state.accounts : []).find(s => s.uid === a.uid && s.group === a.kind);
+    const isNext = stateAcct && stateAcct.is_next;
+    const statusTag = isNext
+      ? `<span class="tag next-pick">${I.target} 优先调度 #1</span>`
+      : (stateAcct && stateAcct.disabled ? `<span class="tag danger">已停用</span>` : `<span class="tag neutral">就绪待命</span>`);
+
+    return `
+      <tr>
+        <td>
+          <span class="badge ${gm.cls}" style="margin-right:6px;">${gm.name}</span>
+          <b>${esc(a.nickname || shortUid(a.uid))}</b>
+        </td>
+        <td><code style="font-size:11px;color:var(--muted)">${esc(shortUid(a.uid))}</code></td>
+        <td><b>${fmtTokens(a.sumTotal)}</b></td>
+        <td>${fmtTokens(a.today || 0)}</td>
+        <td>${a.hitRate !== null ? a.hitRate + '%' : '—'}</td>
+        <td>${expireTag}</td>
+        <td>${statusTag}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 // ============================================================
@@ -1668,6 +2164,8 @@ function closeGrowthDetail() {
 
 function initGrowthTab() {
   renderGrowthTimes();
+  loadGrowthCheckin();
+  loadClaimStatus();
   loadGrowthAccounts();
   loadGrowthToday();
   loadGrowthRecords();
@@ -1740,5 +2238,296 @@ async function runGrowthAccount(uid) {
   } catch (e) {
     toast(e.message);
     if (btn) { btn.disabled = false; btn.textContent = "立即执行"; }
+  }
+}
+
+// ============================================================
+// 本地桥管理（豆包桥 + zcode 实例 + 应用服务 + 自动化 + 外部托管）
+// ============================================================
+
+// 分组元数据（与后端 GroupNames 一致）
+const BRIDGE_GROUPS = [
+  { key: "bridge", name: "模型桥", desc: "网关依赖的本地模型桥，停了对应渠道就断" },
+  { key: "apps", name: "应用服务", desc: "对话台与验证码助手等配套 Web 服务" },
+  { key: "auto", name: "自动化与隧道", desc: "公网隧道、计划任务探针（外部定时器）" },
+  { key: "external", name: "外部托管应用", desc: "开机自启动的常驻应用，面板可探测/拉起，不支持停止" },
+];
+
+function bridgeDot(st) {
+  if (st.online) return `<span class="bridge-dot on" title="在线"></span>`;
+  if (st.running) return `<span class="bridge-dot mid" title="已拉起，端口未就绪"></span>`;
+  return `<span class="bridge-dot off" title="未运行"></span>`;
+}
+
+function bridgeCardHTML(st) {
+  const stateTag = st.online
+    ? `<span class="tag ok">在线</span>`
+    : st.running ? `<span class="tag warn">启动中</span>` : `<span class="tag neutral">未运行</span>`;
+  const roTag = st.no_stop ? `<span class="tag neutral" title="外部/自启动托管，面板不提供停止">只读</span>` : "";
+  const detail = esc(st.detail || st.error || "");
+  const lastAct = st.last_action ? `<div class="br-last">最近操作：${esc(st.last_action)} · ${esc(st.last_action_at || "")}</div>` : "";
+  const startBtn = st.online ? "" :
+    `<button class="btn small primary" onclick="bridgeStart('${esc(st.id)}')">启动</button>`;
+  const stopBtn = (!st.no_stop && st.running)
+    ? `<button class="btn small danger" onclick="bridgeStop('${esc(st.id)}')">停止</button>`
+    : "";
+  return `
+    <div class="bridge-card${st.online ? " is-online" : ""}">
+      <div class="br-head">
+        ${bridgeDot(st)}
+        <span class="br-name">${esc(st.name)}</span>
+        ${st.port ? `<code class="br-port">:${st.port}</code>` : ""}
+        ${stateTag}${roTag}
+      </div>
+      <div class="br-desc">${esc(st.desc || "")}</div>
+      ${detail ? `<div class="br-detail">${detail}</div>` : ""}
+      ${lastAct}
+      ${(startBtn || stopBtn) ? `<div class="br-ops">${startBtn}${stopBtn}</div>` : ""}
+    </div>`;
+}
+
+function renderBridges(list) {
+  const wrap = $("bridgeList");
+  if (!wrap) return;
+  let html = "";
+  for (const g of BRIDGE_GROUPS) {
+    const items = list.filter((x) => x.group === g.key);
+    if (!items.length) continue;
+    const onN = items.filter((x) => x.online).length;
+    html += `
+    <div class="bridge-group">
+      <div class="bg-head">
+        <span class="bg-name">${esc(g.name)}</span>
+        <span class="bg-count">${onN}/${items.length} 在线</span>
+        <span class="bg-desc">${esc(g.desc)}</span>
+      </div>
+      <div class="bridge-list">${items.map(bridgeCardHTML).join("")}</div>
+    </div>`;
+  }
+  wrap.innerHTML = html || `<div class="empty-hint">没有可托管的服务</div>`;
+}
+
+async function loadBridges() {
+  const wrap = $("bridgeList");
+  if (!wrap) return;
+  try {
+    const res = await api("/api/bridges");
+    renderBridges(res.bridges || []);
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function bridgeStart(id) {
+  try {
+    const r = await api("/api/bridges/start", { id });
+    if (r.error) toast(`${r.status && r.status.name ? r.status.name : id}：${r.error}`);
+    else if (r.status && r.status.online) toast(`${r.status.name} 已在线`);
+    else toast(`${r.status && r.status.name ? r.status.name : id} 启动指令已发出，等待就绪`);
+  } catch (e) { toast(e.message); }
+  loadBridges();
+}
+
+function bridgeStop(id) {
+  confirmDialog("确定停止该服务？停止后依赖它的功能将不可用。", async () => {
+    try {
+      const r = await api("/api/bridges/stop", { id });
+      toast(r.error || `${r.status && r.status.name ? r.status.name : id} 已停止`);
+    } catch (e) { toast(e.message); }
+    loadBridges();
+  });
+}
+
+async function bridgeStartAll() {
+  const btn = $("btnBridgeStartAll");
+  btn.disabled = true;
+  btn.textContent = "启动中…";
+  try {
+    await api("/api/bridges/start_all", {});
+    toast("一键全启完成，稍后自动刷新状态");
+  } catch (e) { toast(e.message); }
+  finally {
+    btn.disabled = false;
+    btn.innerHTML = `${I.zap}一键全启`;
+  }
+  setTimeout(loadBridges, 1500);
+  setTimeout(loadBridges, 6000);
+}
+
+// ============================================================
+// 成长中心 · 每日签到卡片（签到功能并入成长中心页）
+// ============================================================
+
+function growthCheckinCardHTML(a) {
+  const gm = groupMeta(a.group);
+  const canCheckin = gm.checkin || a.group === "workbuddy" || a.group === "traework" || a.group === "autoclaw";
+  let tag;
+  if (!canCheckin) tag = `<span class="tag neutral">无签到</span>`;
+  else if (isTodayChecked(a)) tag = `<span class="tag ok">今日已签</span>`;
+  else if (a.last_checkin_at) tag = `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`;
+  else tag = `<span class="tag neutral">未签到</span>`;
+  const btn = (canCheckin && !a.disabled)
+    ? `<button class="btn small gac-run" onclick="checkin('${esc(a.uid)}')">签到</button>` : "";
+  return `
+    <div class="growth-acct-card${a.disabled ? " is-disabled" : ""}">
+      <div class="gac-head">
+        <span class="badge ${gm.cls}">${esc(gm.name)}</span>
+        <span class="gac-name" title="${esc(a.uid)}">${esc(a.nickname || shortUid(a.uid))}</span>
+      </div>
+      <div class="gac-status">${tag}${a.credits ? `<span class="gac-credits">${a.credits} 分</span>` : ""}</div>
+      ${btn}
+    </div>`;
+}
+
+function loadGrowthCheckin() {
+  const wrap = $("growthCheckinBox");
+  if (!wrap) return;
+  const list = (state && state.accounts || []).filter((a) => {
+    const g = a.group;
+    return g === "workbuddy" || g === "traework" || g === "autoclaw" || g === "qoder" || g === "codebuddy" || g === "wbintl" || g === "zcode";
+  });
+  wrap.innerHTML = list.length
+    ? list.map(growthCheckinCardHTML).join("")
+    : `<div class="empty-hint">还没有账号，去「账号矩阵」添加</div>`;
+}
+
+// ============================================================
+// 成长中心 · ZCode 周末包领取可视化
+// ============================================================
+
+function claimRecTag(rec) {
+  if (rec.ok) return `<span class="tag ok">已领取</span>`;
+  if (rec.failed) return `<span class="tag bad">失败</span>`;
+  return `<span class="tag neutral">无可领</span>`;
+}
+
+function renderClaimStatus(rep) {
+  const box = $("claimStatusBox");
+  if (!box) return;
+  if (!rep) {
+    box.innerHTML = `<div class="empty-hint">还没有领取记录。自动窗口：周五/周六 19:00-19:15；也可点「立即领取」手动触发。</div>`;
+    return;
+  }
+  const head = `
+    <div class="claim-summary">
+      <div class="cs-item"><span class="cs-label">执行时间</span><b>${esc(rep.at || "-")}</b></div>
+      <div class="cs-item"><span class="cs-label">触发方式</span><b>${rep.trigger === "manual" ? "手动" : "自动"}</b></div>
+      <div class="cs-item"><span class="cs-label">已领取</span><b style="color:var(--ok)">${rep.claimed || 0}</b></div>
+      <div class="cs-item"><span class="cs-label">无可领</span><b>${rep.no_claim || 0}</b></div>
+      <div class="cs-item"><span class="cs-label">失败</span><b style="color:${(rep.failed || 0) > 0 ? "var(--danger)" : "inherit"}">${rep.failed || 0}</b></div>
+    </div>`;
+  const rows = (rep.instances || []).map((rec) => `
+    <div class="db-row ${rec.ok ? "ok" : rec.failed ? "expired" : ""}">
+      <span class="db-uid">${esc(rec.instance)}</span>
+      <span class="db-detail" title="${esc(rec.output || "")}">${esc(rec.output || "-")}</span>
+      <span class="db-flag">${claimRecTag(rec)} <span class="muted" style="font-size:11px">${esc(rec.at || "")}</span></span>
+    </div>`).join("");
+  box.innerHTML = head + `<div class="db-list" style="margin-top:8px;">${rows || `<div class="empty-hint">本轮没有遍历到任何实例</div>`}</div>`;
+}
+
+async function loadClaimStatus() {
+  const box = $("claimStatusBox");
+  if (!box) return;
+  try {
+    const res = await api("/api/zcode/claim_status");
+    renderClaimStatus(res.report);
+  } catch (e) {
+    box.innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function runClaimNow() {
+  const btn = $("btnClaimNow");
+  btn.disabled = true;
+  btn.textContent = "执行中…";
+  try {
+    await api("/api/zcode/claim_now", {});
+    toast("领取已启动（每实例最多 90 秒），稍后自动刷新结果");
+    setTimeout(loadClaimStatus, 3000);
+    setTimeout(loadClaimStatus, 12000);
+    setTimeout(loadClaimStatus, 30000);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `${I.zap}立即领取`;
+  }
+}
+
+// ============================================================
+// Atria 官方 Key 集中管理
+// ============================================================
+
+function openAtriaDialog() {
+  $("atriaKey").value = "";
+  $("atriaName").value = "";
+  $("atriaBatch").value = "";
+  $("atriaMsg").textContent = "";
+  $("atriaOverlay").classList.remove("hidden");
+  loadAtriaList();
+}
+function closeAtriaDialog() { $("atriaOverlay").classList.add("hidden"); }
+
+async function loadAtriaList() {
+  const tbody = $("atriaListBody");
+  if (!tbody) return;
+  try {
+    const res = await api("/api/atria/list");
+    const list = res.accounts || [];
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:14px;">暂无 Atria 账号，粘贴 atr_ Key 添加</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = list.map((a) => `
+      <tr>
+        <td>${esc(a.nickname || "")}</td>
+        <td><code style="font-size:11px;">${esc(shortUid(a.uid))}</code></td>
+        <td><code style="font-size:11px; color:var(--muted);">${esc(a.key || "")}</code></td>
+        <td>${a.disabled ? `<span class="tag danger">已停用</span>` : `<span class="tag ok">启用</span>`}</td>
+        <td>
+          <button class="btn small" onclick="toggleDisable('${esc(a.uid)}', ${a.disabled})">${a.disabled ? "启用" : "停用"}</button>
+          <button class="btn small danger" onclick="removeAcct('${esc(a.uid)}')">删除</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--danger); padding:14px;">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function addAtriaKey() {
+  const key = $("atriaKey").value.trim();
+  if (!key) { toast("请粘贴 Atria API Key"); return; }
+  $("btnAtriaAdd").disabled = true;
+  try {
+    const r = await api("/api/atria/add", { key, nickname: $("atriaName").value.trim() });
+    $("atriaMsg").textContent = `已添加：${r.nickname || r.uid}`;
+    $("atriaKey").value = "";
+    $("atriaName").value = "";
+    toast("Atria Key 已添加入池");
+    loadAtriaList();
+    loadState();
+  } catch (e) {
+    $("atriaMsg").textContent = "失败：" + e.message;
+  } finally {
+    $("btnAtriaAdd").disabled = false;
+  }
+}
+
+async function addAtriaBatch() {
+  const text = $("atriaBatch").value.trim();
+  if (!text) { toast("请先粘贴 Key 列表"); return; }
+  $("btnAtriaBatch").disabled = true;
+  try {
+    const r = await api("/api/atria/add_batch", { keys: text });
+    const errs = (r.results || []).filter((x) => x.status === "error");
+    $("atriaMsg").textContent = `新增 ${r.added} 个${errs.length ? `，失败 ${errs.length} 个` : ""}`;
+    toast(`批量导入完成：新增 ${r.added} 个`);
+    $("atriaBatch").value = "";
+    loadAtriaList();
+    loadState();
+  } catch (e) {
+    $("atriaMsg").textContent = "失败：" + e.message;
+  } finally {
+    $("btnAtriaBatch").disabled = false;
   }
 }

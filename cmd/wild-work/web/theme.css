@@ -1,6 +1,5 @@
 /* ============================================================
    ZeroGate Theme — 双主题设计系统（浅色 / 暗色）
-   index.html 与 usage.html 共用。
    改配色只改这里，勿在业务样式里再写硬编码色值。
    注意：暗色变量有两处定义（html[data-theme="dark"] 与
    prefers-color-scheme 兜底），需同步修改。
