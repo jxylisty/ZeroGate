@@ -25,6 +25,7 @@ type Config struct {
 	Name           string // 日志中的平台名
 	CheckinHours   []int  // 旧配置兼容，整点小时
 	CheckinMinutes []int  // 当天分钟数，优先于 CheckinHours
+	GrowthMinutes  []int  // 成长中心执行时间（当天分钟数）
 	KeepaliveHours []int  // 默认 [22]
 }
 
@@ -34,6 +35,7 @@ type Scheduler struct {
 	cfg       Config
 	wake      chan struct{}              // 配置变更唤醒 Run 循环重算下次触发
 	onCheckin func(CheckinResult)        // 结果观察器，供 GUI 接收自动签到结果
+	onGrowth  func(GrowthResult)         // 成长中心结果观察器
 	onRefresh func(string, bool, string) // token 刷新结果观察器
 }
 
@@ -58,15 +60,15 @@ func New(cfg Config) *Scheduler {
 }
 
 // schedule 返回当前签到分钟/保活小时配置的副本。
-func (s *Scheduler) schedule() (checkinMinutes, keepaliveHours []int) {
+func (s *Scheduler) schedule() (checkinMinutes, growthMinutes, keepaliveHours []int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]int{}, s.cfg.CheckinMinutes...), append([]int{}, s.cfg.KeepaliveHours...)
+	return append([]int{}, s.cfg.CheckinMinutes...), append([]int{}, s.cfg.GrowthMinutes...), append([]int{}, s.cfg.KeepaliveHours...)
 }
 
 // CheckinHours 保留旧 API，返回整点签到小时。
 func (s *Scheduler) CheckinHours() []int {
-	minutes, _ := s.schedule()
+	minutes, _, _ := s.schedule()
 	out := make([]int, 0, len(minutes))
 	for _, m := range minutes {
 		if m%60 == 0 {
@@ -78,7 +80,7 @@ func (s *Scheduler) CheckinHours() []int {
 
 // CheckinMinutes 当前签到时间，单位为当天分钟数（0..1439）。
 func (s *Scheduler) CheckinMinutes() []int {
-	minutes, _ := s.schedule()
+	minutes, _, _ := s.schedule()
 	return minutes
 }
 
@@ -92,9 +94,25 @@ func (s *Scheduler) CheckinTimes() []string {
 	return out
 }
 
+// GrowthMinutes 当前成长中心执行时间，单位为当天分钟数（0..1439）。
+func (s *Scheduler) GrowthMinutes() []int {
+	_, minutes, _ := s.schedule()
+	return minutes
+}
+
+// GrowthTimes 当前成长中心执行时间，格式为 HH:MM。
+func (s *Scheduler) GrowthTimes() []string {
+	minutes := s.GrowthMinutes()
+	out := make([]string, 0, len(minutes))
+	for _, m := range minutes {
+		out = append(out, fmt.Sprintf("%02d:%02d", m/60, m%60))
+	}
+	return out
+}
+
 // KeepaliveHours 当前保活时间（副本）。
 func (s *Scheduler) KeepaliveHours() []int {
-	_, kh := s.schedule()
+	_, _, kh := s.schedule()
 	return kh
 }
 
@@ -125,6 +143,42 @@ func (s *Scheduler) SetCheckinHours(hours []int) {
 		minutes = append(minutes, h*60)
 	}
 	s.SetCheckinMinutes(minutes)
+}
+
+// SetGrowthMinutes 运行中更新成长中心执行分钟并唤醒调度循环。
+func (s *Scheduler) SetGrowthMinutes(minutes []int) {
+	clean := make([]int, 0, len(minutes))
+	seen := map[int]bool{}
+	for _, m := range minutes {
+		if m >= 0 && m < 24*60 && !seen[m] {
+			seen[m] = true
+			clean = append(clean, m)
+		}
+	}
+	sort.Ints(clean)
+	s.mu.Lock()
+	s.cfg.GrowthMinutes = clean
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// SetGrowthObserver 设置成长中心结果观察器；用于把定时任务结果推送到 GUI。
+func (s *Scheduler) SetGrowthObserver(fn func(GrowthResult)) {
+	s.mu.Lock()
+	s.onGrowth = fn
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) notifyGrowth(r GrowthResult) {
+	s.mu.Lock()
+	fn := s.onGrowth
+	s.mu.Unlock()
+	if fn != nil {
+		fn(r)
+	}
 }
 
 // SetCheckinObserver 设置签到结果观察器；用于把定时任务结果推送到 GUI。
@@ -161,9 +215,18 @@ func (s *Scheduler) notifyRefresh(uid string, ok bool, msg string) {
 
 // NextFire 返回最近的一次触发时间（签到 + 保活合并）。
 func (s *Scheduler) NextFire() time.Time {
-	ch, kh := s.schedule()
+	ch, _, kh := s.schedule()
 	all := append(append([]int{}, ch...), hoursToMinutes(kh)...)
 	return nextFireMinutes(time.Now(), all)
+}
+
+// NextGrowthFire 返回最近的成长中心执行时间。
+func (s *Scheduler) NextGrowthFire() time.Time {
+	_, gm, _ := s.schedule()
+	if len(gm) == 0 {
+		return time.Time{}
+	}
+	return nextFireMinutes(time.Now(), gm)
 }
 
 // nextFire 保留旧测试/API语义：hours 为本地小时（0-23）。
@@ -200,8 +263,8 @@ func nextFireMinutes(now time.Time, minutes []int) time.Time {
 // Run 主循环，阻塞直到 ctx 取消。
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
-		ch, kh := s.schedule()
-		all := append(append([]int{}, ch...), hoursToMinutes(kh)...)
+		ch, gm, kh := s.schedule()
+		all := append(append(append([]int{}, ch...), hoursToMinutes(kh)...), gm...)
 		next := nextFireMinutes(time.Now(), all)
 		timer := time.NewTimer(time.Until(next))
 		select {
@@ -215,6 +278,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 			minute := now.Hour()*60 + now.Minute()
 			if containsMinute(ch, minute) {
 				s.RunCheckinNow()
+			}
+			if containsMinute(gm, minute) {
+				s.RunGrowthNow()
 			}
 			if contains(kh, now.Hour()) {
 				s.RunKeepaliveNow()
@@ -248,6 +314,26 @@ type CheckinResult struct {
 	Msg       string `json:"msg"`
 	Remain    int64  `json:"remain"`
 	HasRemain bool   `json:"has_remain"`
+}
+
+// GrowthResult 单账号成长中心结果（GUI 面板展示）。
+type GrowthResult struct {
+	UID          string         `json:"uid"`
+	Nickname     string         `json:"nickname"`
+	Travel       string         `json:"travel,omitempty"`
+	Lottery      string         `json:"lottery,omitempty"`
+	Tasks        string         `json:"tasks,omitempty"`
+	TaskDetails  []TaskReward   `json:"task_details,omitempty"`
+	TotalCredits int64          `json:"total_credits"`
+	CouponCount  int            `json:"coupon_count"`
+	AuthErr      bool           `json:"auth_err,omitempty"`
+}
+
+// TaskReward 任务奖励详情。
+type TaskReward struct {
+	Name       string `json:"name"`
+	Credits    int64  `json:"credits"`
+	CouponName string `json:"coupon_name,omitempty"`
 }
 
 // RunCheckinNow 立即对所有账号执行签到 + 余额刷新 + 解冻。
@@ -420,4 +506,86 @@ func (s *Scheduler) RunKeepaliveNow() {
 		s.notifyRefresh(st.UID, true, "ok")
 	}
 	log.Printf("refresh batch done platform=%s", name)
+}
+
+// RunGrowthNow 立即对所有账号执行成长中心任务。
+func (s *Scheduler) RunGrowthNow() {
+	name := s.name()
+	log.Printf("growth batch start platform=%s accounts=%d", name, len(s.cfg.Pool.List()))
+	for _, st := range s.cfg.Pool.List() {
+		if st.Disabled {
+			log.Printf("growth skip platform=%s uid=%s reason=disabled", name, st.UID)
+			continue
+		}
+		r := s.growthOne(st.UID)
+		log.Printf("growth result platform=%s uid=%s travel=%s lottery=%s tasks=%s credits=%d coupons=%d", 
+			name, st.UID, r.Travel, r.Lottery, r.Tasks, r.TotalCredits, r.CouponCount)
+		s.notifyGrowth(r)
+	}
+	log.Printf("growth batch done platform=%s", name)
+}
+
+// GrowthAccount 单个账号立即执行成长中心（禁用跳过），返回该账号结果。
+func (s *Scheduler) GrowthAccount(uid string) (GrowthResult, error) {
+	st, ok := s.cfg.Pool.Status(uid)
+	if !ok {
+		return GrowthResult{}, fmt.Errorf("unknown account %s", uid)
+	}
+	if st.Disabled {
+		return GrowthResult{}, fmt.Errorf("account %s disabled", uid)
+	}
+	return s.growthOne(uid), nil
+}
+
+// growthOne 单账号执行成长中心（travel + lottery + tasks）。
+func (s *Scheduler) growthOne(uid string) GrowthResult {
+	name := s.name()
+	a := s.cfg.Pool.AuthByUID(uid)
+	if a == nil {
+		r := GrowthResult{UID: uid, AuthErr: true}
+		s.notifyGrowth(r)
+		return r
+	}
+	r := GrowthResult{UID: uid, Nickname: a.Nickname}
+	
+	// 执行每日旅行
+	tr := ""
+	if err := s.cfg.Upstream.GrowthTravel(a); err != nil {
+		tr = fmt.Sprintf("error: %s", shortErr(err))
+		log.Printf("growth travel failed platform=%s uid=%s err=%v", name, uid, err)
+	} else {
+		tr = "ok"
+		log.Printf("growth travel success platform=%s uid=%s", name, uid)
+	}
+	r.Travel = tr
+	
+	// 执行幸运抽奖
+	lo := ""
+	if err := s.cfg.Upstream.GrowthLottery(a); err != nil {
+		lo = fmt.Sprintf("error: %s", shortErr(err))
+		log.Printf("growth lottery failed platform=%s uid=%s err=%v", name, uid, err)
+	} else {
+		lo = "ok"
+		log.Printf("growth lottery success platform=%s uid=%s", name, uid)
+	}
+	r.Lottery = lo
+	
+	// 执行任务领取
+	tkResult := s.cfg.Upstream.GrowthTasksDetailed(a)
+	r.Tasks = tkResult.Message
+	r.TaskDetails = make([]TaskReward, len(tkResult.Rewards))
+	for i, rew := range tkResult.Rewards {
+		r.TaskDetails[i] = TaskReward{
+			Name:       rew.Name,
+			Credits:    rew.Credits,
+			CouponName: rew.CouponName,
+		}
+	}
+	r.TotalCredits = tkResult.TotalCredits
+	r.CouponCount = tkResult.CouponCount
+	log.Printf("growth tasks completed platform=%s uid=%s msg=%s credits=%d coupons=%d", 
+		name, uid, tkResult.Message, tkResult.TotalCredits, r.CouponCount)
+	
+	s.notifyGrowth(r)
+	return r
 }

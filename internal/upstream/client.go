@@ -92,6 +92,9 @@ type Client struct {
 	BillingBaseCN   string
 	ChatBaseGlobal  string
 	BillingBaseGlob string
+
+	// growthHistory 成长中心历史记录（可选，nil 时不记录）
+	growthHistory *GrowthHistory
 }
 
 // New 生产默认值。配置连接池减少 TLS 握手。
@@ -512,6 +515,11 @@ func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough
 
 func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
 	return AggregateWithThink(r, keepReasoning)
+}
+
+// SetGrowthHistory 设置成长历史记录实例（可选，nil 时不记录）
+func (c *Client) SetGrowthHistory(h *GrowthHistory) {
+	c.growthHistory = h
 }
 
 // FetchModelPricing 从 /console/enterprises/personal/models 拉取模型积分倍率。

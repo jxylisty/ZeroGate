@@ -618,3 +618,8 @@ func truncate(s string, n int) string {
 	}
 	return s
 }
+
+// GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
+func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }

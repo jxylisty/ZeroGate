@@ -36,19 +36,31 @@ import (
 // 渠道常量（上游协议逆向值，勿随意改）。
 const (
 	// AppID / AppSecret 来自官方 webElectronApi 常量。
-	AppID       = "100003"
-	AppSecret   = "38d2391985e2369a5fb8227d8e6cd5e5"
-	ClientVer   = "1.12.1"
-	ProxyBase   = "https://autoglm-acceleration-api.zhipuai.cn"
-	ProxyPath   = "/autoclaw-proxy/proxy/autoclaw"
-	ChatPath    = ProxyPath + "/chat/completions"
-	TaskCompletePath = ProxyPath + "/autoclaw-task-complete"
-	WalletsPath = "/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw"
-	ScopePath   = "/agent-assetmgr/api/v1/wallet-instances?wallet_type=all&wallet_scope=all"
-	RefreshPath = "/userapi/v1/refresh"
-	// ModelConfigPath 官方模型配置接口：动态拉取当前可用模型列表（含 glm-5.3-flash 等新模型）。
-	ModelConfigPath = "/agent-assetmgr/api/v1/model-config"
+	AppID     = "100003"
+	AppSecret = "38d2391985e2369a5fb8227d8e6cd5e5"
+	ClientVer = "1.12.1"
+	// 旧版代理端点
+	ProxyBase = "https://autoglm-acceleration-api.zhipuai.cn"
+	ProxyPath = "/autoclaw-proxy/proxy/autoclaw"
+	ChatPath  = ProxyPath + "/chat/completions"
+	// 每日签到/任务领取端点（web 签名头实测有效返回 reward_points=200）。
+	// 注意：task-complete 挂在 proxy 根下，再拼 ProxyPath 会多出 /autoclaw 段导致 401 Invalid token。
+	TaskCompletePath = "/autoclaw-proxy/proxy/autoclaw-task-complete"
+	// 活动（token 送赠）配置与奖励领取端点（加速度主机）。
+	// 注意：config 用 小写 authorization 认证；reward 用 小写 authorization + body {modal_id,reward_type}。
+	PromotionConfigPath = "/autoclaw-proxy/proxy/autoclaw-promotion-config"
+	PromotionRewardPath = "/autoclaw-proxy/proxy/autoclaw-promotion-reward"
+	WalletsPath      = "/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw"
+	ScopePath        = "/agent-assetmgr/api/v1/wallet-instances?wallet_type=all&wallet_scope=all"
+	RefreshPath      = "/userapi/v1/refresh"
+	ModelConfigPath  = "/agent-assetmgr/api/v1/model-config"
 )
+
+// 注意：曾设计 api.z.ai / open.bigmodel.cn 多端点直连（ZaiBase/BigModelBase/
+// BigModelCodingBase）+ FetchModelsZai/zaiHeaders/bigmodelHeaders。实测定论：
+// AutoClaw 的 accessToken 是 acceleration 代理专用 JWT，这些第三方 OpenAI 端点
+// 一律返回 401/404（token 不认可），只有 ProxyBase 能鉴权 —— 故全部删除，
+// 模型路由统一走 ProxyBase 的双标识（routeID + body.model，见 modelRoutes）。
 
 // Client AutoClaw 上游客户端。
 type Client struct {
@@ -133,6 +145,29 @@ func userapiHeaders(rawToken string) http.Header {
 	h.Set("X-Product", "autoclaw")
 	h.Set("X-Client-Type", "web")
 	h.Set("X-Channel", "official")
+	h.Set("X-Auth-Appid", AppID)
+	h.Set("X-Auth-TimeStamp", ts)
+	h.Set("X-Auth-Sign", sign(ts))
+	h.Set("X-Trace-Id", newTraceID())
+	h.Set("X-Lang", "en")
+	if rawToken != "" {
+		h.Set("Authorization", "Bearer "+rawToken)
+	}
+	return h
+}
+
+// taskCompleteHeaders task-complete 专属请求头（严格对齐官方 commonHeaders）。
+// completeClientTask 用 commonHeaders = authHeaders + X-Lang + (X-Channel?) + authorization，
+// 其中 X-Tm = getPlatformTm() → Windows 上是 "win"（不是 web/win32）。
+// 注意：该接口不能带 X-Client-Type / X-Harness-Type，否则被服务端判定"非客户端触发"→ 400。
+func taskCompleteHeaders(rawToken string) http.Header {
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	h.Set("Accept", "*/*")
+	h.Set("X-Version", ClientVer)
+	h.Set("X-Tm", "win")
+	h.Set("X-Product", "autoclaw")
 	h.Set("X-Auth-Appid", AppID)
 	h.Set("X-Auth-TimeStamp", ts)
 	h.Set("X-Auth-Sign", sign(ts))
@@ -239,65 +274,89 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
-// modelCanonical 客户端模型名 → 官方代理模型 ID（无前缀输入，ChatStream 已由 handler 剥前缀）。
-var modelCanonical = map[string]string{
-	"zai_auto":          "zai_auto",
-	"auto":              "zai_auto",
-	"zai_auto-fast":     "zai_auto-fast",
-	"auto-fast":         "zai_auto-fast",
-	"zaicoding_glm-5.3": "zaicoding_glm-5.3",
-	"glm-5.3":           "zaicoding_glm-5.3",
-	"glm-5.3-flash":     "glm-5.3-flash",     // ⭐ 原生多模态轻量版，消耗积分少
-	"flash":             "glm-5.3-flash",     // 简写支持
+// routeSpec 一次 AutoClaw 模型路由的规约（双标识，参考开源 agent2api 的
+// autoclaw-models.mjs / adapter）。
+//
+// 上游代理用两个不同的标识定位模型（缺一不可，只发对其中一个会让上游选错计费
+// 通道或认不出模型，导致 400「非法模型」）：
+//   - routeID → 发进 **X-Request-Model 请求头**（完整带通道前缀路由 ID）。
+//     前缀决定计费通道：`zai_`→会员/按量付费、`zaicoding_`→Coding Plan、
+//     `zai_auto`→服务端自动选型。
+//   - bodyID  → 填进 **body.model**（剥掉路由前缀后的模型 ID）。
+type routeSpec struct {
+	routeID string // X-Request-Model
+	bodyID  string // body.model
 }
 
-// canonicalModel 归一化模型名；未知模型回落 zai_auto。
-func canonicalModel(m string) string {
-	if v, ok := modelCanonical[m]; ok {
+// modelRoutes 客户端模型名 → {路由ID, body模型ID}。
+// ⚠️ 实测定论：AutoClaw 的 accessToken 是 acceleration 代理专用 JWT，只在
+// autoglm-acceleration-api.zhipuai.cn（ProxyBase）上能过鉴权；api.z.ai /
+// open.bigmodel.cn 一律 401/404。故所有模型统一走代理端点，绝不直达 api.z.ai。
+var modelRoutes = map[string]routeSpec{
+	"zai_auto":          {"zai_auto", "auto"},
+	"auto":              {"zai_auto", "auto"},
+	"zai_auto-fast":     {"zai_auto-fast", "auto-fast"},
+	"auto-fast":         {"zai_auto-fast", "auto-fast"},
+	"zaicoding_glm-5.3": {"zaicoding_glm-5.3", "glm-5.3"},
+	"glm-5.3":           {"zaicoding_glm-5.3", "glm-5.3"},
+	"glm-5.3-flash":     {"zai_glm-5.3-flash", "glm-5.3-flash"}, // ⭐ 会员/按量通道，实测 200
+	"flash":             {"zai_glm-5.3-flash", "glm-5.3-flash"}, // 简写支持
+}
+
+// resolveRoute 解析客户端模型名 → 路由规约；未知模型回落默认路由 zai_auto。
+func resolveRoute(m string) routeSpec {
+	if v, ok := modelRoutes[m]; ok {
 		return v
 	}
-	return "zai_auto"
+	return routeSpec{routeID: "zai_auto", bodyID: "auto"}
 }
 
 // ChatStream 转发到官方代理端点并返回响应流（OpenAI SSE）。
+// 统一走自动加速度代理端点（ProxyBase）——AutoClaw 的 JWT 只在那里能鉴权。
+// 模型路由采用双标识：X-Request-Model 填带前缀路由 ID，body.model 填剥前缀后的
+// 模型 ID（见 modelRoutes），否则上游 400「非法模型」或选错计费通道。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	var peek struct {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &peek)
-	model := canonicalModel(peek.Model)
+	route := resolveRoute(peek.Model)
 
-	// 重写 body：model 归一化 + 强制 stream:true（官方代理对非流式请求返回整包 JSON，
+	// 重写 body：模型填 bodyID + 强制 stream:true（官方代理对非流式请求返回整包 JSON，
 	// 网关一侧统一用 SSE 再按需聚合，保证 Stream/Aggregate 两条路径都有数据）
 	var obj map[string]any
 	if json.Unmarshal(body, &obj) == nil {
-		obj["model"] = model
+		obj["model"] = route.bodyID
 		obj["stream"] = true
 		if body2, e := json.Marshal(obj); e == nil {
 			body = body2
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.Base+ChatPath, bytes.NewReader(body))
+	reqURL := c.Base + ChatPath
+	headers := c.proxyHeaders(rawToken(a), route.routeID)
+	log.Printf("autoclaw chat_stream uid=%s route=%s body_model=%s endpoint=%s", a.UID, route.routeID, route.bodyID, reqURL)
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	for k, vs := range c.proxyHeaders(rawToken(a), model) {
+	for k, vs := range headers {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		log.Printf("autoclaw chat_stream uid=%s model=%s: transport error: %v", a.UID, model, err)
+		log.Printf("autoclaw chat_stream uid=%s route=%s: transport error: %v", a.UID, route.routeID, err)
 		return nil, 0, nil, err
 	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		kind := c.Classify(resp.StatusCode, string(raw))
-		log.Printf("autoclaw chat_stream uid=%s model=%s: upstream %d %s body=%s",
-			a.UID, model, resp.StatusCode, kind, truncate(string(raw), 200))
+		log.Printf("autoclaw chat_stream uid=%s route=%s: upstream %d %s body=%s",
+			a.UID, route.routeID, resp.StatusCode, kind, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil
@@ -380,10 +439,10 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 // FetchModelPricing 官方无公开积分单价，返回静态标签由前端兜底。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
 	return []provider.ModelPricing{
-		{Model: "zai_auto", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · 默认自动路由（实测 deepseek-v4-flash-vision）"},
-		{Model: "zai_auto-fast", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · 快速自动路由"},
-		{Model: "zaicoding_glm-5.3", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · GLM-5.3 编码模型，积分等级高"},
-		{Model: "glm-5.3-flash", Channel: "autoclaw", Rate: 0, Note: "限免期 0 积分 · GLM-5.3 Flash 原生多模态轻量版，消耗积分少 ⭐"},
+		{Model: "zai_auto", Channel: "autoclaw", Rate: 0, Note: "服务端自动选型路由，可能落到 DeepSeek-V4 等"},
+		{Model: "zai_auto-fast", Channel: "autoclaw", Rate: 0, Note: "快速自动路由 · 账号免费额度可能已用尽(403)"},
+		{Model: "zaicoding_glm-5.3", Channel: "autoclaw", Rate: 0, Note: "GLM-5.3 编码模型 · Coding 通道按量计费"},
+		{Model: "glm-5.3-flash", Channel: "autoclaw", Rate: 0, Note: "GLM-5.3 Flash · 会员/按量通道，实测扣积分（短请求≈1分）⭐"},
 	}, nil
 }
 
@@ -425,6 +484,7 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		remain = balance
 	}
 	items = append(items, list...)
+	log.Printf("autoclaw UserResourceDetail uid=%s remain=%d items_count=%d err=%v", a.UID, remain, len(items), err)
 	return remain, items, nil
 }
 
@@ -498,10 +558,10 @@ func (c *Client) scopeBalance(req *http.Request) (int64, []provider.ResourceItem
 	items := make([]provider.ResourceItem, 0, len(env.Data.Instances))
 	for _, it := range env.Data.Instances {
 		items = append(items, provider.ResourceItem{
-			Name:  it.WalletType + "/" + it.WalletScope,
-			Total: parseNum(it.Balance),
-			Used:  0,
-			Remain: parseNum(it.Balance),
+			Name:     it.WalletType + "/" + it.WalletScope,
+			Total:    parseNum(it.Balance),
+			Used:     0,
+			Remain:   parseNum(it.Balance),
 			ExpireAt: parseNum(it.ExpireAt),
 		})
 	}
@@ -527,13 +587,22 @@ func parseNum(raw json.RawMessage) int64 {
 	return 0
 }
 
-// DailyCheckin AutoClaw 任务领取（实测端点 autoclaw-task-complete）：
-// 每日任务 + 新号一次性任务均可主动领取，全部幂等（already_completed 防重复）。
-// 全部已领时返回“已签到”类错误（调度器识别为成功态）。
+// DailyCheckin AutoClaw 每日签到 + 任务领取。
+//
+// 实测：POST /autoclaw-proxy/proxy/autoclaw-task-complete
+// body={"task_id":"daily_signin"} → 200 {"data":{"success":true,"already_completed":false,
+// "reward_points":200,"task_id":"daily_signin"}}。
+// 请求头必须用桌面客户端指纹（taskCompleteHeaders：win32/pc/zcode），否则返回
+// 400 "任务不是由客服端触发"；用旧路径拼出多余 /autoclaw 段会返回 401 Invalid token。
+//
+// 说明：该端点偶发因平台风控窗口临时返回 401 Invalid token（如 11128 风控），
+// 调用方若拿到异常会向上抛真实错误，调度器按失败重试，绝不误报"已签到"。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
-	claimed, already, firstErr := 0, true, error(nil)
+	tok := rawToken(a)
+	claimed, anyAlready, firstErr := 0, false, error(nil)
 	for _, t := range checkinTasks {
-		pts, done, err := c.claimTask(a, t.ID)
+		pts, done, err := c.claimTask(tok, t.ID)
+		log.Printf("autoclaw checkin_task uid=%s task_id=%s pts=%d done=%v err=%v", a.UID, t.ID, pts, done, err)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -542,23 +611,150 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 		}
 		if done {
 			claimed += pts
-			already = false
+		} else {
+			anyAlready = true
 		}
 	}
 	if claimed > 0 {
+		// 额外尝试 token 活动奖励（不影响签到结果判断）
+		if pts, _ := c.claimTokenActivities(tok); pts > 0 {
+			claimed += pts
+		}
 		log.Printf("autoclaw checkin uid=%s claimed=%d points", a.UID, claimed)
 		return nil
 	}
-	if already {
-		return fmt.Errorf("autoclaw 已签到")
+	// 签到全幂等已领时也顺带跑一次 token 活动，可能有未领的新活动
+	if p, _ := c.claimTokenActivities(tok); p > 0 {
+		log.Printf("autoclaw checkin token promo uid=%s points=%d", a.UID, p)
+		return nil
 	}
+	// 只要有任何任务真实失败（如 401 风控/网络），上报真实错误而非误报成功。
 	if firstErr != nil {
 		return firstErr
 	}
-	return nil
+	// 全部任务幂等已领（already_completed=true）→ 今日已签到成功态。
+	if anyAlready {
+		return fmt.Errorf("autoclaw 已签到")
+	}
+	return fmt.Errorf("autoclaw 已签到")
 }
 
-// checkinTasks 可领取任务（points 为参考值，实测以返回 reward_points 为准）。
+// ---------------------------------------------------------------
+// Token 活动（promotion）自动领取
+// ---------------------------------------------------------------
+
+// claimTokenActivities 扫描 autoclaw-promotion-config 里的 modals，对开启了
+// sendReward/timingReward 且未领取的活动自动 POST promotion-reward 领取 token。
+// 兼容已领取（幂等），返回本次新增积分/点数；无可用活动时静默返回。
+func (c *Client) claimTokenActivities(tok string) (claimed int, err error) {
+	// 1) 拉活动配置
+	req, rerr := http.NewRequest(http.MethodGet, c.Base+PromotionConfigPath, nil)
+	if rerr != nil {
+		return 0, rerr
+	}
+	for k, vs := range promotionConfigHeaders(tok) {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, rerr := c.HTTP.Do(req)
+	if rerr != nil {
+		return 0, rerr
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return 0, nil // config 非 200 静默跳过，避免阻塞每日签到主流程
+	}
+	var cfg struct {
+		Data struct {
+			Modals []struct {
+				ModalID string `json:"modal_id"`
+				BtnText string `json:"btnText"`
+			} `json:"modals"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return 0, nil
+	}
+	// 2) 对可领取（btnText 非"已领取"）的活动尝试 sendReward/timingReward
+	for _, m := range cfg.Data.Modals {
+		id := strings.TrimSpace(m.ModalID)
+		if id == "" || strings.Contains(m.BtnText, "已领取") {
+			continue
+		}
+		for _, rt := range []string{"sendReward", "timingReward"} {
+			pts, done, err := c.claimPromotionReward(tok, id, rt)
+			if err == nil && done {
+				claimed += pts
+			}
+		}
+	}
+	return claimed, nil
+}
+
+// claimPromotionReward 领取单个 token 活动的奖励；done=true 表示新增到账。
+func (c *Client) claimPromotionReward(tok, modalID, rewardType string) (pts int, done bool, err error) {
+	body, _ := json.Marshal(map[string]string{"modal_id": modalID, "reward_type": rewardType})
+	req, err := http.NewRequest(http.MethodPost, c.Base+PromotionRewardPath, bytes.NewReader(body))
+	if err != nil {
+		return 0, false, err
+	}
+	for k, vs := range promotionConfigHeaders(tok) {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return 0, false, nil
+	}
+	var env struct {
+		Code int64 `json:"code"`
+		Data struct {
+			Points int  `json:"points"`
+			Success bool `json:"success"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return 0, false, nil
+	}
+	if env.Code != 0 || !env.Data.Success || env.Data.Points <= 0 {
+		return 0, false, nil
+	}
+	log.Printf("autoclaw promotion_reward uid=%s modal=%s type=%s points=%d", "?", modalID, rewardType, env.Data.Points)
+	return env.Data.Points, true, nil
+}
+
+// promotionConfigHeaders config/reward 专属请求头：小写 authorization + 签名头。
+func promotionConfigHeaders(rawToken string) http.Header {
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	h.Set("Accept", "*/*")
+	h.Set("X-Version", ClientVer)
+	h.Set("X-Tm", "win")
+	h.Set("X-Product", "autoclaw")
+	h.Set("X-Auth-Appid", AppID)
+	h.Set("X-Auth-TimeStamp", ts)
+	h.Set("X-Auth-Sign", sign(ts))
+	h.Set("X-Trace-Id", newTraceID())
+	h.Set("X-Lang", "zh-CN")
+	h.Set("X-Channel", "official")
+	if rawToken != "" {
+		h.Set("authorization", "Bearer "+rawToken)
+	}
+	return h
+}
+
+// checkinTasks 可自动领取的任务（每日签到 +200 等）。
+// 注意：upgrade_pc_app（升级PC客户端 +300）不能自动触发，服务端返回
+// 400 "任务不支持客户端触发"，只能在桌面端真实操作完成，故不在列表内。
 var checkinTasks = []struct {
 	ID  string
 	Pts int
@@ -569,22 +765,20 @@ var checkinTasks = []struct {
 	{"newbie_local_lobster", 500},
 }
 
-// claimTask 领取单个任务；done=true 表示本次领取成功（新增 pts）。
-func (c *Client) claimTask(a *auth.Auth, taskID string) (pts int, done bool, err error) {
+// claimTask 向 autoclaw-task-complete 领取单个任务；done=true 表示本次新增积分。
+// 头必须对齐官方 commonHeaders（taskCompleteHeaders）：X-Tm:win + 签名头 + Authorization。
+// 用 X-Authorization 会 401 Invalid token；带 X-Client-Type/X-Harness-Type 会 400 "非客户端触发"。
+func (c *Client) claimTask(tok, taskID string) (pts int, done bool, err error) {
 	body, _ := json.Marshal(map[string]string{"task_id": taskID})
 	req, err := http.NewRequest(http.MethodPost, c.Base+TaskCompletePath, bytes.NewReader(body))
 	if err != nil {
 		return 0, false, err
 	}
-	for k, vs := range userapiHeaders(rawToken(a)) {
+	for k, vs := range taskCompleteHeaders(tok) {
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
 	}
-	// 实测：task-complete 走桌面端指纹（win32/pc）可领；web 指纹可能被拒
-	req.Header.Set("X-Tm", "win32")
-	req.Header.Set("X-Client-Type", "pc")
-
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return 0, false, err
@@ -597,19 +791,22 @@ func (c *Client) claimTask(a *auth.Auth, taskID string) (pts int, done bool, err
 	var env struct {
 		Code int64 `json:"code"`
 		Data struct {
-			Success         bool   `json:"success"`
-			AlreadyComplete bool   `json:"already_completed"`
-			RewardPoints    int    `json:"reward_points"`
+			Success         bool `json:"success"`
+			AlreadyComplete bool `json:"already_completed"`
+			RewardPoints    int  `json:"reward_points"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return 0, false, fmt.Errorf("task-complete parse: %w", err)
 	}
-	if env.Code == 0 && env.Data.AlreadyComplete {
+	if env.Code != 0 {
+		return 0, false, fmt.Errorf("task-complete code=%d: %s", env.Code, truncate(string(raw), 120))
+	}
+	if env.Data.AlreadyComplete {
 		return 0, false, nil // 今日已领，幂等跳过
 	}
 	if !env.Data.Success {
-		return 0, false, fmt.Errorf("task %s: success=false body=%s", taskID, truncate(string(raw), 120))
+		return 0, false, fmt.Errorf("task %s success=false body=%s", taskID, truncate(string(raw), 120))
 	}
 	return env.Data.RewardPoints, true, nil
 }
@@ -629,6 +826,21 @@ func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string
 	return upstream.AggregateWithThink(r, keepReasoning)
 }
 
+// GrowthTravel 成长中心：每日旅行（autoclaw 暂不支持，返回 nil）
+func (c *Client) GrowthTravel(a *auth.Auth) error {
+	return nil
+}
+
+// GrowthLottery 成长中心：幸运抽奖（autoclaw 暂不支持，返回 nil）
+func (c *Client) GrowthLottery(a *auth.Auth) error {
+	return nil
+}
+
+// GrowthTasksDetailed 成长中心：任务领取（autoclaw 暂不支持，返回空结果）
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
+	return provider.GrowthTasksResult{Message: "暂未支持"}
+}
+
 // truncate 截断日志片段。
 func truncate(s string, n int) string {
 	if len(s) <= n {
@@ -636,6 +848,7 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
 // ---------------------------------------------------------------------------
 // 面板自助加号：短信验证码登录（对齐 autoclaw2api cmd/login）
 // ---------------------------------------------------------------------------

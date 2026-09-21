@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/provider"
 )
 
 // CoolKind 冷却类型。
@@ -39,18 +40,19 @@ func (k CoolKind) String() string {
 
 // Status 单个账号对外暴露的状态（脱敏）。
 type Status struct {
-	UID            string    `json:"uid"`
-	Nickname       string    `json:"nickname,omitempty"`
-	Credits        int64     `json:"credits"`
-	ExpireAt       int64     `json:"expire_at,omitempty"` // 最早到期套餐时间（Unix 秒）；0=长期有效
-	Cooling        bool      `json:"cooling"`
-	Until          time.Time `json:"until,omitempty"`
-	Reason         string    `json:"reason,omitempty"`
-	Disabled       bool      `json:"disabled"`
-	ErrCount       int       `json:"err_count,omitempty"`
-	LastCheckinOK  bool      `json:"last_checkin_ok,omitempty"`
-	LastCheckinAt  time.Time `json:"last_checkin_at,omitempty"`
-	LastCheckinMsg string    `json:"last_checkin_msg,omitempty"`
+	UID            string          `json:"uid"`
+	Nickname       string          `json:"nickname,omitempty"`
+	Credits        int64           `json:"credits"`
+	ExpireAt       int64           `json:"expire_at,omitempty"` // 最早到期套餐时间（Unix 秒）；0=长期有效
+	ResourceItems  []provider.ResourceItem `json:"resource_items,omitempty"` // 积分分类明细（含到期时间）
+	Cooling        bool            `json:"cooling"`
+	Until          time.Time       `json:"until,omitempty"`
+	Reason         string          `json:"reason,omitempty"`
+	Disabled       bool            `json:"disabled"`
+	ErrCount       int             `json:"err_count,omitempty"`
+	LastCheckinOK  bool            `json:"last_checkin_ok,omitempty"`
+	LastCheckinAt  time.Time       `json:"last_checkin_at,omitempty"`
+	LastCheckinMsg string          `json:"last_checkin_msg,omitempty"`
 }
 
 type entry struct {
@@ -58,6 +60,7 @@ type entry struct {
 	placeholder bool
 	credits     int64
 	expireAt    int64 // 最早到期套餐时间（Unix 秒）；0=长期有效
+	resourceItems []provider.ResourceItem // 积分分类明细（含到期时间）
 	disabled    bool
 	reason      string
 	until       time.Time
@@ -203,6 +206,16 @@ func (p *Pool) SetCreditsExpire(uid string, credits, expireAt int64) {
 		if expireAt > 0 {
 			e.expireAt = expireAt
 		}
+	}
+	p.saveLocked()
+}
+
+// SetResourceItems 更新账号积分分类明细（含到期时间）。
+func (p *Pool) SetResourceItems(uid string, items []provider.ResourceItem) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.resourceItems = items
 	}
 	p.saveLocked()
 }
@@ -370,6 +383,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		Nickname:       e.a.Nickname,
 		Credits:        e.credits,
 		ExpireAt:       e.expireAt,
+		ResourceItems:  e.resourceItems,
 		Cooling:        !e.until.IsZero() && now.Before(e.until),
 		Until:          e.until,
 		Reason:         e.reason,

@@ -94,6 +94,9 @@ type Upstream interface {
 	UserResource(a *auth.Auth) (int64, error)
 	UserResourceDetail(a *auth.Auth) (int64, []ResourceItem, error)
 	DailyCheckin(a *auth.Auth) error
+	GrowthTravel(a *auth.Auth) error
+	GrowthLottery(a *auth.Auth) error
+	GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult
 	Classify(status int, body string) ErrKind
 	Stream(w http.ResponseWriter, r io.Reader) error
 	Aggregate(r io.Reader) (map[string]any, error)
@@ -131,4 +134,20 @@ func EarliestExpire(items []ResourceItem) int64 {
 		}
 	}
 	return e
+}
+
+// GrowthTasksResult 成长中心任务领取结果。
+type GrowthTasksResult struct {
+	Message      string        `json:"message"`
+	Rewards      []TaskReward  `json:"rewards"`
+	TotalCredits int64         `json:"total_credits"`
+	CouponCount  int           `json:"coupon_count"`
+	AuthErr      bool          `json:"auth_err,omitempty"`
+}
+
+// TaskReward 任务奖励详情。
+type TaskReward struct {
+	Name       string `json:"name"`
+	Credits    int64  `json:"credits"`
+	CouponName string `json:"coupon_name,omitempty"`
 }

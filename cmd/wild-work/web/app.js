@@ -164,6 +164,7 @@ function render() {
   renderTopbar();
   renderAccounts();
   renderTimes();
+  renderGrowthTimes();
 }
 
 function renderTopbar() {
@@ -361,6 +362,20 @@ function acctCardHTML(a) {
     ? `<span class="icon-op" title="成长中心（旅行/盲盒/任务领奖）" onclick="growth('${a.uid}')">${I.gift}</span>`
     : "";
 
+  // 积分分类详情（autoclaw 等支持多余额分类的渠道）
+  let resourceHtml = "";
+  if (a.resource_items && a.resource_items.length > 0) {
+    resourceHtml = `<div class="acct-resources" style="margin-top:6px;font-size:12px;">
+      ${a.resource_items.map(r => {
+        const expText = r.expire_at ? formatExpire(r.expire_at).text : "长期有效";
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;">
+          <span style="color:var(--text-secondary);">${esc(r.name || "积分")}</span>
+          <span><strong>${r.remain}</strong> (${expText})</span>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }
+
   return `
   <div class="acct-card${disabledClass}">
     <div class="acct-top">
@@ -385,6 +400,7 @@ function acctCardHTML(a) {
         ${checkinTag}
       </div>
     </div>
+    ${resourceHtml}
   </div>`;
 }
 
@@ -449,7 +465,7 @@ function renderFees(fees) {
     return;
   }
 
-  let html = `<div class="note">${esc(fees.note || "")}</div>`;
+  let html = `<div class="note">客户端填写的模型 ID = 渠道名/模型名，例：<code>autoclaw/glm-5.3-flash</code>；点击「⧉」一键复制。</div>`;
   if (fees.cached_at) html += `<div class="note">上次更新：${esc(fees.cached_at)}</div>`;
   if (fees.error) html += `<div class="note" style="color:var(--danger)">${esc(fees.error)}</div>`;
 
@@ -467,28 +483,25 @@ function renderFees(fees) {
       if (rate > 0 && rate <= 0.15) badgeClass = "low";
       else if (rate > 0.15 && rate <= 0.5) badgeClass = "normal";
       else if (rate > 0.5) badgeClass = "high";
-      
-      const rateDisplay = rate > 0 ? `x${rate.toFixed(2)}` : "限免";
-      const noteHtml = m.note ? `<div class="fee-note-tag">${esc(m.note)}</div>` : "";
-      
-      // 模型名：长名字换行，但保持可读性（只分割一次）
-      const modelName = esc(m.model);
-      let modelCell = `<span>${modelName}</span>`;
-      if (modelName.length > 30) {
-        const idx = modelName.indexOf('-');
-        if (idx > 0 && idx < modelName.length - 1) {
-          modelCell = `<span style="display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;">${modelName.substring(0, idx + 1)}</span><br><span style="opacity:0.7">${modelName.substring(idx + 1)}</span>`;
-        }
-      }
-      
+
+      // Rate=0 时区分「按量计费」与「限免」：上游无公开倍率的渠道以 Note 说明计费方式
+      const isBilled = /按量|扣积分|计费|会员|×?积分|点价/.test(m.note || "");
+      const rateDisplay = rate > 0 ? `x${rate.toFixed(2)}` : (isBilled ? "按量" : "限免");
+      const fullId = `${ch.channel}/${m.model}`;
+      const noteHtml = m.note ? `<div class="fee-note-tag" title="${esc(m.note)}">${esc(m.note)}</div>` : "";
+
       rows += `<tr>
-        <td class="fee-model-cell">${modelCell}</td>
+        <td class="fee-model-cell">
+          <button type="button" class="fee-copy" data-id="${esc(fullId)}" onclick="copyId(this.getAttribute('data-id'))" title="复制模型 ID">${I.copy}</button>
+          <code class="fee-id" onclick="copyId('${esc(fullId)}')" title="点击复制">${esc(fullId)}</code>
+        </td>
         <td><span class="fee-rate-badge ${badgeClass}">${rateDisplay}</span></td>
+        <td>${noteHtml}</td>
       </tr>`;
     }
     
     if (!rows) {
-      rows = `<tr><td colspan="2" class="empty-models">暂无模型</td></tr>`;
+      rows = `<tr><td colspan="3" class="empty-models">暂无模型</td></tr>`;
     }
 
     html += `<div class="fee-card">
@@ -500,8 +513,9 @@ function renderFees(fees) {
         <table class="fee-table">
           <thead>
             <tr>
-              <th>模型</th>
-              <th style="width:100px">费率</th>
+              <th>模型 ID（点击复制）</th>
+              <th style="width:70px">费率</th>
+              <th style="width:46%">说明</th>
             </tr>
           </thead>
           <tbody>
@@ -514,6 +528,26 @@ function renderFees(fees) {
   html += `</div>`;
   html += `<div class="note" style="margin-top:12px">${esc(fees.disclaimer || "")}</div>`;
   box.innerHTML = html;
+}
+
+// 复制模型 ID 到剪贴板（含旧浏览器降级）。
+function copyId(text) {
+  const ok = () => toast(`已复制模型 ID：${text}`);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(ok).catch(() => fallbackCopy(text, ok));
+  } else {
+    fallbackCopy(text, ok);
+  }
+}
+function fallbackCopy(text, ok) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); ok(); } catch (e) { toast("复制失败，请手动选择"); }
+  document.body.removeChild(ta);
 }
 
 // ---------- 账号操作 ----------
@@ -1087,6 +1121,17 @@ function bind() {
   $("btnRefreshTokens").onclick = refreshTokens;
   $("chkAutostart").onchange = toggleAutostart;
 
+  // 成长中心
+  $("btnAddGrowthTime").onclick = addGrowthTime;
+  $("btnSaveGrowthTimes").onclick = () => saveGrowthTimes((state.growth_times || []).slice());
+  $("btnRunGrowthNow").onclick = runGrowthNow;
+  $("btnRefreshGrowthToday").onclick = loadGrowthToday;
+  $("btnRefreshGrowthAccounts").onclick = loadGrowthAccounts;
+  $("btnRefreshGrowthRecords").onclick = loadGrowthRecords;
+  $("selGrowthLimit").onchange = loadGrowthRecords;
+  $("btnGrowthDetailClose").onclick = closeGrowthDetail;
+  $("growthDetailOverlay").onclick = (e) => { if (e.target === $("growthDetailOverlay")) closeGrowthDetail(); };
+
   $("apiAddr").onclick = () => {
     const v = $("apiAddr").querySelector(".val").textContent;
     copyText(v, "OpenAI 接口地址");
@@ -1160,6 +1205,8 @@ function initTabs() {
     else if (name === "clients") loadClients();
     else if (name === "router") loadRedirects();
     else if (name === "usage") loadTokenAnalytics();
+    else if (name === "growth") initGrowthTab();
+    else if (name === "models") loadFees();
   }
 
   tabs.forEach(t => {
@@ -1413,10 +1460,11 @@ async function resetRedirects() {
       "claude-3.7-sonnet": ["wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"],
       "claude-3-5-haiku": ["wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"],
       "claude-3.5-haiku": ["wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"],
-      "deepseek-chat": ["workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"],
-      "deepseek-v3": ["workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"],
-      "deepseek-reasoner": ["workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"],
-      "deepseek-r1": ["workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"],
+      "deepseek-chat": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
+      "deepseek-v3": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
+      "deepseek-reasoner": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
+      "deepseek-r1": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
+      "workbuddy/deepseek-v4.1-flash": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash"],
       "gpt-4o": ["qoder/gpt-4o", "traework/glm-5.2"],
       "qwen-2.5-coder": ["traework/qwen3-coder", "workbuddy/glm-5.2"]
     };
@@ -1491,7 +1539,7 @@ async function loadTokenAnalytics() {
       api("/api/usage").catch(() => ({ accounts: [] })),
     ]);
 
-    renderTokenHero(tokenData.summary || {}, tokenData.models || {});
+    renderTokenHero(tokenData.summary || {}, tokenData.models || {}, tokenData.channels || {});
     renderTokenTrend(auditAnalytics.daily_trend || [], usageData.accounts || []);
     renderChannelDonut(tokenData.channels || auditAnalytics.channel_tokens || {});
     renderTopModels(auditAnalytics.top_models || [], tokenData.summary || {});
@@ -1568,7 +1616,7 @@ function priceUSD(model, prompt, completion, cacheRead) {
 }
 
 // 1. Hero 财富看板与价值折算
-function renderTokenHero(summary, models) {
+function renderTokenHero(summary, models, channels) {
   const total = Number(summary.total_tokens || 0);
   const prompt = Number(summary.prompt_tokens || 0);
   const comp = Number(summary.completion_tokens || 0);
@@ -1585,7 +1633,23 @@ function renderTokenHero(summary, models) {
 
   if ($("tkHeroPromptPct")) $("tkHeroPromptPct").textContent = `占比 ${promptPct}%`;
   if ($("tkHeroCompPct")) $("tkHeroCompPct").textContent = `占比 ${compPct}%`;
-  if ($("tkHeroCacheRate")) $("tkHeroCacheRate").textContent = `命中率 ${cacheRate}%`;
+
+  // 分渠道缓存命中率：同一「命中率 X%」数字会掩盖渠道差异——qoder/workbuddy
+  // 等上游不回传缓存字段（命中率显示 0% 是统计缺失而非无缓存），traework 有真实命中。
+  if ($("tkHeroCacheRate")) {
+    const chRates = Object.entries(channels || {})
+      .filter(([, s]) => (Number(s.prompt_tokens) + Number(s.cache_read_tokens)) > 0)
+      .map(([k, s]) => {
+        const p = Number(s.prompt_tokens) || 0;
+        const c = Number(s.cache_read_tokens) || 0;
+        if (c === 0 && p > 0) return `${k} 未上报`;
+        return `${k} ${Math.round((c / (p + c)) * 100)}%`;
+      });
+    $("tkHeroCacheRate").textContent = `命中率 ${cacheRate}%`;
+    if (chRates.length > 0) {
+      $("tkHeroCacheRate").title = `分渠道缓存命中率：${chRates.join("、")}\n（未上报 = 上游 usage 不含缓存字段，非真实无缓存）`;
+    }
+  }
 
   // 白嫖节省：优先用 token_usage 的按模型全量统计 × 各模型官方 API 单价逐模型折算；
   // 没有按模型数据（旧版后端）时退回全局 输入/输出/缓存 拆分 × 中档单价。
@@ -1918,4 +1982,259 @@ function renderAcctProductivity(accounts) {
       </tr>
     `;
   }).join("");
+}
+
+// ============================================================
+// 成长中心可视化面板
+// ============================================================
+
+// travel/lottery/tasks 字段值形如 "ok: ..." | "skip: ..." | "error: ..." | "无凭证"，
+// 按前缀映射状态标签（与后端 GrowthResult 约定一致）。
+function growthStatusTag(v) {
+  if (!v) return `<span class="tag neutral">未执行</span>`;
+  const s = String(v);
+  if (s.startsWith("ok")) return `<span class="tag ok">成功</span>`;
+  if (s.startsWith("skip") || s.includes("无可") || s.includes("已在路上") || s.includes("已领取") || s.includes("已签")) return `<span class="tag neutral">跳过</span>`;
+  if (s.startsWith("error") || s.startsWith("fail")) return `<span class="tag bad">失败</span>`;
+  return `<span class="tag neutral" title="${esc(s)}">${esc(s.length > 6 ? s.slice(0, 6) + "…" : s)}</span>`;
+}
+
+function growthBadgeCls(channel) {
+  const gm = groupMeta(channel || "workbuddy");
+  return gm.cls;
+}
+
+function fmtGrowthTime(ts) {
+  if (!ts) return "-";
+  return new Date(ts * 1000).toLocaleString("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function renderGrowthTimes() {
+  const box = $("growthTimesBox");
+  if (!box) return;
+  const times = (state && state.growth_times) || [];
+  box.innerHTML = times.map((t) =>
+    `<span class="time-chip" title="点击删除" onclick="delGrowthTime('${t}')">${t}${I.x}</span>`).join("");
+  if (!times.length) box.innerHTML = `<span class="tag neutral">暂无配置</span>`;
+  $("nextGrowth").textContent = (state && state.next_growth) || "-";
+}
+
+// 仿签到 addTime：加入当前时刻，保存后由 loadState 回显。
+async function addGrowthTime() {
+  const times = ((state && state.growth_times) || []).slice();
+  const now = new Date();
+  const next = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  if (times.includes(next)) { toast("该时间已存在"); return; }
+  times.push(next);
+  await saveGrowthTimes(times.sort());
+}
+
+async function delGrowthTime(t) {
+  await saveGrowthTimes(((state && state.growth_times) || []).filter((x) => x !== t));
+}
+
+// 保存后手动刷新今日状态等面板数据（loadState 只重绘账号/时间）。
+async function saveGrowthTimes(times) {
+  $("btnSaveGrowthTimes").disabled = true;
+  try {
+    await api("/api/config/growth_times", { times });
+    toast("成长中心时间已更新");
+    await loadState();
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    $("btnSaveGrowthTimes").disabled = false;
+  }
+}
+
+function runGrowthNow() {
+  confirmDialog("确定立即对所有 WorkBuddy 账号执行成长中心（旅行/盲盒/任务领奖）？", async () => {
+    $("btnRunGrowthNow").disabled = true;
+    $("btnRunGrowthNow").textContent = "执行中…";
+    try {
+      await api("/api/growth/run_now", {});
+      toast("批量执行已启动，稍后刷新查看结果");
+      // 轮询两次：执行需数秒，先延迟后刷
+      setTimeout(() => { loadGrowthToday(); loadGrowthRecords(); }, 5000);
+      setTimeout(() => { loadGrowthToday(); loadGrowthRecords(); }, 12000);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      $("btnRunGrowthNow").disabled = false;
+      $("btnRunGrowthNow").textContent = "批量运行";
+    }
+  });
+}
+
+async function loadGrowthToday() {
+  const wrap = $("growthTodaySummary");
+  if (!wrap) return;
+  try {
+    renderGrowthTodaySummary(await api("/api/growth/summary"));
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+// 后端 GetSummary 返回 total_credits/coupon_count/task_count/lottery_count/travel_count/record_count。
+function renderGrowthTodaySummary(summary) {
+  const wrap = $("growthTodaySummary");
+  if (!wrap) return;
+  if (!summary.record_count) {
+    wrap.innerHTML = `<div class="empty-hint">今日暂无成长中心执行记录</div>`;
+    return;
+  }
+  const stats = [
+    { label: "执行账号次数", val: summary.record_count, icon: I.activity, cls: "ok" },
+    { label: "获得积分", val: fmtTokens(summary.total_credits || 0), sub: "今日累计", icon: I.coins, cls: "ok" },
+    { label: "优惠券", val: summary.coupon_count || 0, sub: "张", icon: I.gift, cls: "ok" },
+    { label: "旅行", val: summary.travel_count || 0, sub: "次推进", icon: I.globe, cls: "skip" },
+    { label: "盲盒/抽奖", val: summary.lottery_count || 0, sub: "次", icon: I.shuffle, cls: "skip" },
+    { label: "任务领奖", val: summary.task_count || 0, sub: "项", icon: I.zap, cls: "skip" },
+  ];
+  // 容器 #growthTodaySummary 本身即 .growth-summary 网格，直接填充卡片即可
+  wrap.innerHTML = stats.map((s) => `
+    <div class="growth-stat-card">
+      <div class="gsc-icon ${s.cls}">${s.icon}</div>
+      <div class="gsc-label">${s.label}</div>
+      <div class="gsc-val">${s.val}</div>
+      ${s.sub ? `<div class="gsc-sub">${s.sub}</div>` : ""}
+    </div>`).join("");
+}
+
+async function loadGrowthRecords() {
+  const limit = parseInt(($("selGrowthLimit") && $("selGrowthLimit").value) || "20", 10);
+  const tbody = $("growthRecordsBody");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--muted); padding:20px;">加载中…</td></tr>`;
+  try {
+    const res = await api(`/api/growth/records?limit=${limit}`);
+    renderGrowthRecords(res.records || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--danger); padding:20px;">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderGrowthRecords(records) {
+  const tbody = $("growthRecordsBody");
+  if (!tbody) return;
+  if (!records.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--muted); padding:20px;">暂无记录，执行一次成长中心后这里会显示结果</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = records.map((r) => {
+    const hasDetail = r.task_details && r.task_details.length;
+    const detailBtn = hasDetail
+      ? `<button class="btn small" onclick='showGrowthDetail(${esc(JSON.stringify(r.task_details))})'>详情</button>`
+      : `<span class="tag neutral">—</span>`;
+    return `
+      <tr>
+        <td>${fmtGrowthTime(r.timestamp)}</td>
+        <td>${esc(r.nickname || shortUid(r.uid))}</td>
+        <td><span class="badge ${growthBadgeCls(r.channel)}">${groupMeta(r.channel || "workbuddy").name}</span></td>
+        <td>${growthStatusTag(r.travel)}</td>
+        <td>${growthStatusTag(r.lottery)}</td>
+        <td>${growthStatusTag(r.tasks)}</td>
+        <td><b style="color:var(--primary)">${fmtTokens(r.total_credits || 0)}</b></td>
+        <td>${detailBtn}</td>
+      </tr>`;
+  }).join("");
+}
+
+// 任务奖励明细弹层（复用 confirmDialog 的 overlay 模式）。
+function showGrowthDetail(details) {
+  $("growthDetailList").innerHTML = details.map((d) => `
+    <div class="grd-item">
+      <span class="grd-name">${esc(d.name || "任务")}</span>
+      <span class="grd-reward">
+        ${d.credits > 0 ? `<b class="grd-credits">+${fmtTokens(d.credits)} 积分</b>` : ""}
+        ${d.coupon_name ? `<span class="grd-coupon">${esc(d.coupon_name)}</span>` : ""}
+        ${!d.credits && !d.coupon_name ? `<span class="tag neutral">无奖励</span>` : ""}
+      </span>
+    </div>`).join("");
+  $("growthDetailOverlay").classList.remove("hidden");
+}
+
+function closeGrowthDetail() {
+  $("growthDetailOverlay").classList.add("hidden");
+}
+
+function initGrowthTab() {
+  renderGrowthTimes();
+  loadGrowthAccounts();
+  loadGrowthToday();
+  loadGrowthRecords();
+}
+
+// ---------- 成长中心 · 参与账号 ----------
+// 后端 GrowthAccounts 返回 WorkBuddy 全部账号 + last（最近一次执行记录，可能为 null）。
+async function loadGrowthAccounts() {
+  const wrap = $("growthAccountsBox");
+  if (!wrap) return;
+  try {
+    const res = await api("/api/growth/accounts");
+    renderGrowthAccounts(res.accounts || []);
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderGrowthAccounts(accounts) {
+  const wrap = $("growthAccountsBox");
+  if (!wrap) return;
+  if (!accounts.length) {
+    wrap.innerHTML = `<div class="empty-hint">没有参与成长中心的账号（仅 WorkBuddy 渠道账号参与），添加账号后自动出现在这里</div>`;
+    return;
+  }
+  wrap.innerHTML = accounts.map((a) => {
+    const last = a.last;
+    let status;
+    if (a.disabled) {
+      status = `<span class="tag bad">已停用 · 不参与</span>`;
+    } else if (!last) {
+      status = `<span class="tag neutral">未执行过 · 等待定时执行</span>`;
+    } else {
+      status = [
+        `<span class="ga-step" title="${esc(last.travel || "")}">${I.globe}${growthStatusTag(last.travel)}</span>`,
+        `<span class="ga-step" title="${esc(last.lottery || "")}">${I.shuffle}${growthStatusTag(last.lottery)}</span>`,
+        `<span class="ga-step" title="${esc(last.tasks || "")}">${I.zap}${growthStatusTag(last.tasks)}</span>`,
+      ].join("");
+    }
+    const runBtn = a.disabled ? "" :
+      `<button class="btn small gac-run" onclick="runGrowthAccount('${esc(a.uid)}')">立即执行</button>`;
+    return `
+      <div class="growth-acct-card${a.disabled ? " is-disabled" : ""}">
+        <div class="gac-head">
+          <span class="gac-name" title="${esc(a.uid)}">${esc(a.nickname || shortUid(a.uid))}</span>
+          ${a.cooling ? `<span class="tag warn">冷却中</span>` : ""}
+        </div>
+        <div class="gac-status">${status}</div>
+        ${last ? `
+        <div class="gac-meta">
+          <span class="gac-credits">+${fmtTokens(last.total_credits || 0)} 积分</span>
+          <span class="gac-time" title="上次执行时间">${fmtGrowthTime(last.timestamp)}</span>
+        </div>` : `<div class="gac-meta"><span class="gac-empty">尚无执行结果</span></div>`}
+        ${runBtn}
+      </div>`;
+  }).join("");
+}
+
+// 单账号立即执行：完成后刷新账号卡与记录。
+async function runGrowthAccount(uid) {
+  const btn = document.querySelector(`.gac-run[onclick*="${uid}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "执行中…"; }
+  try {
+    const res = await api("/api/account/growth", { uid });
+    const n = (res.task_details || []).length;
+    toast(`执行完成：任务领奖 ${n} 项${res.total_credits ? `，+${fmtTokens(res.total_credits)} 积分` : ""}`);
+    loadGrowthAccounts();
+    loadGrowthToday();
+    loadGrowthRecords();
+  } catch (e) {
+    toast(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = "立即执行"; }
+  }
 }

@@ -103,7 +103,8 @@ type Config struct {
 
 	Schedule struct {
 		CheckinHours   []int    `json:"checkin_hours,omitempty"` // 旧格式：[9,21]
-		CheckinTimes   []string `json:"checkin_times,omitempty"` // 新格式：["09:00","21:30"]
+		CheckinTimes   []string `json:"checkin_times,omitempty"` // 新格式："09:00","21:30"]
+		GrowthTimes    []string `json:"growth_times,omitempty"`  // 成长中心执行时间："09:00","21:30"]
 		KeepaliveHours []int    `json:"keepalive_hours"`         // [22]
 	} `json:"schedule"`
 
@@ -128,11 +129,12 @@ func DefaultModelRedirects() map[string][]string {
 		"claude-3.7-sonnet": {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
 		"claude-3-5-haiku":  {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
 		"claude-3.5-haiku":  {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
-		"deepseek-chat":     {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
-		"deepseek-v3":       {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
-		"deepseek-reasoner": {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
-		"deepseek-r1":       {"workbuddy/deepseek-v4.1-flash", "traework/glm-5.2"},
-		"gpt-4o":            {"qoder/gpt-4o", "traework/glm-5.2"},
+		"deepseek-chat":             {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"deepseek-v3":               {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"deepseek-reasoner":         {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"deepseek-r1":               {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"workbuddy/deepseek-v4.1-flash": {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash"}, // workbuddy 上游 11128 不可用 -> 走 codebuddy 同款(实测 200)
+		"gpt-4o":                    {"qoder/gpt-4o", "traework/glm-5.2"},
 		"qwen-2.5-coder":    {"traework/qwen3-coder", "workbuddy/glm-5.2"},
 	}
 }
@@ -153,6 +155,7 @@ func Default() *Config {
 	c.Cooldown.ErrCooldown = "10m"
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.CheckinTimes = []string{"09:00", "21:00"}
+	c.Schedule.GrowthTimes = []string{"09:00", "21:00"}
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 120
 	return c
@@ -285,6 +288,9 @@ func applyEnv(c *Config) {
 			c.Upstream.TimeoutSeconds = n
 		}
 	}
+	if v := os.Getenv("WILDWORK_GROWTH_TIMES"); v != "" {
+		c.Schedule.GrowthTimes = parseTimeList(v)
+	}
 }
 
 func (c *Config) normalize() error {
@@ -336,5 +342,29 @@ func (c *Config) normalize() error {
 			}
 		}
 	}
+	// growth_times 规范化
+	if len(c.Schedule.GrowthTimes) > 0 {
+		mins, err := ParseClockTimes(c.Schedule.GrowthTimes)
+		if err != nil {
+			return fmt.Errorf("schedule.growth_times: %w", err)
+		}
+		c.Schedule.GrowthTimes = FormatClockTimes(mins)
+	}
 	return nil
+}
+
+// parseTimeList 解析逗号分隔的时间列表 "09:00,21:30"
+func parseTimeList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

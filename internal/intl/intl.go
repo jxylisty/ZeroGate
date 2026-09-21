@@ -648,6 +648,11 @@ func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough
 	return upstream.StreamWithThink(w, r, passthrough)
 }
 
+// GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
+func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }
+
 func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
 	return upstream.AggregateWithThink(r, keepReasoning)
 }

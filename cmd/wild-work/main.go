@@ -237,6 +237,7 @@ func main() {
 	zcSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("zcode", uid, ok, msg) })
 	acSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("autoclaw", uid, ok, msg) })
 	atriaSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("atria", uid, ok, msg) })
+	wbSch.SetGrowthObserver(func(r scheduler.GrowthResult) { appInst.RecordGrowth("workbuddy", r) })
 
 	// HTTP handler：OpenAI 端点 + Web UI + 管理 API
 	sub, err := fs.Sub(webFS, "web")

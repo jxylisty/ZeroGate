@@ -210,13 +210,14 @@
   // 主加载函数
   async function load() {
     try {
-      const [uRes, aRes, anRes] = await Promise.all([
+      const [uRes, aRes, anRes, tRes] = await Promise.all([
         fetch('/api/usage', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
         fetch('/api/arsenal', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
-        fetch('/api/audit/analytics', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({}))
+        fetch('/api/audit/analytics', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+        fetch('/api/token_usage', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({}))
       ]);
 
-      renderAll(uRes, aRes, anRes);
+      renderAll(uRes, aRes, anRes, tRes);
       $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN');
       $('msg').innerHTML = '';
     } catch (e) {
@@ -226,7 +227,7 @@
     }
   }
 
-  function renderAll(usageData, arsenalData, analyticsData) {
+  function renderAll(usageData, arsenalData, analyticsData, tokenData) {
     const accounts = (usageData.accounts || []).slice();
     accounts.sort((a, b) => (a.kind + a.nickname).localeCompare(b.kind + b.nickname));
 
@@ -255,7 +256,18 @@
     $('sTodayTokens').textContent = fmtToken(todayTokens);
     $('sTodaySub').textContent = `今日调用 ${todayReqs} 次`;
     $('sCacheTokens').textContent = fmtToken(cacheTokens);
-    $('sCacheRate').textContent = `缓存命中率 ${cacheRate}%`;
+
+    // 分渠道缓存命中率：qoder/workbuddy/zcode 等上游不回传缓存字段 → 显示 0% 是统计
+    // 缺失（标注「未上报」），不是真实无缓存；仅 traework 有真实命中，全局数字易误导。
+    const chRates = Object.entries((tokenData && tokenData.channels) || {})
+      .filter(([, s]) => (Number(s.prompt_tokens) + Number(s.cache_read_tokens || 0)) > 0)
+      .map(([k, s]) => {
+        const p = Number(s.prompt_tokens) || 0;
+        const c = Number(s.cache_read_tokens) || 0;
+        return c === 0 ? `${k} 未上报` : `${k} ${Math.round(c / (p + c) * 100)}%`;
+      });
+    $('sCacheRate').textContent = `缓存命中率 ${cacheRate}%（分渠道：${chRates.length ? chRates.join('、') : '暂无'}）`;
+    $('sCacheRate').title = '命中率 = 缓存命中Token / 输入Token；「未上报」= 上游 usage 不含缓存字段，非真实无缓存。';
     $('sTotalServices').textContent = `${accounts.length} 本地 + 3 外部`;
     $('sServiceDetail').textContent = '含 GPT/Codex & Copilot';
     $('sCheckin').textContent = `${checkinOkCount}/${accounts.length}`;

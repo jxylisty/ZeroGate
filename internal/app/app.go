@@ -19,17 +19,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wild-work/internal/audit"
-	"wild-work/internal/autoclaw"
 	"wild-work/internal/auth"
+	"wild-work/internal/autoclaw"
 	"wild-work/internal/clientkey"
 	"wild-work/internal/config"
 	"wild-work/internal/doubao"
 	"wild-work/internal/login"
 	loginqoder "wild-work/internal/login_qoder"
-	"wild-work/internal/zcode"
 	logintrae "wild-work/internal/login_trae"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
@@ -39,6 +39,7 @@ import (
 	"wild-work/internal/server"
 	"wild-work/internal/upstream"
 	"wild-work/internal/usage"
+	"wild-work/internal/zcode"
 )
 
 // Version 版本号。
@@ -80,16 +81,16 @@ type App struct {
 	mu      sync.Mutex // 保护 httpSrv / cfg 修改
 	httpSrv *http.Server
 
-	muLogin      sync.Mutex
-	loginBusy    bool
-	loginCtx     context.Context
-	loginCancel  context.CancelFunc
-	loginClient  *http.Client
-	loginStateFP string
-	loginKind    provider.Kind
-	zcProv       *zcode.Provision // zcode 面板自助加号编排器
-	pendingZcProv string         // login/start 请求里的 zcode provider（zai|bigmodel）
-	pricingFP    string
+	muLogin       sync.Mutex
+	loginBusy     bool
+	loginCtx      context.Context
+	loginCancel   context.CancelFunc
+	loginClient   *http.Client
+	loginStateFP  string
+	loginKind     provider.Kind
+	zcProv        *zcode.Provision // zcode 面板自助加号编排器
+	pendingZcProv string           // login/start 请求里的 zcode provider（zai|bigmodel）
+	pricingFP     string
 
 	logFile *os.File
 
@@ -103,6 +104,11 @@ type App struct {
 
 	usage *usage.Recorder
 	stop  chan struct{} // 关闭周期任务
+
+	// growthHistoryFP 成长中心历史记录文件路径
+	growthHistoryFP string
+	// growthHistory 成长中心历史记录管理器（懒加载）
+	growthHistory *upstream.GrowthHistory
 }
 
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
@@ -125,6 +131,7 @@ func New(opts Options) (*App, error) {
 	)
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
 	a.usage = usage.New(filepath.Join(filepath.Dir(opts.Config.StateFile), "usage.csv"))
+	a.growthHistoryFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "growth-history.json")
 	a.stop = make(chan struct{})
 
 	// 日志文件 data/app.log
@@ -313,6 +320,22 @@ func (a *App) keepaliveHours() []int {
 func (a *App) nextFire() time.Time {
 	if rt := a.firstRuntime(); rt != nil && rt.Scheduler != nil {
 		return rt.Scheduler.NextFire()
+	}
+	return time.Time{}
+}
+
+// growthTimes 成长中心执行时间（HH:MM 列表）。
+func (a *App) growthTimes() []string {
+	if rt := a.firstRuntime(); rt != nil && rt.Scheduler != nil {
+		return rt.Scheduler.GrowthTimes()
+	}
+	return nil
+}
+
+// nextGrowthFire 最近的成长中心执行时间。
+func (a *App) nextGrowthFire() time.Time {
+	if rt := a.firstRuntime(); rt != nil && rt.Scheduler != nil {
+		return rt.Scheduler.NextGrowthFire()
 	}
 	return time.Time{}
 }
@@ -858,20 +881,169 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 }
 
 // GrowthAccount 对指定 WorkBuddy 账号执行成长中心自动化（旅行/盲盒/任务领奖）。
+// 统一走 Scheduler 路径，保证结果经观察器写入历史记录。
 func (a *App) GrowthAccount(uid string) (upstream.GrowthResult, error) {
-	rt, au := a.findRuntimeAuth(uid)
-	if rt == nil || au == nil {
+	rt, _ := a.findRuntimeAuth(uid)
+	if rt == nil {
 		return upstream.GrowthResult{}, fmt.Errorf("unknown account %s", uid)
 	}
 	if rt.Kind != provider.WorkBuddy {
 		return upstream.GrowthResult{}, fmt.Errorf("成长中心仅支持 WorkBuddy 渠道")
 	}
-	up, ok := rt.Upstream.(*upstream.Client)
-	if !ok {
-		return upstream.GrowthResult{}, fmt.Errorf("upstream type %T not supported", rt.Upstream)
+	if rt.Scheduler == nil {
+		return upstream.GrowthResult{}, fmt.Errorf("scheduler not available")
 	}
-	log.Printf("growth start platform=%s uid=%s", rt.Kind, uid)
-	return up.GrowthAll(au), nil
+	a.initGrowthHistory()
+	r, err := rt.Scheduler.GrowthAccount(uid)
+	if err != nil {
+		log.Printf("growth failed platform=%s uid=%s err=%v", rt.Kind, uid, err)
+		return upstream.GrowthResult{}, err
+	}
+	log.Printf("growth uid=%s travel=%s lottery=%s tasks=%s credits=%d", uid, r.Travel, r.Lottery, r.Tasks, r.TotalCredits)
+	return upstream.GrowthResult{
+		Travel:      r.Travel,
+		Lottery:     r.Lottery,
+		Tasks:       r.Tasks,
+		TaskDetails: toProviderRewards(r.TaskDetails),
+		AuthErr:     r.AuthErr,
+	}, nil
+}
+
+// toProviderRewards scheduler 任务奖励转 provider 类型。
+func toProviderRewards(list []scheduler.TaskReward) []provider.TaskReward {
+	out := make([]provider.TaskReward, 0, len(list))
+	for _, r := range list {
+		out = append(out, provider.TaskReward{Name: r.Name, Credits: r.Credits, CouponName: r.CouponName})
+	}
+	return out
+}
+
+// GrowthRunning 防并发成长中心批量执行标记。
+var growthBatchRunning atomic.Bool
+
+// GrowthAll 批量执行所有 WorkBuddy 账号成长中心（同步，供面板"批量运行"按钮）。
+func (a *App) GrowthAll() {
+	if !growthBatchRunning.CompareAndSwap(false, true) {
+		log.Printf("growth batch already running, skip")
+		return
+	}
+	defer growthBatchRunning.Store(false)
+	a.initGrowthHistory()
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil || rt.Scheduler == nil || rt.Kind != provider.WorkBuddy {
+			continue
+		}
+		rt.Scheduler.RunGrowthNow()
+	}
+	log.Printf("growth batch all done")
+}
+
+// initGrowthHistory 懒加载 growthHistory。
+func (a *App) initGrowthHistory() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.growthHistory == nil {
+		a.growthHistory = upstream.NewGrowthHistory(a.growthHistoryFP)
+		// 设置到所有 WorkBuddy 渠道的 client
+		for _, rt := range a.runtimes {
+			if rt != nil && rt.Kind == provider.WorkBuddy {
+				if up, ok := rt.Upstream.(*upstream.Client); ok {
+					up.SetGrowthHistory(a.growthHistory)
+				}
+			}
+		}
+	}
+}
+
+// GrowthTodaySummary 今日成长中心统计汇总。
+func (a *App) GrowthTodaySummary() map[string]any {
+	a.initGrowthHistory()
+	if a.growthHistory == nil {
+		return map[string]any{"error": "growth history not initialized"}
+	}
+	return a.growthHistory.GetSummary()
+}
+
+// GrowthRecentRecords 获取最近 N 条成长中心记录。
+func (a *App) GrowthRecentRecords(limit int) []upstream.GrowthRecord {
+	a.initGrowthHistory()
+	if a.growthHistory == nil {
+		return []upstream.GrowthRecord{}
+	}
+	return a.growthHistory.Recent(limit)
+}
+
+// growthAccountView 成长中心参与账号视图（含最近一次执行结果）。
+type growthAccountView struct {
+	UID      string                 `json:"uid"`
+	Nickname string                 `json:"nickname"`
+	Disabled bool                   `json:"disabled"`
+	Cooling  bool                   `json:"cooling"`
+	Credits  int64                  `json:"credits"`
+	Last     *upstream.GrowthRecord `json:"last,omitempty"`
+}
+
+// GrowthAccounts 参与成长中心的账号列表：WorkBuddy 渠道全部账号 + 每个账号最近一次执行结果。
+func (a *App) GrowthAccounts() []growthAccountView {
+	a.initGrowthHistory()
+	// uid -> 最近一次记录（历史 Add 为头插，首个命中即最新）。
+	lastByUID := map[string]upstream.GrowthRecord{}
+	if a.growthHistory != nil {
+		for _, r := range a.growthHistory.Recent(100) {
+			if _, ok := lastByUID[r.UID]; !ok {
+				lastByUID[r.UID] = r
+			}
+		}
+	}
+	out := make([]growthAccountView, 0, 8)
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil || rt.Kind != provider.WorkBuddy {
+			continue
+		}
+		for _, s := range rt.Pool.List() {
+			v := growthAccountView{
+				UID:      s.UID,
+				Nickname: s.Nickname,
+				Disabled: s.Disabled,
+				Cooling:  s.Cooling,
+				Credits:  s.Credits,
+			}
+			if last, ok := lastByUID[s.UID]; ok {
+				v.Last = &last
+			}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// RecordGrowth 将调度器产生的成长中心结果写入历史记录（定时/批量路径共用）。
+func (a *App) RecordGrowth(channel string, r scheduler.GrowthResult) {
+	if r.AuthErr {
+		return
+	}
+	a.initGrowthHistory()
+	if a.growthHistory == nil {
+		return
+	}
+	rec := upstream.GrowthRecord{
+		UID:          r.UID,
+		Nickname:     r.Nickname,
+		Channel:      channel,
+		Travel:       r.Travel,
+		Lottery:      r.Lottery,
+		Tasks:        r.Tasks,
+		TotalCredits: r.TotalCredits,
+		CouponCount:  r.CouponCount,
+	}
+	for _, rew := range r.TaskDetails {
+		rec.TaskDetails = append(rec.TaskDetails, provider.TaskReward{
+			Name:       rew.Name,
+			Credits:    rew.Credits,
+			CouponName: rew.CouponName,
+		})
+	}
+	a.growthHistory.Add(rec)
 }
 
 // doubaoResultFP 豆包保活结果文件路径。
@@ -925,6 +1097,7 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		return 0, err
 	}
 	rt.Pool.SetCreditsExpire(uid, remain, provider.EarliestExpire(items))
+	rt.Pool.SetResourceItems(uid, items)
 	log.Printf("credits refresh success platform=%s uid=%s remain=%d", rt.Kind, uid, remain)
 	return remain, nil
 }
@@ -958,6 +1131,7 @@ func (a *App) RefreshAll() RefreshSummary {
 			}
 			if remain, items, err := rt.Upstream.UserResourceDetail(au); err == nil {
 				rt.Pool.SetCreditsExpire(st.UID, remain, provider.EarliestExpire(items))
+				rt.Pool.SetResourceItems(st.UID, items)
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: remain})
 			} else {
@@ -1071,6 +1245,36 @@ func (a *App) SetCheckinTimes(times []string) error {
 	return nil
 }
 
+// SetGrowthTimes 设置成长中心执行时间
+func (a *App) SetGrowthTimes(times []string) error {
+	minutes, err := config.ParseClockTimes(times)
+	if err != nil {
+		return err
+	}
+	clean := normalizeMinutes(minutes)
+	if len(clean) == 0 {
+		return errors.New("请至少保留一个成长中心执行时间")
+	}
+	formatted := make([]string, 0, len(clean))
+	for _, m := range clean {
+		formatted = append(formatted, fmt.Sprintf("%02d:%02d", m/60, m%60))
+	}
+	a.mu.Lock()
+	a.cfg.Schedule.GrowthTimes = formatted
+	err = config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, rt := range a.runtimes {
+		if rt != nil && rt.Scheduler != nil {
+			rt.Scheduler.SetGrowthMinutes(clean)
+		}
+	}
+	log.Printf("成长中心执行时间已更新：%s", strings.Join(formatted, "、"))
+	return nil
+}
+
 // SetListen 修改 API 监听主机 + 端口：保存配置并热切换监听。
 func (a *App) SetListen(host string, port int) error {
 	if port <= 0 || port > 65535 {
@@ -1142,21 +1346,22 @@ func (a *App) LoginBusy() bool {
 
 // AccountView 面板展示的账号（脱敏）。
 type AccountView struct {
-	UID            string `json:"uid"`
-	Group          string `json:"group"` // workbuddy | traework | qoder ...
-	Mode           string `json:"mode"`  // proxy 反代 | bridge 桥接 | direct 直连 API
-	Nickname       string `json:"nickname"`
-	Credits        int64  `json:"credits"`
-	ExpireAt       int64  `json:"expire_at"` // 最早到期套餐时间（Unix 秒，0=长期有效）
-	IsNext         bool   `json:"is_next"`   // 是否为当前渠道账号池优先调度候选 #1
-	Cooling        bool   `json:"cooling"`
-	Until          string `json:"until"`
-	Reason         string `json:"reason"`
-	Disabled       bool   `json:"disabled"`
-	ErrCount       int    `json:"err_count"`
-	LastCheckinOK  bool   `json:"last_checkin_ok"`
-	LastCheckinAt  string `json:"last_checkin_at"`
-	LastCheckinMsg string `json:"last_checkin_msg"`
+	UID            string                  `json:"uid"`
+	Group          string                  `json:"group"` // workbuddy | traework | qoder ...
+	Mode           string                  `json:"mode"`  // proxy 反代 | bridge 桥接 | direct 直连 API
+	Nickname       string                  `json:"nickname"`
+	Credits        int64                   `json:"credits"`
+	ExpireAt       int64                   `json:"expire_at"`                // 最早到期套餐时间（Unix 秒，0=长期有效）
+	ResourceItems  []provider.ResourceItem `json:"resource_items,omitempty"` // 积分分类明细（含到期时间）
+	IsNext         bool                    `json:"is_next"`                  // 是否为当前渠道账号池优先调度候选 #1
+	Cooling        bool                    `json:"cooling"`
+	Until          string                  `json:"until"`
+	Reason         string                  `json:"reason"`
+	Disabled       bool                    `json:"disabled"`
+	ErrCount       int                     `json:"err_count"`
+	LastCheckinOK  bool                    `json:"last_checkin_ok"`
+	LastCheckinAt  string                  `json:"last_checkin_at"`
+	LastCheckinMsg string                  `json:"last_checkin_msg"`
 }
 
 // State Web UI 初始数据。
@@ -1169,6 +1374,8 @@ type State struct {
 	APIKey         string        `json:"api_key"`
 	LoginBusy      bool          `json:"login_busy"`
 	NextCheckin    string        `json:"next_checkin"`
+	GrowthTimes    []string      `json:"growth_times"`
+	NextGrowth     string        `json:"next_growth"`
 	Version        string        `json:"version"`
 	Autostart      bool          `json:"autostart"`
 	Running        bool          `json:"running"`
@@ -1184,6 +1391,8 @@ func (a *App) GetState() State {
 		APIKey:         a.cfg.APIKey,
 		LoginBusy:      a.LoginBusy(),
 		NextCheckin:    fmtTime(a.nextFire()),
+		GrowthTimes:    a.growthTimes(),
+		NextGrowth:     fmtTime(a.nextGrowthFire()),
 		Version:        Version,
 		Autostart:      a.AutostartEnabled(),
 		Running:        a.ServerRunning(),
@@ -1253,6 +1462,7 @@ func (a *App) accountViews() []AccountView {
 			Nickname:       s.Nickname,
 			Credits:        s.Credits,
 			ExpireAt:       s.ExpireAt,
+			ResourceItems:  s.ResourceItems,
 			IsNext:         it.isNext,
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
@@ -1530,6 +1740,26 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, res)
 	})
+	mux.HandleFunc("GET /api/growth/summary", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.GrowthTodaySummary())
+	})
+	mux.HandleFunc("POST /api/growth/run_now", func(w http.ResponseWriter, r *http.Request) {
+		go a.GrowthAll()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": "成长中心批量执行已启动"})
+	})
+	mux.HandleFunc("GET /api/growth/accounts", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"accounts": a.GrowthAccounts()})
+	})
+	mux.HandleFunc("GET /api/growth/records", func(w http.ResponseWriter, r *http.Request) {
+		limit := 30
+		if l := r.URL.Query().Get("limit"); l != "" {
+			fmt.Sscanf(l, "%d", &limit)
+			if limit < 1 || limit > 200 {
+				limit = 30
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"records": a.GrowthRecentRecords(limit)})
+	})
 	mux.HandleFunc("POST /api/account/remove", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
@@ -1577,6 +1807,20 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetCheckinTimes(req.Times); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("GET /api/config/growth_times", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"times": a.growthTimes()})
+	})
+	mux.HandleFunc("POST /api/config/growth_times", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Times []string `json:"times"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetGrowthTimes(req.Times); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

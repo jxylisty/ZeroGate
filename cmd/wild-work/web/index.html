@@ -53,6 +53,8 @@
     <button class="nav-tab" data-tab="logs"><span data-ic="scroll"></span>调用流水</button>
     <button class="nav-tab" data-tab="clients"><span data-ic="key"></span>客户端 Key</button>
     <button class="nav-tab" data-tab="usage"><span data-ic="trend"></span>Token 资产大屏</button>
+    <button class="nav-tab" data-tab="growth"><span data-ic="gift"></span>成长中心</button>
+    <button class="nav-tab" data-tab="models"><span data-ic="layers"></span>渠道模型</button>
     <button class="nav-tab" data-tab="settings"><span data-ic="settings"></span>系统设置</button>
   </nav>
 
@@ -340,7 +342,107 @@
     </section>
   </div>
 
-  <!-- Tab 7: 系统设置 -->
+  <!-- Tab 7: 成长中心 -->
+  <div class="tab-pane" id="tab-growth">
+    <!-- 参与账号 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="grid"></span>参与账号</h2>
+        <button class="btn small" id="btnRefreshGrowthAccounts"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新</button>
+      </div>
+      <p class="hint" style="margin-bottom:12px;">成长中心会对每个账号依次做三件事：<b>每日旅行</b>（<span data-ic="globe"></span> 推进旅行进度）→ <b>盲盒抽奖</b>（<span data-ic="shuffle"></span> 每日免费抽）→ <b>任务领奖</b>（<span data-ic="zap"></span> 领取积分和优惠券），全部自动完成。</p>
+      <div id="growthAccountsBox" class="growth-acct-grid">
+        <div class="empty-hint">加载中…</div>
+      </div>
+    </section>
+
+    <!-- 定时配置 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="calendar"></span>成长中心定时执行</h2>
+        <button class="btn small primary" id="btnSaveGrowthTimes">保存配置</button>
+      </div>
+      <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span>成长中心每日任务（旅行/盲盒/任务）的自动执行时间，可设置多个时间点（格式 HH:MM），与签到独立调度。</p>
+      <div class="config-grid">
+        <div class="config-left">
+          <div class="row wrap">
+            <div id="growthTimesBox" class="times"></div>
+            <button class="icon-btn" id="btnAddGrowthTime" title="增加一个执行时间"><span data-ic="plus"></span></button>
+          </div>
+          <div class="hint">下次 <span id="nextGrowth">-</span></div>
+        </div>
+        <div class="config-right">
+          <div class="row">
+            <span>立即执行</span>
+            <button class="btn small" id="btnRunGrowthNow">批量运行</button>
+          </div>
+          <div class="hint">对所有账号执行成长中心任务</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 今日状态 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="activity"></span>今日执行概况</h2>
+        <button class="btn small" id="btnRefreshGrowthToday"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新</button>
+      </div>
+      <div id="growthTodaySummary" class="growth-summary">
+        <div class="empty-hint">暂无今日记录</div>
+      </div>
+    </section>
+
+    <!-- 历史记录 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="scroll"></span>执行记录</h2>
+        <div class="panel-actions">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer;">
+            显示数量：
+            <select id="selGrowthLimit" style="font-size:13px; padding:2px 6px;">
+              <option value="10">10 条</option>
+              <option value="20" selected>20 条</option>
+              <option value="50">50 条</option>
+              <option value="100">100 条</option>
+            </select>
+          </label>
+          <button class="btn small" id="btnRefreshGrowthRecords"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新</button>
+        </div>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>账号</th>
+              <th>渠道</th>
+              <th>旅行</th>
+              <th>盲盒</th>
+              <th>任务</th>
+              <th>积分</th>
+              <th>优惠券</th>
+            </tr>
+          </thead>
+          <tbody id="growthRecordsBody">
+            <tr><td colspan="8" style="text-align:center; color:var(--muted); padding:20px;">暂无记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tab 8: 渠道模型速查 -->
+  <div class="tab-pane" id="tab-models">
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="layers"></span>渠道模型速查</h2>
+        <button class="btn small" id="btnRefreshFees"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新费率</button>
+      </div>
+      <div id="feesBox" class="fees"></div>
+    </section>
+  </div>
+
+  <!-- Tab 9: 系统设置 -->
   <div class="tab-pane" id="tab-settings">
     <!-- 自动签到 + 开机自启 -->
     <section class="panel">
@@ -361,15 +463,6 @@
           <div class="hint">程序随系统启动自动运行</div>
         </div>
       </div>
-    </section>
-
-    <!-- 渠道费率 -->
-    <section class="panel">
-      <div class="panel-head">
-        <h2><span data-ic="coins"></span>渠道费率</h2>
-        <button class="btn small" id="btnRefreshFees"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新费率</button>
-      </div>
-      <div id="feesBox" class="fees"></div>
     </section>
   </div>
 
@@ -448,6 +541,17 @@
     <div class="modal-actions">
       <button class="btn small" id="btnConfirmCancel">取消</button>
       <button class="btn small danger" id="btnConfirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 成长中心任务奖励详情弹层 -->
+<div class="overlay hidden" id="growthDetailOverlay">
+  <div class="modal">
+    <div class="modal-title">任务奖励详情</div>
+    <div class="growth-detail-list" id="growthDetailList"></div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnGrowthDetailClose">关闭</button>
     </div>
   </div>
 </div>

@@ -217,7 +217,22 @@
 .fee-note-tag {
   display: inline-block; margin-top: 4px; font-size: 11px; color: var(--muted);
   background: var(--bg-sub); padding: 2px 8px; border-radius: 6px;
+  word-break: break-word; white-space: normal; max-width: 100%;
 }
+.fee-model-cell { display: flex; align-items: center; gap: 6px; }
+.fee-copy {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  width: 20px; height: 20px; padding: 0; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg-sub); color: var(--muted); font-size: 12px; line-height: 1;
+}
+.fee-copy:hover { color: var(--primary); border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.fee-copy .ic { width: 12px; height: 12px; }
+.fee-id {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text); cursor: pointer;
+  user-select: all; word-break: break-all; background: var(--bg-sub); padding: 2px 6px; border-radius: 5px;
+}
+.fee-id:hover { color: var(--primary); }
+table.fee-table td { max-width: 0; } /* 允许说明列在 46% 宽度内换行 */
 .empty-models { text-align: center; color: var(--muted); padding: 20px; font-size: 13px; }
 
 /* ============================================================
@@ -496,6 +511,80 @@ html[data-theme="dark"] .token-hero-sub { color: var(--muted); }
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; min-width: 240px;
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+
+/* ============================================================
+   成长中心样式
+   ============================================================ */
+.growth-acct-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
+}
+.growth-acct-card {
+  background: var(--bg-sub); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.growth-acct-card.is-disabled { opacity: .55; }
+.gac-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gac-name { font-weight: 600; font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 6px; min-width: 0; }
+.gac-name .gac-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gac-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.gac-status .ga-step { display: inline-flex; align-items: center; gap: 3px; }
+.gac-status .ga-step .ic { width: 12px; height: 12px; }
+.gac-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+.gac-meta .gac-credits { color: var(--primary); font-weight: 600; }
+.gac-meta .gac-time { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gac-empty { font-size: 12px; color: var(--muted); }
+.gac-run { align-self: flex-start; }
+
+.growth-summary {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;
+}
+.growth-stat-card {
+  background: var(--bg-sub); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; text-align: center;
+}
+.growth-stat-card .gsc-icon {
+  width: 36px; height: 36px; border-radius: 50%; display: inline-flex; align-items: center;
+  justify-content: center; margin-bottom: 8px; font-size: 18px;
+}
+.growth-stat-card .gsc-icon.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.growth-stat-card .gsc-icon.skip { background: var(--bg-sub); color: var(--muted); }
+.growth-stat-card .gsc-icon.fail { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.growth-stat-card .gsc-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.growth-stat-card .gsc-val { font-size: 18px; font-weight: 700; color: var(--text); }
+.growth-stat-card .gsc-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+.growth-record-detail { font-size: 12px; color: var(--muted); }
+.growth-record-detail .grd-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
+.growth-record-detail .grd-item.credits { color: var(--primary); font-weight: 600; }
+.growth-record-detail .grd-item.coupon { color: var(--warn); }
+
+/* 成长详情弹窗 */
+.growth-detail-list {
+  display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto;
+  padding: 4px 2px; min-width: 320px;
+}
+.growth-detail-list .grd-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--bg-sub); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 12px; font-size: 13px;
+}
+.growth-detail-list .grd-name { color: var(--text); }
+.growth-detail-list .grd-reward { display: inline-flex; align-items: center; gap: 8px; }
+.growth-detail-list .grd-credits { color: var(--primary); }
+.growth-detail-list .grd-coupon {
+  color: var(--warn); font-size: 12px; background: color-mix(in srgb, var(--warn) 12%, transparent);
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+}
+
+/* 记录表格特定列样式 */
+.growth-record-body td:nth-child(4),
+.growth-record-body td:nth-child(5),
+.growth-record-body td:nth-child(6) { max-width: 150px; }
+.growth-record-body td:nth-child(4) .gr-cell,
+.growth-record-body td:nth-child(5) .gr-cell,
+.growth-record-body td:nth-child(6) .gr-cell {
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .dropdown-item {
   display: flex; align-items: center; gap: 8px; width: 100%;
