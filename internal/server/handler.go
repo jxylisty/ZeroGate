@@ -725,12 +725,28 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				track := &tokenTrackingReader{r: rc}
 				// 客户端带 think:true 且渠道支持时透传思考字段（reasoning_content），
 				// 否则维持剥离（ZCode 等客户端会把思考当正文渲染）
+				var streamErr error
 				if tp, ok := rt.Upstream.(provider.ThinkPassthrough); ok && peek.Think {
-					_ = tp.StreamWithThink(w, track, true)
+					streamErr = tp.StreamWithThink(w, track, true)
 				} else {
-					_ = rt.Upstream.Stream(w, track)
+					streamErr = rt.Upstream.Stream(w, track)
 				}
 				track.finish()
+				// 上游中途断流（超时/连接重置）：下游只看到连接关闭会当成"正常结束"，
+				// 必须补一个 SSE error 事件让客户端知道是失败而非模型说完了。
+				if streamErr != nil {
+					log.Printf("stream aborted platform=%s uid=%s elapsed=%dms err=%v",
+						rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
+					if payload, jerr := json.Marshal(map[string]string{
+						"error": "上游连接中断：" + streamErr.Error(),
+					}); jerr == nil {
+						if _, werr := io.WriteString(w, "data: "+string(payload)+"\n\n"); werr == nil {
+							if fl, ok := w.(http.Flusher); ok {
+								fl.Flush()
+							}
+						}
+					}
+				}
 				var p, c, cr, cw int64
 				if pr, crk, crd, cwr, ok := track.ScanResult(); ok {
 					p, c, cr, cw = pr, crk, crd, cwr

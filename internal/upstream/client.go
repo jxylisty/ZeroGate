@@ -95,18 +95,25 @@ type Client struct {
 
 	// growthHistory 成长中心历史记录（可选，nil 时不记录）
 	growthHistory *GrowthHistory
+
+	// StreamHTTP 供流式对话使用：无总超时，仅靠 Transport 的 ResponseHeaderTimeout
+	// 保护建连。http.Client.Timeout 是覆盖响应体读取的绝对截止时间，思考型模型
+	// 超过该时长会被硬掐断，故流式必须走独立 client。为 nil 时回退到 HTTP。
+	StreamHTTP *http.Client
 }
 
 // New 生产默认值。配置连接池减少 TLS 握手。
 func New() *Client {
 	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second, // 流式无总超时，靠它兜住建连卡死
 	}
 	return &Client{
 		HTTP:            &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		BillingHTTP:     &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		StreamHTTP:      &http.Client{Transport: tr},
 		ChatBaseCN:      "https://copilot.tencent.com",
 		BillingBaseCN:   "https://www.codebuddy.cn",
 		ChatBaseGlobal:  "https://www.workbuddy.ai",
@@ -118,6 +125,14 @@ func New() *Client {
 func (c *Client) billingClient() *http.Client {
 	if c.BillingHTTP != nil {
 		return c.BillingHTTP
+	}
+	return c.HTTP
+}
+
+// streamClient 返回流式对话用的 HTTP 客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
 	}
 	return c.HTTP
 }
@@ -230,7 +245,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		return nil, 0, nil, err
 	}
 	ChatHeaders(req, a)
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err
@@ -431,7 +446,7 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 					CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
 					CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
 					DeductionEndTime    int64  `json:"DeductionEndTime"` // 毫秒时间戳；实测 2026-09 携带
-					CycleEndTime        string `json:"CycleEndTime"`      // "2026-10-16 15:31:28"（UTC+8）
+					CycleEndTime        string `json:"CycleEndTime"`     // "2026-10-16 15:31:28"（UTC+8）
 				} `json:"Accounts"`
 			} `json:"Data"`
 		} `json:"Response"`
@@ -451,7 +466,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		default:
 			total_, used, remain = acct.CapacitySize, acct.CapacityUsed, acct.CapacityRemain
 		}
-		if remain < 0 { remain = 0 }
+		if remain < 0 {
+			remain = 0
+		}
 		total += remain
 		items = append(items, provider.ResourceItem{
 			Name:     acct.PackageName,
@@ -550,9 +567,9 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		Code int `json:"code"`
 		Data struct {
 			Models []struct {
-				ID      string `json:"id"`
-				Name    string `json:"name"`
-				Credits string `json:"credits"` // "x0.79 credits"
+				ID      string   `json:"id"`
+				Name    string   `json:"name"`
+				Credits string   `json:"credits"` // "x0.79 credits"
 				Tags    []string `json:"tags"`
 			} `json:"models"`
 		} `json:"data"`

@@ -25,6 +25,10 @@ type Client struct {
 	Base    string // 业务 API，默认 https://openapi.qoder.com.cn
 	Gateway string // 推理网关，默认 https://gateway.qoder.com.cn
 
+	// StreamHTTP 供流式对话使用：无总超时，思考型模型可长时间输出。
+	// http.Client.Timeout 覆盖响应体读取，会把长思考的 SSE 硬掐断。nil 时回退到 HTTP。
+	StreamHTTP *http.Client
+
 	// modelMap 客户端名（display_name 规范化）→ 上游 model key。
 	// 由 FetchModels 填充；ChatStream 优先查此表，查不到再查静态表。
 	modelMu  sync.RWMutex
@@ -44,16 +48,26 @@ func New() *Client {
 // NewWithTimeout 指定上游 HTTP 超时；配置连接池。
 func NewWithTimeout(timeout time.Duration) *Client {
 	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{}, // 强制 HTTP/1.1
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,                                      // 流式无总超时，靠它兜住建连卡死
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{}, // 强制 HTTP/1.1
 	}
 	return &Client{
-		HTTP:    &http.Client{Timeout: timeout, Transport: tr},
-		Base:    OpenAPIBase,
-		Gateway: GatewayBase,
+		HTTP:       &http.Client{Timeout: timeout, Transport: tr},
+		StreamHTTP: &http.Client{Transport: tr},
+		Base:       OpenAPIBase,
+		Gateway:    GatewayBase,
 	}
+}
+
+// streamClient 返回流式对话用的 HTTP 客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
 }
 
 // NewWithBase 测试用：覆盖 base/gateway。
@@ -284,7 +298,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if err := sess.ApplyHeaders(req, encoded, url, a.UID, true, modelKey); err != nil {
 		return nil, 0, nil, fmt.Errorf("cosy headers: %w", err)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("qoder chat_stream uid=%s model=%s: transport error: %v", a.UID, modelKey, err)
 		return nil, 0, nil, err
@@ -522,6 +536,8 @@ func truncate(s string, n int) string {
 }
 
 // GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
-func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }
+func (c *Client) GrowthTravel(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
+	return provider.GrowthTasksResult{Message: "暂未支持"}
+}

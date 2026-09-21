@@ -18,6 +18,6 @@
     "keepalive_hours": [22]
   },
   "upstream": {
-    "timeout_seconds": 120
+    "timeout_seconds": 300
   }
 }

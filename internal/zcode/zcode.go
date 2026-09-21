@@ -13,7 +13,6 @@
 package zcode
 
 import (
-	"os"
 	"bufio"
 	"bytes"
 	"context"
@@ -22,6 +21,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -37,6 +37,10 @@ type Client struct {
 	HTTP    *http.Client
 	Base    string // https://zcode.z.ai
 	Channel string // 渠道名（zcode），用于费率分组
+
+	// StreamHTTP 供流式对话使用：无总超时，思考型模型可长时间输出。
+	// http.Client.Timeout 覆盖响应体读取，会把长思考的 SSE 硬掐断。nil 时回退到 HTTP。
+	StreamHTTP *http.Client
 
 	// CaptchaNodeDir 验证码求解器目录（内含 solver.js + node_modules），
 	// 相对 exe 工作目录；留空则禁用验证码（AI 免费套餐可能不开风控，但仍建议开启）。
@@ -56,12 +60,14 @@ type Client struct {
 // New 生产默认。
 func New() *Client {
 	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second, // 流式无总超时，靠它兜住建连卡死
 	}
 	c := &Client{
 		HTTP:           &http.Client{Timeout: 180 * time.Second, Transport: tr},
+		StreamHTTP:     &http.Client{Transport: tr},
 		Base:           "https://zcode.z.ai",
 		Channel:        "zcode",
 		CaptchaNodeDir: "captcha_node",
@@ -113,6 +119,14 @@ const (
 // body 可能是 {code,msg} 或 {error:{...}}；出现 "captcha" 视为验证码失效
 // （客户端请求问题，交由 ChatStream 内部重求，不禁用账号）。
 func (c *Client) Classify(status int, body string) provider.ErrKind { return Classify(status, body) }
+
+// streamClient 返回流式对话用的 HTTP 客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
+}
 
 // Classify 独立分类（供测试直接调用）。
 func Classify(status int, body string) provider.ErrKind {
@@ -311,7 +325,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		if verifyParam != "" {
 			req.Header.Set("X-Aliyun-Captcha-Verify-Param", verifyParam)
 		}
-		resp, err := c.HTTP.Do(req)
+		resp, err := c.streamClient().Do(req)
 		if err != nil {
 			log.Printf("zcode chat_stream uid=%s model=%s: transport error: %v", a.UID, peek.Model, err)
 			return nil, 0, nil, err
@@ -362,7 +376,7 @@ func (c *Client) bridgeChatStream(a *auth.Auth, model string, rawBody []byte) (i
 	if c.BridgeKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.BridgeKey)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("zcode bridge uid=%s model=%s: transport error: %v", a.UID, model, err)
 		return nil, 0, nil, err
@@ -432,12 +446,12 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	}
 	var env struct {
 		Balances []struct {
-			ShowName       string  `json:"show_name"`
-			Model          string  `json:"model"`
-			TotalUnits     int64   `json:"total_units"`
-			UsedUnits      int64   `json:"used_units"`
-			RemainingUnits int64   `json:"remaining_units"`
-			ExpiresAt      any     `json:"expires_at"`
+			ShowName       string `json:"show_name"`
+			Model          string `json:"model"`
+			TotalUnits     int64  `json:"total_units"`
+			UsedUnits      int64  `json:"used_units"`
+			RemainingUnits int64  `json:"remaining_units"`
+			ExpiresAt      any    `json:"expires_at"`
 		} `json:"balances"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -625,11 +639,11 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 
 	var (
 		id, model string
-		created    = time.Now().Unix()
-		inputTok   int64
-		outputTok  int64
-		streamed   bool
-		doneSent   bool
+		created   = time.Now().Unix()
+		inputTok  int64
+		outputTok int64
+		streamed  bool
+		doneSent  bool
 	)
 
 	br := bufio.NewReaderSize(r, 64*1024)
@@ -755,7 +769,7 @@ func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
 		// 空流兜底：给客户端一个空内容终包，避免挂起
 		if err := writeChunk(map[string]any{
 			"id": idOrSynth(id), "object": "chat.completion.chunk", "created": created,
-			"model": model,
+			"model":   model,
 			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
 		}); err != nil {
 			return err
@@ -914,19 +928,21 @@ func truncate(s string, n int) string {
 }
 
 // GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
-func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }
+func (c *Client) GrowthTravel(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
+	return provider.GrowthTasksResult{Message: "暂未支持"}
+}
 
 // ---------------------------------------------------------------------------
 // 验证码管理器（Node + jsdom 无浏览器求解，照抄 zcode2api/captcha.py）
 // ---------------------------------------------------------------------------
 
 const (
-	captchaVerifyTTL = 45 * time.Second          // verifyParam 有效 45s
-	captchaCfgTTL    = 10 * time.Minute          // configs 缓存
-	captchaSolveTTL  = 40 * time.Second          // 单次求解超时
-	captchaMaxRetry  = 4                         // 求解重试次数
+	captchaVerifyTTL = 45 * time.Second // verifyParam 有效 45s
+	captchaCfgTTL    = 10 * time.Minute // configs 缓存
+	captchaSolveTTL  = 40 * time.Second // 单次求解超时
+	captchaMaxRetry  = 4                // 求解重试次数
 )
 
 // CaptchaManager 阿里云无痕验证码管理器。

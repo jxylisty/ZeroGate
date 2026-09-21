@@ -35,7 +35,11 @@ type Client struct {
 	HTTP    *http.Client
 	Base    string // 默认 https://www.codebuddy.ai
 	Channel string // 渠道名（codebuddy / wbintl），用于费率分组
-	
+
+	// StreamHTTP 供流式对话使用：无总超时，思考型模型可长时间输出。
+	// http.Client.Timeout 覆盖响应体读取，会把长思考的 SSE 硬掐断。nil 时回退到 HTTP。
+	StreamHTTP *http.Client
+
 	// 动态发现机制：记录成功调用的隐藏模型（接口未返回但实际可用）
 	discoveredModelsOnce sync.Once
 	discoveredModels     map[string]bool // 已确认可用的隐藏模型 ID 集合
@@ -44,14 +48,16 @@ type Client struct {
 // New 生产默认。intl 与 CN 同域不同路径路由，无需多 base。
 func New() *Client {
 	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second, // 流式无总超时，靠它兜住建连卡死
 	}
 	return &Client{
-		HTTP:    &http.Client{Timeout: 180 * time.Second, Transport: tr},
-		Base:    "https://www.codebuddy.ai",
-		Channel: "codebuddy",
+		HTTP:       &http.Client{Timeout: 180 * time.Second, Transport: tr},
+		StreamHTTP: &http.Client{Transport: tr},
+		Base:       "https://www.codebuddy.ai",
+		Channel:    "codebuddy",
 	}
 }
 
@@ -60,6 +66,14 @@ func NewWithBase(base string) *Client {
 	c := New()
 	c.Base = base
 	return c
+}
+
+// streamClient 返回流式对话用的 HTTP 客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
 }
 
 // discoverDiscoveredModels 初始化并返回已发现的隐藏模型集合（线程安全，只执行一次）
@@ -232,7 +246,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if peek.Model != "" {
 		req.Header.Set("X-Model-ID", peek.Model)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("codebuddy chat_stream uid=%s model=%s: transport error: %v", a.UID, peek.Model, err)
 		return nil, 0, nil, err
@@ -245,14 +259,14 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			a.UID, peek.Model, resp.StatusCode, kind, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
-	
+
 	// 成功调用后，记录模型 ID（用于发现隐藏模型）
 	if peek.Model != "" && resp.StatusCode == 200 {
 		discovered := c.discoverDiscoveredModels()
 		discovered[peek.Model] = true
 		log.Printf("codebuddy chat_stream uid=%s model=%s: discovered hidden model (HTTP 200)", a.UID, peek.Model)
 	}
-	
+
 	return resp.Body, resp.StatusCode, nil, nil
 }
 
@@ -406,7 +420,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
 	// 无论接口是否成功，都返回完整目录，确保前端费率表不会缺失模型
 	var out []provider.ModelPricing
-	
+
 	// 基础模型列表（codebuddy 和 wbintl 共享）
 	for i := range intlModels {
 		m := &intlModels[i]
@@ -425,7 +439,7 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		}
 		out = append(out, pricing)
 	}
-	
+
 	// WorkBuddy 国际版特有隐藏模型（仅当 Channel="wbintl" 时添加）
 	if c.Channel == "wbintl" && len(wbintlHiddenModels) > 0 {
 		for i := range wbintlHiddenModels {
@@ -441,7 +455,7 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 			out = append(out, pricing)
 		}
 	}
-	
+
 	// 添加动态发现的隐藏模型定价信息（通过成功调用嗅探到的）
 	discovered := c.discoverDiscoveredModels()
 	for modelID := range discovered {
@@ -464,7 +478,7 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 			out = append(out, pricing)
 		}
 	}
-	
+
 	return out, nil
 }
 
@@ -517,12 +531,12 @@ func (c *Client) UserResource(a *auth.Auth) (int64, error) {
 // 周期额度（CycleCapacity*）优先，参考 workbuddy2api-hub fetch_credits 汇总口径。
 func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
 	payload, err := json.Marshal(map[string]any{
-		"PageNumber":                1,
-		"PageSize":                  100,
-		"ProductCode":               "p_tcaca",
-		"Status":                    []int{0, 3},
-		"PackageEndTimeRangeBegin":  time.Now().Format("2006-01-02 15:04:05"),
-		"PackageEndTimeRangeEnd":    "2036-01-01 00:00:00",
+		"PageNumber":               1,
+		"PageSize":                 100,
+		"ProductCode":              "p_tcaca",
+		"Status":                   []int{0, 3},
+		"PackageEndTimeRangeBegin": time.Now().Format("2006-01-02 15:04:05"),
+		"PackageEndTimeRangeEnd":   "2036-01-01 00:00:00",
 	})
 	if err != nil {
 		return 0, nil, err
@@ -594,7 +608,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 }
 
 // DailyCheckin intl 无签到活动（成长中心为国区功能）。
-func (c *Client) DailyCheckin(a *auth.Auth) error { return fmt.Errorf("codebuddy 国际版暂无签到活动") }
+func (c *Client) DailyCheckin(a *auth.Auth) error {
+	return fmt.Errorf("codebuddy 国际版暂无签到活动")
+}
 
 // ErrKind 错误分类（复用 upstream 语义 + intl 专属 code）。
 const (
@@ -649,9 +665,11 @@ func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough
 }
 
 // GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
-func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }
+func (c *Client) GrowthTravel(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
+	return provider.GrowthTasksResult{Message: "暂未支持"}
+}
 
 func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
 	return upstream.AggregateWithThink(r, keepReasoning)

@@ -35,6 +35,10 @@ type Client struct {
 	HTTP    *http.Client
 	Base    string // 基础 URL，默认 https://api.atria-asi.ai/v1
 	Channel string // "atria"
+
+	// StreamHTTP 供流式对话使用：无总超时，思考型模型可长时间输出。
+	// http.Client.Timeout 覆盖响应体读取，会把长思考的 SSE 硬掐断。nil 时回退到 HTTP。
+	StreamHTTP *http.Client
 }
 
 // New 实例化默认 Atria 客户端。
@@ -46,15 +50,25 @@ func New() *Client {
 	base = strings.TrimRight(base, "/")
 
 	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second, // 流式无总超时，靠它兜住建连卡死
 	}
 	return &Client{
-		HTTP:    &http.Client{Timeout: 180 * time.Second, Transport: tr},
-		Base:    base,
-		Channel: "atria",
+		HTTP:       &http.Client{Timeout: 180 * time.Second, Transport: tr},
+		StreamHTTP: &http.Client{Transport: tr},
+		Base:       base,
+		Channel:    "atria",
 	}
+}
+
+// streamClient 返回流式对话用的 HTTP 客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +136,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", token)
 
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("atria chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err
@@ -220,6 +234,8 @@ func truncate(s string, n int) string {
 }
 
 // GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
-func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }
+func (c *Client) GrowthTravel(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
+	return provider.GrowthTasksResult{Message: "暂未支持"}
+}

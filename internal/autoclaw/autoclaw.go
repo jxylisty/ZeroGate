@@ -50,10 +50,10 @@ const (
 	// 注意：config 用 小写 authorization 认证；reward 用 小写 authorization + body {modal_id,reward_type}。
 	PromotionConfigPath = "/autoclaw-proxy/proxy/autoclaw-promotion-config"
 	PromotionRewardPath = "/autoclaw-proxy/proxy/autoclaw-promotion-reward"
-	WalletsPath      = "/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw"
-	ScopePath        = "/agent-assetmgr/api/v1/wallet-instances?wallet_type=all&wallet_scope=all"
-	RefreshPath      = "/userapi/v1/refresh"
-	ModelConfigPath  = "/agent-assetmgr/api/v1/model-config"
+	WalletsPath         = "/agent-assetmgr/api/v2/wallets?biz_app_id=autoclaw"
+	ScopePath           = "/agent-assetmgr/api/v1/wallet-instances?wallet_type=all&wallet_scope=all"
+	RefreshPath         = "/userapi/v1/refresh"
+	ModelConfigPath     = "/agent-assetmgr/api/v1/model-config"
 )
 
 // 注意：曾设计 api.z.ai / open.bigmodel.cn 多端点直连（ZaiBase/BigModelBase/
@@ -68,21 +68,35 @@ type Client struct {
 	Base    string // userapi/proxy 基址（autoglm-acceleration-api.zhipuai.cn）
 	Channel string // "autoclaw"，费率分组
 	Version string // X-Version（与官方桌面端一致）
+
+	// StreamHTTP 供流式对话使用：无总超时，思考型模型可长时间输出。
+	// http.Client.Timeout 覆盖响应体读取，会把长思考的 SSE 硬掐断。nil 时回退到 HTTP。
+	StreamHTTP *http.Client
 }
 
 // New 生产默认。
 func New() *Client {
 	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second, // 流式无总超时，靠它兜住建连卡死
 	}
 	return &Client{
-		HTTP:    &http.Client{Timeout: 180 * time.Second, Transport: tr},
-		Base:    ProxyBase,
-		Channel: "autoclaw",
-		Version: ClientVer,
+		HTTP:       &http.Client{Timeout: 180 * time.Second, Transport: tr},
+		StreamHTTP: &http.Client{Transport: tr},
+		Base:       ProxyBase,
+		Channel:    "autoclaw",
+		Version:    ClientVer,
 	}
+}
+
+// streamClient 返回流式对话用的 HTTP 客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +360,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			req.Header.Add(k, v)
 		}
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("autoclaw chat_stream uid=%s route=%s: transport error: %v", a.UID, route.routeID, err)
 		return nil, 0, nil, err
@@ -717,7 +731,7 @@ func (c *Client) claimPromotionReward(tok, modalID, rewardType string) (pts int,
 	var env struct {
 		Code int64 `json:"code"`
 		Data struct {
-			Points int  `json:"points"`
+			Points  int  `json:"points"`
 			Success bool `json:"success"`
 		} `json:"data"`
 	}

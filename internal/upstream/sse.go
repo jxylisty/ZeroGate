@@ -259,6 +259,7 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 }
 
 // StreamWithThink 透传上游 SSE；passthrough=true 时保留 reasoning 字段原样透传。
+// 读取中途出错时返回该错误且**不补 [DONE]**——补了会让下游误判为正常结束。
 func StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -288,7 +289,7 @@ func StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error
 			if err == io.EOF {
 				break
 			}
-			return err
+			return err // 上游中断：交由调用方向下游发 error 事件
 		}
 	}
 	if !sawDone {
