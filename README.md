@@ -1,14 +1,14 @@
-# wild-work
+# ZeroGate（wild-work）
 
-> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy)、TraeWork、Qoder 的多个账号聚合成一个 OpenAI 兼容 API，双击启动，浏览器管理。
+> 多渠道 AI 账号聚合网关——把 WorkBuddy(CodeBuddy)、WorkBuddy 国际版、TraeWork、Qoder、ZCode、AutoClaw、Atria 等 8 个渠道的多个账号聚合成一个 OpenAI 兼容 API，双击启动，浏览器管理。
 
-[![GitHub](https://img.shields.io/badge/GitHub-rockswang%2Fworkbuddy--wild-blue)](https://github.com/rockswang/workbuddy-wild)
+[![GitHub](https://img.shields.io/badge/GitHub-jxylisty%2FZeroGate-blue)](https://github.com/jxylisty/ZeroGate)
 
 ## 功能
 
 - **OpenAI 兼容代理**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，模型前缀路由
-- **三渠道聚合**：WorkBuddy(CodeBuddy) + TraeWork + Qoder，模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率
-- **自动签到**：每日定时签到领额度，token 保活，冷却状态机
+- **八渠道聚合**：WorkBuddy(CodeBuddy) + TraeWork + Qoder + ZCode + AutoClaw + WorkBuddy 国际版(wbintl) + CodeBuddy 国际版(codebuddy) + Atria，模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率
+- **自动签到**：每日定时签到领额度（含幸运抽奖、成长任务），token 保活，冷却状态机
 - **Web 管理面板**：账号管理（添加/签到/刷新/停用/删除）、积分明细、渠道费率、API 配置
 - **系统托盘**：常驻右下角，双击打开面板，右键菜单操作
 - **跨平台**：Windows（完整支持）、macOS（代码已就绪，CI 构建）、Linux（无头模式）
@@ -16,13 +16,13 @@
 
 ## 项目渊源
 
-本项目是 [workbuddy-wild](https://github.com/rockswang/workbuddy-wild)（v0.2.x）的重构版，去掉 wails/WebView2 GUI，改为「系统托盘 + 系统浏览器 Web UI」的轻量架构，内存占用更小、跨平台更简单。
+本项目是 [workbuddy-wild](https://github.com/rockswang/workbuddy-wild)（v0.2.x）的重构版（旧仓库已归档），去掉 wails/WebView2 GUI，改为「系统托盘 + 系统浏览器 Web UI」的轻量架构，内存占用更小、跨平台更简单。重构后陆续接入 ZCode、AutoClaw、Atria 等渠道并更名为 ZeroGate。
 
 ## 使用方式
 
 ### Windows
 
-1. 从 [Releases](https://github.com/rockswang/workbuddy-wild/releases) 下载 `wild-work.exe`
+1. 从 [Releases](https://github.com/jxylisty/ZeroGate/releases) 下载 `wild-work.exe`
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「+ WorkBuddy」或「+ TraeWork」或「+ Qoder」添加账号
@@ -144,7 +144,7 @@ Base URL: http://127.0.0.1:7863/v1
 API Key:  WildWorkAPI
 ```
 
-模型 ID 需带渠道前缀：`workbuddy/<model>`、`traework/<model>`、`qoder/<model>`。
+模型 ID 需带渠道前缀：`workbuddy/<model>`、`traework/<model>`、`qoder/<model>`、`zcode/<model>`、`autoclaw/<model>` 等，完整列表见 `/v1/models`。
 
 ## 面板操作指南
 
