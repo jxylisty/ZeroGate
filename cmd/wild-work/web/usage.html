@@ -37,7 +37,7 @@
     <div class="sum-card ok"><div class="label">今日调度 Token</div><div class="value" id="sTodayTokens">...</div><div class="sub-label" id="sTodaySub">今日请求 0 次</div></div>
     <div class="sum-card purple"><div class="label">缓存节省 Token</div><div class="value" id="sCacheTokens">...</div><div class="sub-label" id="sCacheRate">缓存命中率 0%</div></div>
     <div class="sum-card warn"><div class="label">纳管账号与服务</div><div class="value" id="sTotalServices">...</div><div class="sub-label" id="sServiceDetail">本地池 + 外部桥接</div></div>
-    <div class="sum-card ok"><div class="label">今日签到状态</div><div class="value" id="sCheckin">...</div><div class="sub-label">自动领取与防过期</div></div>
+    <div class="sum-card warn"><div class="label">白嫖节省金额</div><div class="value" id="sSavings">...</div><div class="sub-label" id="sSavingsDetail">按官方 API 单价折算</div></div>
   </div>
 
   <!-- 白嫖聚合条（四大端口服务全景） -->
@@ -95,6 +95,22 @@
           </tr>
         </thead>
         <tbody></tbody>
+      </table>
+    </div>
+  </details>
+
+  <!-- 客户端调用 TOP5（自 index tab-usage 合并） -->
+  <details class="panel" id="panelClients" open>
+    <summary>
+      <span class="phead"><span class="arrow">▶</span><span><span data-ic="zap"></span>客户端调用 TOP5</span></span>
+      <span class="pmeta">按累计消耗 Token 降序</span>
+    </summary>
+    <div class="pbody">
+      <table id="clientTable">
+        <thead>
+          <tr><th>#</th><th>客户端</th><th>累计 Tokens</th><th>占比 / 调用次数</th></tr>
+        </thead>
+        <tbody id="clientTopBody"></tbody>
       </table>
     </div>
   </details>
@@ -157,6 +173,66 @@
 
   const PALETTE = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#64748b'];
 
+  // 白嫖计价（自 app.js tab-usage 迁移）：官方 API 单价 USD/1M（2026-09 检索）
+  const USD_CNY = 7.2;
+  const MODEL_PRICES = [
+    { re: "glm-5-3-flash",       in: 0.15, cache: 0.03,  out: 0.50 },  // Z.AI GLM-5.3-Flash
+    { re: "glm-5-3-flashx",      in: 0.30, cache: 0.06,  out: 1.00 },  // 估计档（介于 Flash 与标准之间）
+    { re: "glm-5-3",             in: 1.40, cache: 0.26,  out: 4.40 },  // Z.AI GLM-5.3（5.2 同价）
+    { re: "glm-5-2",             in: 1.40, cache: 0.26,  out: 4.40 },
+    { re: "glm-4",               in: 0.60, cache: 0.11,  out: 2.20 },  // GLM-4.6 档
+    { re: "doubao-seed-2-1-pro",   in: 0.83, cache: 0.17, out: 4.17 }, // 火山 ¥6 / 缓存¥1.2 / ¥30
+    { re: "doubao-seed-2-1-turbo", in: 0.42, cache: 0.08, out: 2.08 }, // 火山 ¥3 / 缓存¥0.6 / ¥15
+    { re: "doubao",                in: 0.42, cache: 0.08, out: 2.08 }, // 豆包其余型号按 Turbo 档估
+    { re: "deepseek-v4-pro",     in: 1.32, cache: 0.044, out: 3.96 },  // DeepSeek 官方峰时
+    { re: "deepseek",            in: 0.30, cache: 0.006, out: 1.20 },  // DeepSeek V4.1-Flash 峰时（含 deepseek-chat）
+    { re: "gpt-5-6-sol",         in: 4.00, cache: 1.00,  out: 20.00 }, // OpenAI GPT-5.6 Sol（降价后）
+    { re: "gpt-5-6-terra",       in: 2.50, cache: 0.25,  out: 15.00 },
+    { re: "gpt-5-6-luna",        in: 1.00, cache: 0.10,  out: 5.00 },  // 输出价为发布档估计
+    { re: "gpt-5",               in: 1.25, cache: 0.13,  out: 10.00 }, // GPT-5.5 等旧档估计
+    { re: "gpt-4o",              in: 2.50, cache: 1.25,  out: 10.00 },
+    { re: "claude-3-7-sonnet",   in: 3.00, cache: 0.30,  out: 15.00 },
+    { re: "claude-3-5-sonnet",   in: 3.00, cache: 0.30,  out: 15.00 },
+    { re: "claude-3-5-haiku",    in: 0.80, cache: 0.08,  out: 4.00 },
+    { re: "claude-opus",         in: 15.00, cache: 1.50, out: 75.00 },
+    { re: "qwen3-8-max",         in: 1.67, cache: 0.21,  out: 6.25 },  // 百炼 ¥12 / 缓存¥1.5 / ¥44.97
+    { re: "qwen3-8-flash",       in: 0.14, cache: 0.03,  out: 0.42 },  // 百炼 ¥1 / ¥3
+    { re: "kimi-k3",             in: 2.78, cache: 0.28,  out: 13.89 }, // Kimi ¥20 / 缓存¥2 / ¥100
+    { re: "kimi",                in: 1.67, cache: 0.28,  out: 6.94 },  // K2.6 等旧档估计
+    { re: "gemini-3-5-flash",    in: 1.50, cache: 0.15,  out: 9.00 },
+    { re: "gemini",              in: 0.60, cache: 0.06,  out: 3.00 },  // Flash-Lite 档
+    // 渠道主力模型档：历史 CSV 行没记模型名，后端以 "<渠道> (历史)" 记账，
+    // 按该渠道实际跑的主力模型档估算（必须排在上面型号条目之后，避免抢匹配 "渠道/模型" 前缀）。
+    { re: "zcode",                in: 0.15, cache: 0.03,  out: 0.50 },
+    { re: "atria",                in: 0.15, cache: 0.03,  out: 0.50 },
+    { re: "autoclaw",             in: 0.15, cache: 0.03,  out: 0.50 },
+    { re: "traework",             in: 0.42, cache: 0.08,  out: 2.08 },
+    { re: "workbuddy",            in: 0.30, cache: 0.006, out: 1.20 },
+    { re: "wbintl",               in: 1.40, cache: 0.26,  out: 4.40 },
+    { re: "codebuddy",            in: 4.00, cache: 1.00,  out: 20.00 },
+    { re: "qoder",                in: 0.14, cache: 0.03,  out: 0.42 },
+  ];
+  // 未收录且无渠道前缀的模型：按中档模型估计
+  const FALLBACK_PRICE = { re: "", in: 1.00, cache: 0.10, out: 4.00 };
+
+  function modelPrice(model) {
+    const n = String(model || "").toLowerCase().replace(/\./g, "-");
+    for (const p of MODEL_PRICES) {
+      if (n.includes(p.re)) return p;
+    }
+    return FALLBACK_PRICE;
+  }
+
+  // 按 输入/输出/缓存命中 用量折算官方 API 美元成本（单价 USD/1M）。
+  // GLM/DeepSeek/OpenAI 的 prompt_tokens 通常【包含】缓存命中部分，而 Anthropic 两者分开：
+  // 统一按 "缓存命中 ≤ 输入 则从输入中扣除" 归一，避免缓存被按输入价重复计费。
+  function priceUSD(model, prompt, completion, cacheRead) {
+    const p = modelPrice(model);
+    const cache = Math.max(0, Math.min(cacheRead, prompt));
+    const plainInput = prompt - cache;
+    return (plainInput * p.in + completion * p.out + cache * p.cache) / 1e6;
+  }
+
   const KIND_LABEL = {
     traework: 'TraeWork (字节原生)',
     workbuddy: 'WorkBuddy (腾讯智脑)',
@@ -189,6 +265,12 @@
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // 本地时区 YMD（后端按日聚合用本地日期，不能用 toISOString 的 UTC 日期）
+  function localYMD(d) {
+    const t = d || new Date();
+    return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
   }
 
   // 到期文本判断
@@ -240,17 +322,13 @@
 
     // 今日 Token 统计
     let todayTokens = 0, todayReqs = 0;
-    const todayYMD = new Date().toISOString().slice(0, 10);
+    const todayYMD = localYMD();
     (analyticsData.daily_trend || []).forEach(d => {
       if (d.day === todayYMD) {
         todayTokens += d.total || 0;
         todayReqs += d.req_count || 0;
       }
     });
-
-    // 账号签到统计
-    let checkinOkCount = 0;
-    accounts.forEach(a => { if (a.last_checkin_ok) checkinOkCount++; });
 
     $('sTotalTokens').textContent = fmtToken(totalTokens);
     $('sTodayTokens').textContent = fmtToken(todayTokens);
@@ -270,7 +348,7 @@
     $('sCacheRate').title = '命中率 = 缓存命中Token / 输入Token；「未上报」= 上游 usage 不含缓存字段，非真实无缓存。';
     $('sTotalServices').textContent = `${accounts.length} 本地 + 3 外部`;
     $('sServiceDetail').textContent = '含 GPT/Codex & Copilot';
-    $('sCheckin').textContent = `${checkinOkCount}/${accounts.length}`;
+    renderSavings(tokenData);
 
     // 2. 渲染白嫖聚合条
     renderArsenalStrip(arsenalData, accounts.length);
@@ -284,11 +362,83 @@
     // 5. 渲染账号 Token 生产力排行榜
     renderTokenRank(accounts, analyticsData);
 
+    // 5.5 渲染客户端调用 TOP5
+    renderClientTop(analyticsData.top_clients || []);
+
     // 6. 渲染到期日历
     renderCalendar(accounts);
 
     // 7. 渲染全量账号分组（包含外部服务卡片！）
     renderAccounts(accounts, arsenalData);
+  }
+
+  // 白嫖节省金额：按 token_usage 的逐模型统计 × 官方 API 单价折算；
+  // 无按模型数据时退回全局 输入/输出/缓存 拆分 × 中档单价。
+  function renderSavings(tokenData) {
+    const models = (tokenData && tokenData.models) || {};
+    const entries = Object.entries(models);
+    let savingsUsd = 0;
+    const breakdown = [];
+    if (entries.length > 0) {
+      for (const [name, m] of entries) {
+        const usd = priceUSD(
+          name,
+          Number(m.prompt_tokens || 0),
+          Number(m.completion_tokens || 0),
+          Number(m.cache_read_tokens || 0),
+        );
+        savingsUsd += usd;
+        if (usd > 0.0001) {
+          const label = name.includes(' (历史)')
+            ? name.replace(' (历史)', '·历史用量（按渠道主力模型档）')
+            : (name || '未知模型');
+          breakdown.push({ name: label, usd, tokens: Number(m.total_tokens || 0) });
+        }
+      }
+    } else {
+      const prompt = Number((tokenData && tokenData.summary && tokenData.summary.prompt_tokens) || 0);
+      const comp = Number((tokenData && tokenData.summary && tokenData.summary.completion_tokens) || 0);
+      const cache = Number((tokenData && tokenData.summary && tokenData.summary.cache_read_tokens) || 0);
+      savingsUsd = priceUSD('', prompt, comp, cache);
+      breakdown.push({ name: '全局拆分估算', usd: savingsUsd, tokens: 0 });
+    }
+    breakdown.sort((a, b) => b.usd - a.usd);
+    const tipLines = breakdown.slice(0, 6).map(b =>
+      `${b.name}：¥${(b.usd * USD_CNY).toFixed(2)}（${fmtToken(b.tokens)} tokens）`);
+    $('sSavings').textContent = `¥${(savingsUsd * USD_CNY).toFixed(0)}`;
+    $('sSavings').title = `按各模型官方 API 单价折算（2026-09 检索，汇率 1 USD=${USD_CNY} CNY）\n${tipLines.join('\n')}`;
+    $('sSavingsDetail').textContent = `约 $${savingsUsd.toFixed(2)} · 按官方 API 单价折算`;
+  }
+
+  // 客户端调用 TOP5（自 index tab-usage 合并）
+  function renderClientTop(clients) {
+    const tbody = $('clientTopBody');
+    if (!tbody) return;
+    if (!clients || clients.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:20px; color:var(--muted)">暂无客户端调用数据</td></tr>`;
+      return;
+    }
+    const top5 = clients.slice(0, 5);
+    const totalAll = top5.reduce((s, c) => s + Number(c.total_tokens || 0), 0) || 1;
+    tbody.innerHTML = top5.map((c, idx) => {
+      const tokens = Number(c.total_tokens || 0);
+      const share = Math.round(tokens / totalAll * 100);
+      const pct = Math.max(8, Math.round((tokens / (top5[0].total_tokens || 1)) * 100));
+      return `
+        <tr>
+          <td style="font-weight:700; color:${idx === 0 ? 'var(--primary)' : 'var(--muted)'}">${idx + 1}</td>
+          <td><b>${esc(c.client || 'Default')}</b></td>
+          <td>${fmtToken(tokens)}</td>
+          <td>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="flex:1; height:8px; border-radius:4px; background:var(--bg-sub); overflow:hidden;">
+                <div style="width:${pct}%; height:100%; border-radius:4px; background:linear-gradient(90deg, var(--chart-comp), var(--ok));"></div>
+              </div>
+              <span style="min-width:96px; color:var(--muted);">${share}% · ${c.req_count || 0}次</span>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
   }
 
   // 渲染白嫖聚合条
@@ -514,7 +664,7 @@
     // 建立账号 Token 映射 (从 account.tokens 聚合真实吞吐)
     const acctList = accounts.map(a => {
       let totalTok = 0, todayTok = 0, promptTok = 0, cacheTok = 0;
-      const todayYMD = new Date().toISOString().slice(0, 10);
+      const todayYMD = localYMD();
       (a.tokens || []).forEach(t => {
         totalTok += t.total || 0;
         promptTok += t.prompt || 0;
@@ -733,7 +883,7 @@
 
     // 聚合该账号产生的 Token
     let tokToday = 0, tokTotal = 0, promptTok = 0, cacheTok = 0;
-    const todayYMD = new Date().toISOString().slice(0, 10);
+    const todayYMD = localYMD();
     (a.tokens || []).forEach(t => {
       tokTotal += t.total || 0;
       promptTok += t.prompt || 0;

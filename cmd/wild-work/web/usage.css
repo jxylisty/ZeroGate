@@ -104,11 +104,11 @@
 .legend-line { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-right: 16px; margin-bottom: 12px; }
 .legend-line i { width: 12px; height: 4px; border-radius: 2px; display: inline-block; }
 
-/* 账号生产力排行表 */
-#rankTable, #guideTable { width: 100%; border-collapse: collapse; font-size: 13px; }
-#rankTable th, #rankTable td, #guideTable th, #guideTable td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
-#rankTable th, #guideTable th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--bg-sub); }
-#rankTable tr:hover td, #guideTable tr:hover td { background: var(--bg-sub); }
+/* 账号生产力排行表 / 客户端 TOP5 / 接入指南 */
+#rankTable, #guideTable, #clientTable { width: 100%; border-collapse: collapse; font-size: 13px; }
+#rankTable th, #rankTable td, #guideTable th, #guideTable td, #clientTable th, #clientTable td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+#rankTable th, #guideTable th, #clientTable th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--bg-sub); }
+#rankTable tr:hover td, #guideTable tr:hover td, #clientTable tr:hover td { background: var(--bg-sub); }
 .rank-no {
   display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center;
   border-radius: 50%; font-size: 11px; font-weight: 700; background: var(--bg-sub); color: var(--muted);

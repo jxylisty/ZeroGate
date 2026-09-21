@@ -52,7 +52,6 @@
     <button class="nav-tab" data-tab="router"><span data-ic="shuffle"></span>模型路由</button>
     <button class="nav-tab" data-tab="logs"><span data-ic="scroll"></span>调用流水</button>
     <button class="nav-tab" data-tab="clients"><span data-ic="key"></span>客户端 Key</button>
-    <button class="nav-tab" data-tab="usage"><span data-ic="trend"></span>Token 资产大屏</button>
     <button class="nav-tab" data-tab="growth"><span data-ic="gift"></span>成长中心</button>
     <button class="nav-tab" data-tab="models"><span data-ic="layers"></span>渠道模型</button>
     <button class="nav-tab" data-tab="settings"><span data-ic="settings"></span>系统设置</button>
@@ -223,124 +222,7 @@
     </section>
   </div>
 
-  <!-- Tab 6: Token 资产大屏 -->
-  <div class="tab-pane" id="tab-usage">
-    <!-- Hero 财富看板 -->
-    <div class="token-hero">
-      <div class="token-hero-top">
-        <div>
-          <div class="token-hero-title"><span data-ic="coins"></span>Token 资产与战果总览</div>
-          <div class="token-hero-sub">全网关累计通过免费渠道生产的大模型 Token 总量与商业价值折算</div>
-        </div>
-        <div class="token-hero-actions">
-          <button class="btn small" id="btnRefreshTokens"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新数据</button>
-          <a class="btn small" href="./usage.html" target="_blank" style="text-decoration:none">独立大屏<span data-ic="external" style="width:13px;height:13px;"></span></a>
-        </div>
-      </div>
-
-      <div class="token-metrics-grid">
-        <div class="token-metric-card main">
-          <div class="tm-lbl">累计生产总 Token</div>
-          <div class="tm-val" id="tkHeroTotal">0</div>
-          <div class="tm-savings" id="tkHeroSavings">约为你白嫖节省: ￥0.00</div>
-        </div>
-        <div class="token-metric-card">
-          <div class="tm-lbl">输入 Prompt</div>
-          <div class="tm-val" id="tkHeroPrompt">0</div>
-          <div class="tm-sub" id="tkHeroPromptPct">占比 0%</div>
-        </div>
-        <div class="token-metric-card">
-          <div class="tm-lbl">输出 Completion</div>
-          <div class="tm-val" id="tkHeroComp">0</div>
-          <div class="tm-sub" id="tkHeroCompPct">占比 0%</div>
-        </div>
-        <div class="token-metric-card">
-          <div class="tm-lbl">节省 Cache Tokens</div>
-          <div class="tm-val" id="tkHeroCache">0</div>
-          <div class="tm-sub" id="tkHeroCacheRate">命中率 0%</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 趋势图与渠道分布 -->
-    <div class="analytics-row">
-      <div class="analytics-col chart-col">
-        <div class="panel">
-          <div class="panel-head">
-            <h2><span data-ic="chart"></span>近 14 天 Token 每日消耗趋势</h2>
-            <div class="legend-group">
-              <span class="legend-item"><i style="background:var(--chart-prompt)"></i>输入 (Prompt)</span>
-              <span class="legend-item"><i style="background:var(--chart-comp)"></i>输出 (Completion)</span>
-              <span class="legend-item"><i style="background:var(--chart-cache)"></i>缓存命中 (Cache)</span>
-            </div>
-          </div>
-          <div id="tokenTrendChartWrap" class="svg-chart-container">
-            <div class="empty-chart">加载中…</div>
-          </div>
-        </div>
-      </div>
-      <div class="analytics-col donut-col">
-        <div class="panel">
-          <div class="panel-head">
-            <h2><span data-ic="pie"></span>白嫖渠道贡献占比</h2>
-          </div>
-          <div id="channelDonutWrap" class="donut-chart-container">
-            <div class="empty-chart">加载中…</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 模型榜单与客户端榜单 -->
-    <div class="analytics-row">
-      <div class="analytics-col">
-        <div class="panel">
-          <div class="panel-head">
-            <h2><span data-ic="bot"></span>热门模型白嫖榜 TOP 5</h2>
-          </div>
-          <div id="topModelsList" class="rank-list">
-            <div class="empty-hint">暂无模型调用数据</div>
-          </div>
-        </div>
-      </div>
-      <div class="analytics-col">
-        <div class="panel">
-          <div class="panel-head">
-            <h2><span data-ic="key"></span>客户端用量排行 TOP 5</h2>
-          </div>
-          <div id="topClientsList" class="rank-list">
-            <div class="empty-hint">暂无客户端调用数据</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 账号 Token 生产力明细 -->
-    <section class="panel">
-      <div class="panel-head">
-        <h2><span data-ic="zap"></span>账号 Token 生产力榜单</h2>
-      </div>
-      <p class="hint" style="margin-bottom:12px;">查看账号池中每一个活跃账号的实际产出贡献，结合到期倒计时，合理调度家庭多账号资产。</p>
-      <div class="data-table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>渠道 / 账号</th>
-              <th>UID</th>
-              <th>累计 Token</th>
-              <th>今日 Token</th>
-              <th>缓存命中率</th>
-              <th>最早到期时间</th>
-              <th>当前调度状态</th>
-            </tr>
-          </thead>
-          <tbody id="acctProductivityBody">
-            <tr><td colspan="7" style="text-align:center; padding:20px; color:var(--muted)">加载中…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </div>
+  <!-- Token 统计已合并至独立大屏 usage.html（顶栏图标直达） -->
 
   <!-- Tab 7: 成长中心 -->
   <div class="tab-pane" id="tab-growth">
