@@ -6,9 +6,12 @@
 //
 // 关键鉴权头（从官方桌面客户端 app.asar 逆向）：
 //   - X-Authorization: Bearer <accessToken>（注意不是标准 Authorization）
-//   - X-Harness-Type: zcode  —— 豁免 api-proxy 系统提示词白名单校验（缺失会 400 invalid request）
 //   - X-Client-Type: pc、X-Product: autoclaw、X-Tm: win、X-Version:1.18.4、X-Lang: zh-CN、
 //     X-Channel: official、X-Request-Id/x_trace_id: UUID（带横线）
+//
+// ⚠️ 2026-09-21 契约反转（详见 docs/lessons/06-autoclaw-contract-inversion-and-vip-wall.md）：
+//   - X-Harness-Type: zcode 从"豁免系统提示词白名单"反转为"带上即 400"——已删除；
+//   - 请求体第一条 system 消息必须为系统 banner（AutoClawSystemBanner），否则 400 invalid request。
 //
 // 用户 API（积分/刷新）走 userapi 签名头：
 //
@@ -43,6 +46,10 @@ const (
 	// 代理端点专属版本号，对齐正在工作的桌面端 1.18.4（仅用于 proxyHeaders，
 	// 不影响已实测的 userapi ClientVer 签名流）
 	proxyVersion = "1.18.4"
+	// 系统提示词 banner（2026-09-21 起必需）：请求体第一条 system 消息必须以此开头，
+	// 否则上游 400 invalid request。与客户端自带 system 共存实测两种姿势均可
+	// （banner 独立消息前置 / 拼接进首条 system），daemon 侧采用独立消息前置，不动客户端内容。
+	AutoClawSystemBanner = "You are a personal assistant running inside OpenClaw.\n## Tooling"
 	// 旧版代理端点（主入口）
 	ProxyBase = "https://autoglm-acceleration-api.zhipuai.cn"
 	ProxyPath = "/autoclaw-proxy/proxy/autoclaw"
@@ -204,10 +211,12 @@ func taskCompleteHeaders(rawToken string) http.Header {
 }
 
 // proxyHeaders 官方代理端点请求头；token 走 X-Authorization。
-// 严格对齐桌面端 1.18.4 实测契约（见文件头注释），缺少/错值会导致 400 invalid request：
+// 严格对齐桌面端实测契约（见文件头注释），缺少/错值会导致 400 invalid request：
 //   - X-Request-Id / x_trace_id = UUID（带横线）
 //   - X-Tm: win（不是 win32）、X-Lang: zh-CN、X-Channel: official、Accept: */*
-//   - X-Harness-Type: zcode 豁免 api-proxy 系统提示词白名单校验（缺失 → 400）
+//
+// ⚠️ 2026-09-21 契约反转：X-Harness-Type: zcode 已反转成"带上即 400"，严禁再加回
+// （系统提示词校验改由请求体 banner 满足，见 ChatStream 注入逻辑）。
 func (c *Client) proxyHeaders(rawToken, model string) http.Header {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
@@ -217,7 +226,6 @@ func (c *Client) proxyHeaders(rawToken, model string) http.Header {
 	h.Set("X-Request-Model", model)
 	h.Set("X-Client-Type", "pc")
 	h.Set("X-Product", "autoclaw")
-	h.Set("X-Harness-Type", "zcode") // 豁免 api-proxy 系统提示词白名单校验（缺失 → 400 invalid request）
 	h.Set("X-Tm", "win")
 	h.Set("X-Version", proxyVersion)
 	h.Set("X-Lang", "zh-CN")
@@ -384,10 +392,27 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 
 	// 重写 body：模型填 bodyID + 强制 stream:true（官方代理对非流式请求返回整包 JSON，
 	// 网关一侧统一用 SSE 再按需聚合，保证 Stream/Aggregate 两条路径都有数据）
+	// + 注入系统 banner（2026-09-21 起必需）：作为独立的第一条 system 消息前置，
+	// 不动客户端自带的 system 内容（共存姿势实测见 lesson 06）。
 	var obj map[string]any
 	if json.Unmarshal(body, &obj) == nil {
 		obj["model"] = route.bodyID
 		obj["stream"] = true
+		if msgs, ok := obj["messages"].([]any); ok {
+			hasBanner := false
+			for _, m := range msgs {
+				if mm, ok := m.(map[string]any); ok &&
+					strings.EqualFold(fmt.Sprint(mm["role"]), "system") &&
+					strings.Contains(fmt.Sprint(mm["content"]), AutoClawSystemBanner) {
+					hasBanner = true
+					break
+				}
+			}
+			if !hasBanner {
+				banner := map[string]any{"role": "system", "content": AutoClawSystemBanner}
+				obj["messages"] = append([]any{banner}, msgs...)
+			}
+		}
 		if body2, e := json.Marshal(obj); e == nil {
 			body = body2
 		}
@@ -434,6 +459,12 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			bodyText := truncate(string(raw), 200)
 			log.Printf("autoclaw chat_stream uid=%s route=%s attempt=%d upstream %d %s body=%s",
 				a.UID, route.routeID, attempt, resp.StatusCode, kind, bodyText)
+			// 免费桶日额度墙（403 810000）：日级硬额度，重试到窗口耗尽毫无意义，
+			// 立即返回明确中文提示（对齐客户端"开会员"文案，客户端 UI 会渲染成排队+VIP）。
+			if strings.Contains(string(raw), "810000") {
+				return nil, http.StatusBadGateway,
+					[]byte("AutoClaw 免费通道（auto-fast）今日额度已用完，24 小时后重置；请改用积分通道模型（zai_auto / glm-5.3-flash 等），或开通会员。"), nil
+			}
 			if isFailoverable(resp.StatusCode, string(raw)) {
 				// 忙窗/额度：递增退避后继续，直到窗口过去自动成功，无需人工干预。
 				time.Sleep(backoff)
