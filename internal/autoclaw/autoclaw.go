@@ -7,7 +7,8 @@
 // 关键鉴权头（从官方桌面客户端 app.asar 逆向）：
 //   - X-Authorization: Bearer <accessToken>（注意不是标准 Authorization）
 //   - X-Harness-Type: zcode  —— 豁免 api-proxy 系统提示词白名单校验（缺失会 400 invalid request）
-//   - X-Client-Type: pc、X-Product: autoclaw、X-Tm: win32、X-Version、X-Lang、x_trace_id: autoclaw-desktop
+//   - X-Client-Type: pc、X-Product: autoclaw、X-Tm: win、X-Version:1.18.4、X-Lang: zh-CN、
+//     X-Channel: official、X-Request-Id/x_trace_id: UUID（带横线）
 //
 // 用户 API（积分/刷新）走 userapi 签名头：
 //
@@ -38,11 +39,16 @@ const (
 	// AppID / AppSecret 来自官方 webElectronApi 常量。
 	AppID     = "100003"
 	AppSecret = "38d2391985e2369a5fb8227d8e6cd5e5"
-	ClientVer = "1.12.1"
-	// 旧版代理端点
+	ClientVer = "1.12.1" // userapi/签名接口版本（实测可用，勿动）
+	// 代理端点专属版本号，对齐正在工作的桌面端 1.18.4（仅用于 proxyHeaders，
+	// 不影响已实测的 userapi ClientVer 签名流）
+	proxyVersion = "1.18.4"
+	// 旧版代理端点（主入口）
 	ProxyBase = "https://autoglm-acceleration-api.zhipuai.cn"
 	ProxyPath = "/autoclaw-proxy/proxy/autoclaw"
 	ChatPath  = ProxyPath + "/chat/completions"
+	// 忙窗 failover 上限（含跨 host），对齐桌面端 DEFAULT_MAX_RETRIES=2。
+	MaxFailover = 2
 	// 每日签到/任务领取端点（web 签名头实测有效返回 reward_points=200）。
 	// 注意：task-complete 挂在 proxy 根下，再拼 ProxyPath 会多出 /autoclaw 段导致 401 Invalid token。
 	TaskCompletePath = "/autoclaw-proxy/proxy/autoclaw-task-complete"
@@ -194,20 +200,25 @@ func taskCompleteHeaders(rawToken string) http.Header {
 }
 
 // proxyHeaders 官方代理端点请求头；token 走 X-Authorization。
+// 严格对齐桌面端 1.18.4 实测契约（见文件头注释），缺少/错值会导致 400 invalid request：
+//   - X-Request-Id / x_trace_id = UUID（带横线）
+//   - X-Tm: win（不是 win32）、X-Lang: zh-CN、X-Channel: official、Accept: */*
+//   - X-Harness-Type: zcode 豁免 api-proxy 系统提示词白名单校验（缺失 → 400）
 func (c *Client) proxyHeaders(rawToken, model string) http.Header {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
-	h.Set("Accept", "text/event-stream")
+	h.Set("Accept", "*/*")
 	h.Set("X-Authorization", "Bearer "+rawToken)
-	h.Set("X-Request-Id", newTraceID())
+	h.Set("X-Request-Id", newDeviceID())
 	h.Set("X-Request-Model", model)
 	h.Set("X-Client-Type", "pc")
 	h.Set("X-Product", "autoclaw")
 	h.Set("X-Harness-Type", "zcode") // 豁免 api-proxy 系统提示词白名单校验（缺失 → 400 invalid request）
-	h.Set("X-Tm", "win32")
-	h.Set("X-Version", c.Version)
-	h.Set("X-Lang", "en")
-	h.Set("x_trace_id", "autoclaw-desktop")
+	h.Set("X-Tm", "win")
+	h.Set("X-Version", proxyVersion)
+	h.Set("X-Lang", "zh-CN")
+	h.Set("X-Channel", "official")
+	h.Set("x_trace_id", newDeviceID())
 	return h
 }
 
@@ -325,10 +336,41 @@ func resolveRoute(m string) routeSpec {
 	return routeSpec{routeID: "zai_auto", bodyID: "auto"}
 }
 
+// isFailoverable 判断某次上游响应是否需要重试。
+// 忙窗亦或额度受限：主域返回 400 invalid request / 403 pay-view(810001) / 403 auto-fast quota(810000)。
+// 401/405/5xx 这类 host 级错误也可触发重试；纯业务参数错误（其它 4xx）不重试直接回报。
+func isFailoverable(status int, body string) bool {
+	low := strings.ToLower(body)
+	switch {
+	case status == http.StatusOK:
+		return false
+	case status == http.StatusBadRequest:
+		return true // 忙窗/无效请求
+	case status == http.StatusForbidden:
+		return true // 忙窗 403（pay-view/quota）
+	case status == http.StatusUnauthorized:
+		return true // 该 host 不认 token
+	case status == http.StatusMethodNotAllowed:
+		// 405 nginx 页 = 死主机（未挂代理路径），不把错误页透传给客户端，重试
+		if strings.Contains(low, "<") || strings.Contains(low, "nginx") {
+			return true
+		}
+		return false
+	case status >= 500:
+		return true
+	}
+	return false
+}
+
 // ChatStream 转发到官方代理端点并返回响应流（OpenAI SSE）。
 // 统一走自动加速度代理端点（ProxyBase）——AutoClaw 的 JWT 只在那里能鉴权。
 // 模型路由采用双标识：X-Request-Model 填带前缀路由 ID，body.model 填剥前缀后的
 // 模型 ID（见 modelRoutes），否则上游 400「非法模型」或选错计费通道。
+//
+// 忙窗容灾：⚠️ 实测我们的 token 只绑定 acceleration 域，其余 host（inner-3/pre-api/api）
+// 一律 401/405/nginx 死主机，跨 host 轮转救不了忙窗 400。真正的恢复 = 在能鉴权的主域上
+// 周期性重试（对齐桌面端 DEFAULT_MAX_RETRIES=2）。忙窗 400/403 时短退避重试，忙窗一过即恢复。
+// 重试上限 MaxFailover 次，全部失败返回中文文案 + 软错误码（502），绝不回吐上游 4xx。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	var peek struct {
 		Model string `json:"model"`
@@ -347,33 +389,49 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		}
 	}
 
-	reqURL := c.Base + ChatPath
-	headers := c.proxyHeaders(rawToken(a), route.routeID)
-	log.Printf("autoclaw chat_stream uid=%s route=%s body_model=%s endpoint=%s", a.UID, route.routeID, route.bodyID, reqURL)
+	tok := rawToken(a)
+	for attempt := 1; attempt <= MaxFailover+1; attempt++ {
+		reqURL := c.Base + ChatPath
+		headers := c.proxyHeaders(tok, route.routeID)
+		log.Printf("autoclaw chat_stream uid=%s route=%s body_model=%s endpoint=%s attempt=%d",
+			a.UID, route.routeID, route.bodyID, reqURL, attempt)
 
-	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	for k, vs := range headers {
-		for _, v := range vs {
-			req.Header.Add(k, v)
+		req, rerr := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(body))
+		if rerr != nil {
+			return nil, 0, nil, rerr
 		}
+		for k, vs := range headers {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
+		resp, derr := c.streamClient().Do(req)
+		if derr != nil {
+			log.Printf("autoclaw chat_stream uid=%s route=%s attempt=%d transport: %v",
+				a.UID, route.routeID, attempt, derr)
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			kind := c.Classify(resp.StatusCode, string(raw))
+			bodyText := truncate(string(raw), 200)
+			log.Printf("autoclaw chat_stream uid=%s route=%s attempt=%d upstream %d %s body=%s",
+				a.UID, route.routeID, attempt, resp.StatusCode, kind, bodyText)
+			if isFailoverable(resp.StatusCode, string(raw)) && attempt <= MaxFailover {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond) // 退避随次数递增
+				continue
+			}
+			// 忙窗重试用尽或非可重试业务错误：返回中文软错 502，交由上层按服务异常处理。
+			// 关键：绝不回吐上游 4xx（401/400/403/405），否则 handler 会误判为会话失效/参数错，
+			// 导致账号被永久禁用，且客户端把自己的 Key 当成失效而崩溃终止会话。
+			return nil, http.StatusBadGateway,
+				[]byte("AutoClaw 忙窗或额度受限，重试后仍失败，请稍后再试。"), nil
+		}
+		return resp.Body, resp.StatusCode, nil, nil
 	}
-	resp, err := c.streamClient().Do(req)
-	if err != nil {
-		log.Printf("autoclaw chat_stream uid=%s route=%s: transport error: %v", a.UID, route.routeID, err)
-		return nil, 0, nil, err
-	}
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		kind := c.Classify(resp.StatusCode, string(raw))
-		log.Printf("autoclaw chat_stream uid=%s route=%s: upstream %d %s body=%s",
-			a.UID, route.routeID, resp.StatusCode, kind, truncate(string(raw), 200))
-		return nil, resp.StatusCode, raw, nil
-	}
-	return resp.Body, resp.StatusCode, nil, nil
+	// 理论不可达：循环内已 return。
+	return nil, http.StatusBadGateway, []byte("AutoClaw 忙窗或额度受限，请稍后再试。"), nil
 }
 
 // autoclawModels 静态模型目录（官方 model-config 实测；上下文 1M / 输出上限来自配置）。

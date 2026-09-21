@@ -70,28 +70,50 @@ func (c *Client) growthPost(url string, a *auth.Auth, body any) (int, []byte) {
 	return resp.StatusCode, raw
 }
 
-// growthDig 从嵌套 map 按路径取任意值（宽容大小写字段名）。
+// growthDig 从嵌套结构中按候选键依次取值（对齐参考 fs_utils::dig 语义）：
+// 每个候选键独立尝试——当前层直接命中（大小写宽容），未命中则下钻信封键与数组元素，
+// 任一候选键先命中非 nil 值即返回；全部未命中返回 nil。
 func growthDig(v any, keys ...string) any {
-	cur := v
 	for _, k := range keys {
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return nil
+		if got := growthDigKey(v, k, 0); got != nil {
+			return got
 		}
-		val, exists := m[k]
-		if !exists {
-			// 大小写宽容回退
-			val = nil
-			for kk, vv := range m {
-				if equalFold(kk, k) {
-					val = vv
-					break
+	}
+	return nil
+}
+
+// growthEnvelopeKeys 信封键：候选键未直接命中时，逐层下钻这些容器再找。
+var growthEnvelopeKeys = [...]string{"data", "result", "resp", "response", "info", "auth", "account"}
+
+func growthDigKey(v any, k string, depth int) any {
+	if depth > 8 || v == nil {
+		return nil
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		if val, exists := t[k]; exists && val != nil {
+			return val
+		}
+		for kk, vv := range t {
+			if equalFold(kk, k) && vv != nil {
+				return vv
+			}
+		}
+		for _, env := range growthEnvelopeKeys {
+			if val, exists := t[env]; exists {
+				if got := growthDigKey(val, k, depth+1); got != nil {
+					return got
 				}
 			}
 		}
-		cur = val
+	case []any:
+		for _, item := range t {
+			if got := growthDigKey(item, k, depth+1); got != nil {
+				return got
+			}
+		}
 	}
-	return cur
+	return nil
 }
 
 func equalFold(a, b string) bool {
@@ -150,10 +172,35 @@ func growthStr(v any) string {
 	}
 }
 
+// growthSOf 仅接受字符串（对齐参考 s_of），非字符串返回空。
+func growthSOf(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// growthDisplay 展示用值文本：字符串原样，其余 JSON 表示（对齐参考 value_display）。
+func growthDisplay(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	default:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return fmt.Sprintf("%v", t)
+		}
+		return string(b)
+	}
+}
+
 // growth200 判断 2xx。
 func growthOK(status int) bool { return status >= 200 && status <= 201 }
 
 // GrowthTravelSimple 旅行：status 到达 → claim 领奖 → config 取目的地 → depart 出发。
+// 返回 (msg, authErr)；跳过以 "skip: " 前缀的 msg 表示，由包装器转为 error 上抛。
 func (c *Client) GrowthTravelSimple(a *auth.Auth) (string, bool) {
 	url := c.growthURL(a, "buddy/travel/status")
 	status, raw := c.growthGet(url, a)
@@ -167,27 +214,19 @@ func (c *Client) GrowthTravelSimple(a *auth.Auth) (string, bool) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return "travel/status 响应解析失败", false
 	}
-	arrived := growthTruthy(growthDig(body, "arrived")) ||
-		growthTruthy(growthDig(body, "is_arrived")) ||
-		growthTruthy(growthDig(body, "has_arrived"))
-	recordID := growthDig(body, "record_id")
-	if recordID == nil {
-		recordID = growthDig(body, "recordId")
-	}
+	arrived := growthTruthy(growthDig(body, "arrived", "is_arrived", "has_arrived"))
+	recordID := growthDig(body, "record_id", "recordId")
 	if !arrived {
-		dest := growthStr(growthDig(body, "destination", "name"))
-		if dest == "" {
-			dest = growthStr(growthDig(body, "target"))
-		}
+		dest := growthSOf(growthDig(body, "destination", "name", "target"))
 		if dest != "" {
-			return "旅行在途（" + dest + "）", false
+			return "skip: 旅行在途（" + dest + "）", false
 		}
-		return "旅行在途", false
+		return "skip: 旅行在途", false
 	}
-	// 领奖
+	// 领奖（失败不阻塞出发）
 	claimBody := map[string]any{}
-	if r, ok := recordID.(string); ok && r != "" {
-		claimBody["record_id"] = r
+	if recordID != nil {
+		claimBody["record_id"] = recordID
 	}
 	st1, raw1 := c.growthPost(c.growthURL(a, "buddy/travel/claim"), a, claimBody)
 	if st1 == http.StatusUnauthorized {
@@ -197,46 +236,39 @@ func (c *Client) GrowthTravelSimple(a *auth.Auth) (string, bool) {
 	if growthOK(st1) {
 		var b1 map[string]any
 		if err := json.Unmarshal(raw1, &b1); err == nil {
-			rw := growthDig(b1, "reward", "credits")
-			if rw == nil {
-				rw = growthDig(b1, "reward")
-			}
-			if rw != nil {
-				claimTxt = " " + growthStr(rw)
+			if rw := growthDig(b1, "reward", "credits", "points", "amount", "value"); rw != nil {
+				claimTxt = " +" + growthDisplay(rw)
 			}
 		}
 	} else {
-		return fmt.Sprintf("领奖失败（HTTP %d）", st1), false
+		claimTxt = fmt.Sprintf(" claim 失败（HTTP %d）", st1)
 	}
-	// 查目的地（失败不阻塞出发）
-	dest := ""
+	// 查目的地（失败不阻塞出发）：出发体用原始值，展示用文本
+	var destVal any
 	if _, r2 := c.growthGet(c.growthURL(a, "buddy/travel/config"), a); len(r2) > 0 {
 		var b2 map[string]any
 		if err := json.Unmarshal(r2, &b2); err == nil {
-			dest = growthStr(growthDig(b2, "destination", "name"))
-			if dest == "" {
-				dest = growthStr(growthDig(b2, "target"))
-			}
+			destVal = growthDig(b2, "destination", "name", "target")
 		}
 	}
 	departBody := map[string]any{}
-	if dest != "" {
-		departBody["destination"] = dest
+	destTxt := ""
+	if destVal != nil {
+		departBody["destination"] = destVal
+		destTxt = "（" + growthDisplay(destVal) + "）"
 	}
 	st3, _ := c.growthPost(c.growthURL(a, "buddy/travel/depart"), a, departBody)
 	if growthOK(st3) {
-		if dest != "" {
-			return "领奖" + claimTxt + "，已出发（" + dest + "）", false
-		}
-		return "领奖" + claimTxt + "，已出发", false
+		return "领奖" + claimTxt + "，已出发" + destTxt, false
 	}
 	return fmt.Sprintf("领奖%s；depart 失败（HTTP %d）", claimTxt, st3), false
 }
 
-// GrowthTravel 成长中心接口：每日旅行（默认不指定目的地）
+// GrowthTravel 成长中心接口：每日旅行（默认不指定目的地）。
+// 跳过（"skip: " 前缀）与登录态失效均以 error 上抛，scheduler 按前缀分流展示。
 func (c *Client) GrowthTravel(a *auth.Auth) error {
-	msg, ok := c.GrowthTravelSimple(a)
-	if !ok {
+	msg, authErr := c.GrowthTravelSimple(a)
+	if authErr || strings.HasPrefix(msg, "skip: ") {
 		return fmt.Errorf("%s", msg)
 	}
 	log.Printf("growth travel done uid=%s msg=%s", a.UID, msg)
