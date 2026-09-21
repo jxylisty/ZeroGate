@@ -1784,7 +1784,7 @@ function renderTokenTrend(auditDaily, accounts) {
   `;
 }
 
-// 2.5 Token 日历热力图（GitHub 贡献图风格：近 26 周格子，色阶=当日 Token 量）
+// 2.5 Token 日历热力图（GitHub 贡献图风格：从最早有数据的周画起，最多 26 周，色阶=当日 Token 量）
 function renderTokenHeatmap(auditDaily, accounts) {
   const wrap = $("tokenHeatmapWrap");
   if (!wrap) return;
@@ -1802,14 +1802,27 @@ function renderTokenHeatmap(auditDaily, accounts) {
     });
   });
 
-  // 构建近 26 周网格：列=周（周日开头），行=星期几
-  const WEEKS = 26;
+  // 区间：从最早有数据的日子的所在周（周日）往后画到今天，前置最多 2 周空格做上下文，总长最多 26 周
+  const WEEK_MAX = 26, LEAD_WEEKS = 2;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const end = new Date(today);
-  end.setDate(end.getDate() + (6 - end.getDay())); // 对齐到本周周六
-  const start = new Date(end);
-  start.setDate(start.getDate() - (WEEKS * 7 - 1));
+
+  let firstData = null;
+  for (const day of Object.keys(dayMap)) {
+    const d = new Date(day + "T00:00:00");
+    if (!isNaN(d) && d <= today && (firstData === null || d < firstData)) firstData = d;
+  }
+  if (!firstData) {
+    wrap.innerHTML = `<div class="heatmap-empty-hint">暂无按日数据，跑起业务后这里会长出热力图</div>`;
+    return;
+  }
+
+  // 起点对齐到 firstData 所在周的周日
+  const gridStart = new Date(firstData);
+  gridStart.setDate(gridStart.getDate() - gridStart.getDay() - LEAD_WEEKS * 7);
+
+  const totalDays = Math.round((today - gridStart) / 86400e3) + 1;
+  const nWeeks = Math.min(WEEK_MAX, Math.ceil(totalDays / 7));
 
   const tokensOf = d => dayMap[localYMD(d)] || 0;
   const allVals = Object.values(dayMap).filter(v => v > 0).sort((a, b) => a - b);
@@ -1819,44 +1832,34 @@ function renderTokenHeatmap(auditDaily, accounts) {
   const fmtDay = d => `${localYMD(d)}\n${fmtTokens(tokensOf(d))} tokens`;
 
   let weeksHtml = "";
-  const monthMarks = []; // {colIndex, label}
-  let lastMonth = -1;
-  for (let w = 0; w < WEEKS; w++) {
+  const monthCols = new Array(nWeeks).fill(null); // 每列对应的月份标签（仅该列含当月 1 号时标注）
+  for (let w = 0; w < nWeeks; w++) {
     let col = "";
     for (let dow = 0; dow < 7; dow++) {
-      const d = new Date(start);
+      const d = new Date(gridStart);
       d.setDate(d.getDate() + w * 7 + dow);
-      const future = d > today;
-      if (future) {
+      if (d > today) {
         col += `<span class="heatmap-cell" style="visibility:hidden"></span>`;
         continue;
       }
+      if (d.getDate() === 1 && !monthCols[w]) monthCols[w] = (d.getMonth() + 1) + "月";
       const lv = level(tokensOf(d));
       col += `<span class="heatmap-cell lvl${lv}" title="${esc(fmtDay(d))}"></span>`;
-    }
-    const firstOfMonth = new Date(start);
-    firstOfMonth.setDate(firstOfMonth.getDate() + w * 7);
-    if (firstOfMonth.getMonth() !== lastMonth) {
-      lastMonth = firstOfMonth.getMonth();
-      monthMarks.push({ col: w, label: (lastMonth + 1) + "月" });
     }
     weeksHtml += `<div class="heatmap-week">${col}</div>`;
   }
 
-  // 月份标签按列位置绝对布局
-  const CELL = 14; // 11px 格子 + 3px 间距
-  const monthHtml = monthMarks.map(m =>
-    `<span class="heatmap-month-lbl" style="left:${m.col * CELL}px">${esc(m.label)}</span>`).join("");
-
+  // 月份标签行：与格子列一一对应的固定宽度槽位，物理上不会重叠
+  const slots = monthCols.map(m => `<span class="heatmap-month-slot">${m ? esc(m) : ""}</span>`).join("");
   wrap.innerHTML = `
-    <div class="heatmap-scroll">
-      <div class="heatmap-flex">
-        <div style="position:absolute; top:0; left:34px; right:0; height:14px;">${monthHtml}</div>
-        <div class="heatmap-weekday-col">
-          <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
-        </div>
-        <div class="heatmap-weeks">${weeksHtml}</div>
+    <div class="heatmap-monthstrip">
+      <span class="heatmap-month-spacer"></span>${slots}
+    </div>
+    <div class="heatmap-flex">
+      <div class="heatmap-weekday-col">
+        <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
       </div>
+      <div class="heatmap-weeks">${weeksHtml}</div>
     </div>
   `;
 }
