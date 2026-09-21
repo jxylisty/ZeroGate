@@ -12,7 +12,18 @@ import (
 	"wild-work/internal/auth"
 )
 
+// requireNet 打真实上游/依赖本机网络的测试统一由此门控：
+// 默认跳过（CI 无凭证无代理，上游契约变化也不应污染 go test 信号），
+// 本地想跑时显式 WILDWORK_NET_TESTS=1 go test ./internal/intl
+func requireNet(t *testing.T) {
+	t.Helper()
+	if os.Getenv("WILDWORK_NET_TESTS") != "1" {
+		t.Skip("skipping network test (set WILDWORK_NET_TESTS=1 to run)")
+	}
+}
+
 func TestDeepSeekV41Flash(t *testing.T) {
+	requireNet(t)
 	authFile := "../../auths/codebuddy-jxylisty.json"
 	raw, err := os.ReadFile(authFile)
 	if err != nil {
@@ -92,9 +103,7 @@ func TestDeepSeekV41Flash(t *testing.T) {
 }
 
 func TestDeepSeekDirectCurl(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping in short mode")
-	}
+	requireNet(t)
 
 	authFile := "../../auths/codebuddy-jxylisty.json"
 	raw, err := os.ReadFile(authFile)
