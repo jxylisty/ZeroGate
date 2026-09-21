@@ -1,7 +1,10 @@
 package audit
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -115,5 +118,94 @@ func TestEmptyRecorderZeroStats(t *testing.T) {
 	a := r.Analytics()
 	if a.TotalRequests != 0 || a.ChannelTokens == nil {
 		t.Fatalf("空 Analytics 不符: %+v", a)
+	}
+}
+
+// 维度回填回归：日聚合文件缺维度明细（机制上线前的旧数据形态）时，
+// 启动从 JSONL 流水补齐 TOP 榜维度，且标量统计不双计、重复启动幂等。
+func TestBackfillDimensionsFromJSONL(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "requests.jsonl")
+
+	// 先造一份带多维明细的流水（3 天 × 多模型/客户端/账号）
+	now := time.Now()
+	days := []time.Time{now.AddDate(0, 0, -2), now.AddDate(0, 0, -1), now}
+	type rec struct {
+		day     time.Time
+		ch, uid string
+		model   string
+		client  string
+		tokens  int64
+	}
+	var all []rec
+	for i, d := range days {
+		all = append(all,
+			rec{d, "zcode", "u1", "model-a", "Cursor", 100},
+			rec{d, "traework", "u2", "model-b", "VSCode", 200},
+			rec{d, "zcode", "u1", "model-c", "Cursor", 50},
+		)
+		_ = i
+	}
+
+	// 手写 JSONL（模拟"流水在、日聚合缺维度"的历史现场）
+	var sb strings.Builder
+	dayTotals := map[string]int64{}
+	dayReqs := map[string]int64{}
+	for _, x := range all {
+		e := newTestEntry(x.day, x.ch, x.uid, x.model, x.client, x.tokens, 200)
+		raw, _ := json.Marshal(e)
+		sb.Write(raw)
+		sb.WriteByte('\n')
+		key := x.day.Format("2006-01-02")
+		dayTotals[key] += x.tokens
+		dayReqs[key]++
+	}
+	if err := os.WriteFile(fp, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 生成一份"只有标量、没有维度"的日聚合文件（旧数据形态）
+	aggList := make([]*DayAgg, 0, len(days))
+	for _, d := range days {
+		key := d.Format("2006-01-02")
+		aggList = append(aggList, &DayAgg{
+			Day:         key,
+			ReqCount:    dayReqs[key],
+			TotalTokens: dayTotals[key],
+		})
+	}
+	aggRaw, _ := json.Marshal(aggList)
+	if err := os.WriteFile(filepath.Join(dir, "audit_daily.json"), aggRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 启动：应自动回填维度
+	r1 := New(fp, 5)
+	a := r1.Analytics()
+	if len(a.TopModels) != 3 {
+		t.Fatalf("回填后模型榜应为 3 项, got %d: %+v", len(a.TopModels), a.TopModels)
+	}
+	if a.TotalRequests != int64(len(all)) || a.TotalTokens != dayTotals[now.Format("2006-01-02")]+dayTotals[now.AddDate(0, 0, -1).Format("2006-01-02")]+dayTotals[now.AddDate(0, 0, -2).Format("2006-01-02")] {
+		t.Fatalf("回填不得改动标量: req=%d tok=%d", a.TotalRequests, a.TotalTokens)
+	}
+	r1.Close()
+
+	// 幂等：带着已回填的 audit_daily.json 再启动一次，维度不得翻倍
+	r2 := New(fp, 5)
+	defer r2.Close()
+	a2 := r2.Analytics()
+	if len(a2.TopModels) != 3 {
+		t.Fatalf("二次启动模型榜应仍为 3 项, got %d", len(a2.TopModels))
+	}
+	for _, m := range a2.TopModels {
+		var want int64
+		for _, x := range all {
+			if x.model == m.Model {
+				want += x.tokens
+			}
+		}
+		if m.TotalTokens != want {
+			t.Fatalf("模型 %s 二次回填后 Token 翻倍: got %d want %d", m.Model, m.TotalTokens, want)
+		}
 	}
 }

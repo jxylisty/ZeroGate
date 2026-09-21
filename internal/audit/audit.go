@@ -20,21 +20,21 @@ import (
 // Entry 单次请求审计条目。
 type Entry struct {
 	ID               string `json:"id"`
-	Time             string `json:"time"`               // RFC3339
-	Client           string `json:"client"`             // 客户端名称（如 Cursor、Default）
-	KeySnippet       string `json:"key_snippet"`        // 掩码密钥（如 sk-zg-...1234）
-	ModelReq         string `json:"model_req"`          // 客户端请求模型名
-	ModelTarget      string `json:"model_target"`       // 上游实际使用的模型名
-	Channel          string `json:"channel"`            // 命中渠道
-	UID              string `json:"uid"`                // 命中账号 UID
-	PromptTokens     int64  `json:"prompt_tokens"`      // 输入 Token
-	CompletionTokens int64  `json:"completion_tokens"`  // 输出 Token
-	CacheTokens      int64  `json:"cache_tokens"`       // 缓存命中 Token
-	TotalTokens      int64  `json:"total_tokens"`       // 总 Token
-	DurationMs       int64  `json:"duration_ms"`        // 耗时毫秒
-	Status           int    `json:"status"`             // HTTP 状态码
-	Error            string `json:"error,omitempty"`    // 错误信息摘要
-	Stream           bool   `json:"stream"`             // 是否流式
+	Time             string `json:"time"`              // RFC3339
+	Client           string `json:"client"`            // 客户端名称（如 Cursor、Default）
+	KeySnippet       string `json:"key_snippet"`       // 掩码密钥（如 sk-zg-...1234）
+	ModelReq         string `json:"model_req"`         // 客户端请求模型名
+	ModelTarget      string `json:"model_target"`      // 上游实际使用的模型名
+	Channel          string `json:"channel"`           // 命中渠道
+	UID              string `json:"uid"`               // 命中账号 UID
+	PromptTokens     int64  `json:"prompt_tokens"`     // 输入 Token
+	CompletionTokens int64  `json:"completion_tokens"` // 输出 Token
+	CacheTokens      int64  `json:"cache_tokens"`      // 缓存命中 Token
+	TotalTokens      int64  `json:"total_tokens"`      // 总 Token
+	DurationMs       int64  `json:"duration_ms"`       // 耗时毫秒
+	Status           int    `json:"status"`            // HTTP 状态码
+	Error            string `json:"error,omitempty"`   // 错误信息摘要
+	Stream           bool   `json:"stream"`            // 是否流式
 }
 
 // Recorder 审计流水记录器。
@@ -71,6 +71,7 @@ func New(fp string, maxMem int) *Recorder {
 	}
 	r.loadRecent()
 	r.loadDaily()
+	r.backfillDimensions()
 	go r.writer()
 	go r.flusher()
 	return r
@@ -140,10 +141,10 @@ type DayAgg struct {
 	Cache       int64  `json:"cache"`
 	DurationSum int64  `json:"duration_sum"`
 
-	Channels  map[string]DimStat `json:"channels,omitempty"`
-	Models    map[string]DimStat `json:"models,omitempty"` // 键 = 请求模型名
-	Clients   map[string]DimStat `json:"clients,omitempty"`
-	Accounts  map[string]DimStat `json:"accounts,omitempty"` // 键 = channel + "/" + uid
+	Channels map[string]DimStat `json:"channels,omitempty"`
+	Models   map[string]DimStat `json:"models,omitempty"` // 键 = 请求模型名
+	Clients  map[string]DimStat `json:"clients,omitempty"`
+	Accounts map[string]DimStat `json:"accounts,omitempty"` // 键 = channel + "/" + uid
 }
 
 // newDayAgg 创建指定日期的空聚合。
@@ -213,6 +214,56 @@ func (a *DayAgg) absorb(e *Entry) {
 	}
 }
 
+// fillDims 幂等回填：把一条流水并入维度 map，只增缺失键，已有键不动（返回补上的键数）。
+// 标量字段（req_count/total_tokens 等）不在此处理——它们由 absorb 全量维护。
+func (a *DayAgg) fillDims(e *Entry) int {
+	n := 0
+	if e.Channel != "" {
+		if a.Channels == nil {
+			a.Channels = make(map[string]DimStat)
+		}
+		if _, ok := a.Channels[e.Channel]; !ok {
+			a.Channels[e.Channel] = DimStat{Tokens: e.TotalTokens, ReqCount: 1}
+			n++
+		}
+	}
+	mName := e.ModelReq
+	if mName == "" {
+		mName = e.ModelTarget
+	}
+	if mName != "" {
+		if a.Models == nil {
+			a.Models = make(map[string]DimStat)
+		}
+		if _, ok := a.Models[mName]; !ok {
+			a.Models[mName] = DimStat{Tokens: e.TotalTokens, ReqCount: 1}
+			n++
+		}
+	}
+	cName := e.Client
+	if cName == "" {
+		cName = "Default"
+	}
+	if a.Clients == nil {
+		a.Clients = make(map[string]DimStat)
+	}
+	if _, ok := a.Clients[cName]; !ok {
+		a.Clients[cName] = DimStat{Tokens: e.TotalTokens, ReqCount: 1}
+		n++
+	}
+	if e.UID != "" {
+		if a.Accounts == nil {
+			a.Accounts = make(map[string]DimStat)
+		}
+		key := e.Channel + "/" + e.UID
+		if _, ok := a.Accounts[key]; !ok {
+			a.Accounts[key] = DimStat{Tokens: e.TotalTokens, ReqCount: 1}
+			n++
+		}
+	}
+	return n
+}
+
 // recordDailyLocked 把条目并入日聚合（调用方须持有 r.mu）。
 func (r *Recorder) recordDailyLocked(e *Entry) {
 	if len(e.Time) < 10 {
@@ -226,6 +277,46 @@ func (r *Recorder) recordDailyLocked(e *Entry) {
 	}
 	agg.absorb(e)
 	r.dailyDirty = true
+}
+
+// backfillDimensions 启动时从全量 JSONL 流水回填日聚合缺失的维度明细。
+// 背景：日聚合机制上线前的旧数据只有总量标量（或早期版本只落了部分维度），
+// 导致 TOP 模型/客户端/账号榜只剩机制上线当天起的数据。
+// 这里只补维度 map（channels/models/clients/accounts），不碰标量计数，避免双计；
+// 回填后标记 dirty 由 flusher 统一落盘。
+func (r *Recorder) backfillDimensions() {
+	if r.fp == "" {
+		return
+	}
+	raw, err := os.ReadFile(r.fp)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	filled := 0
+	r.mu.Lock()
+	for _, line := range splitLines(raw) {
+		if len(line) == 0 {
+			continue
+		}
+		var e Entry
+		if json.Unmarshal(line, &e) != nil || len(e.Time) < 10 {
+			continue
+		}
+		agg := r.daily[e.Time[:10]]
+		if agg == nil {
+			// 该日完全无聚合（历史太久被 30 天裁剪）：跳过，避免凭空造出只含维度的残缺日
+			continue
+		}
+		if n := agg.fillDims(&e); n > 0 {
+			filled += n
+			r.dailyDirty = true
+		}
+	}
+	r.mu.Unlock()
+	if filled > 0 {
+		log.Printf("[audit] 已从流水回填 %d 条维度明细到日聚合", filled)
+		go r.saveDaily()
+	}
 }
 
 // loadDaily 启动时恢复历史日聚合。
