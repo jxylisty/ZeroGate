@@ -1,14 +1,18 @@
 // Package audit 提供轻量级请求调用流水审计日志记录，
 // 内存环形缓存最近请求供 Web 快速查看，后台异步写入 JSONL 保持零延迟。
+// 统计口径（今日汇总/趋势/TOP 榜）基于按日聚合持久化 audit_daily.json，
+// 不受内存流水窗口裁剪影响，重启不丢。
 package audit
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,9 +45,15 @@ type Recorder struct {
 	entries []Entry
 	in      chan Entry
 	closed  chan struct{}
+
+	dailyFP    string             // audit_daily.json：按日聚合，统计接口的事实源
+	daily      map[string]*DayAgg // day → 聚合
+	dailyDirty bool
+	closedOnce sync.Once
+	saveMu     sync.Mutex
 }
 
-// New 创建审计记录器。
+// New 创建审计记录器。fp 为调用流水 JSONL 路径，同目录派生 audit_daily.json。
 func New(fp string, maxMem int) *Recorder {
 	if maxMem <= 0 {
 		maxMem = 500
@@ -54,15 +64,22 @@ func New(fp string, maxMem int) *Recorder {
 		entries: make([]Entry, 0, maxMem),
 		in:      make(chan Entry, 256),
 		closed:  make(chan struct{}),
+		daily:   make(map[string]*DayAgg),
+	}
+	if fp != "" {
+		r.dailyFP = filepath.Join(filepath.Dir(fp), "audit_daily.json")
 	}
 	r.loadRecent()
+	r.loadDaily()
 	go r.writer()
+	go r.flusher()
 	return r
 }
 
-// Close 优雅关闭写入协程。
+// Close 优雅关闭写入协程，并同步落盘最后一次按日聚合。
 func (r *Recorder) Close() {
-	close(r.closed)
+	r.closedOnce.Do(func() { close(r.closed) })
+	r.saveDaily()
 }
 
 func (r *Recorder) loadRecent() {
@@ -104,6 +121,200 @@ func splitLines(data []byte) [][]byte {
 		out = append(out, data[start:])
 	}
 	return out
+}
+
+// DimStat 维度统计：Token 总量 + 请求次数。
+type DimStat struct {
+	Tokens   int64 `json:"tokens"`
+	ReqCount int64 `json:"req_count"`
+}
+
+// DayAgg 单日聚合：统计接口的事实源，跨重启持久化到 audit_daily.json。
+type DayAgg struct {
+	Day         string `json:"day"`
+	ReqCount    int64  `json:"req_count"`
+	FailCount   int64  `json:"fail_count"`
+	TotalTokens int64  `json:"total_tokens"`
+	Prompt      int64  `json:"prompt"`
+	Completion  int64  `json:"completion"`
+	Cache       int64  `json:"cache"`
+	DurationSum int64  `json:"duration_sum"`
+
+	Channels  map[string]DimStat `json:"channels,omitempty"`
+	Models    map[string]DimStat `json:"models,omitempty"` // 键 = 请求模型名
+	Clients   map[string]DimStat `json:"clients,omitempty"`
+	Accounts  map[string]DimStat `json:"accounts,omitempty"` // 键 = channel + "/" + uid
+}
+
+// newDayAgg 创建指定日期的空聚合。
+func newDayAgg(day string) *DayAgg {
+	return &DayAgg{
+		Day:      day,
+		Channels: make(map[string]DimStat),
+		Models:   make(map[string]DimStat),
+		Clients:  make(map[string]DimStat),
+		Accounts: make(map[string]DimStat),
+	}
+}
+
+// absorb 把一条流水并入日聚合。
+func (a *DayAgg) absorb(e *Entry) {
+	a.ReqCount++
+	a.TotalTokens += e.TotalTokens
+	a.Prompt += e.PromptTokens
+	a.Completion += e.CompletionTokens
+	a.Cache += e.CacheTokens
+	a.DurationSum += e.DurationMs
+	if e.Status >= 400 {
+		a.FailCount++
+	}
+	if e.Channel != "" {
+		if a.Channels == nil {
+			a.Channels = make(map[string]DimStat)
+		}
+		c := a.Channels[e.Channel]
+		c.Tokens += e.TotalTokens
+		c.ReqCount++
+		a.Channels[e.Channel] = c
+	}
+	mName := e.ModelReq
+	if mName == "" {
+		mName = e.ModelTarget
+	}
+	if mName != "" {
+		if a.Models == nil {
+			a.Models = make(map[string]DimStat)
+		}
+		m := a.Models[mName]
+		m.Tokens += e.TotalTokens
+		m.ReqCount++
+		a.Models[mName] = m
+	}
+	cName := e.Client
+	if cName == "" {
+		cName = "Default"
+	}
+	if a.Clients == nil {
+		a.Clients = make(map[string]DimStat)
+	}
+	cl := a.Clients[cName]
+	cl.Tokens += e.TotalTokens
+	cl.ReqCount++
+	a.Clients[cName] = cl
+	if e.UID != "" {
+		if a.Accounts == nil {
+			a.Accounts = make(map[string]DimStat)
+		}
+		key := e.Channel + "/" + e.UID
+		ac := a.Accounts[key]
+		ac.Tokens += e.TotalTokens
+		ac.ReqCount++
+		a.Accounts[key] = ac
+	}
+}
+
+// recordDailyLocked 把条目并入日聚合（调用方须持有 r.mu）。
+func (r *Recorder) recordDailyLocked(e *Entry) {
+	if len(e.Time) < 10 {
+		return
+	}
+	day := e.Time[:10]
+	agg := r.daily[day]
+	if agg == nil {
+		agg = newDayAgg(day)
+		r.daily[day] = agg
+	}
+	agg.absorb(e)
+	r.dailyDirty = true
+}
+
+// loadDaily 启动时恢复历史日聚合。
+func (r *Recorder) loadDaily() {
+	if r.dailyFP == "" {
+		return
+	}
+	raw, err := os.ReadFile(r.dailyFP)
+	if err != nil {
+		return
+	}
+	var list []*DayAgg
+	if err := json.Unmarshal(raw, &list); err != nil {
+		log.Printf("[audit] 日聚合文件解析失败，将重建: %v", err)
+		return
+	}
+	for _, a := range list {
+		if a == nil || a.Day == "" {
+			continue
+		}
+		if a.Channels == nil {
+			a.Channels = make(map[string]DimStat)
+		}
+		if a.Models == nil {
+			a.Models = make(map[string]DimStat)
+		}
+		if a.Clients == nil {
+			a.Clients = make(map[string]DimStat)
+		}
+		if a.Accounts == nil {
+			a.Accounts = make(map[string]DimStat)
+		}
+		r.daily[a.Day] = a
+	}
+}
+
+// saveDaily 原子落盘日聚合（只保留最近 30 天）。
+func (r *Recorder) saveDaily() {
+	r.mu.RLock()
+	dirty := r.dailyDirty
+	var list []*DayAgg
+	if dirty {
+		for _, a := range r.daily {
+			list = append(list, a)
+		}
+	}
+	r.mu.RUnlock()
+	if !dirty {
+		return
+	}
+
+	sort.Slice(list, func(i, j int) bool { return list[i].Day > list[j].Day })
+	if len(list) > 30 {
+		list = list[:30]
+	}
+
+	r.saveMu.Lock()
+	defer r.saveMu.Unlock()
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		log.Printf("[audit] 日聚合序列化失败: %v", err)
+		return
+	}
+	tmp := r.dailyFP + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		log.Printf("[audit] 日聚合写入失败: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, r.dailyFP); err != nil {
+		log.Printf("[audit] 日聚合替换失败: %v", err)
+		return
+	}
+	r.mu.Lock()
+	r.dailyDirty = false
+	r.mu.Unlock()
+}
+
+// flusher 周期性落盘日聚合，进程崩溃最多丢 30 秒统计。
+func (r *Recorder) flusher() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.closed:
+			return
+		case <-t.C:
+			r.saveDaily()
+		}
+	}
 }
 
 func (r *Recorder) writer() {
@@ -149,6 +360,7 @@ func (r *Recorder) Record(e Entry) {
 	}
 
 	r.mu.Lock()
+	r.recordDailyLocked(&e)
 	r.entries = append(r.entries, e)
 	if len(r.entries) > r.maxMem {
 		r.entries = r.entries[len(r.entries)-r.maxMem:]
@@ -178,20 +390,15 @@ func (r *Recorder) Recent(limit int) []Entry {
 }
 
 // SummaryToday 统计今日调用指标：请求数、总Token数、失败数。
+// 事实源为按日聚合（audit_daily.json），不受内存流水窗口裁剪影响。
 func (r *Recorder) SummaryToday() (reqCount int64, tokenSum int64, failCount int64) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	today := time.Now().Format("2006-01-02")
-	for _, e := range r.entries {
-		if len(e.Time) >= 10 && e.Time[:10] == today {
-			reqCount++
-			tokenSum += e.TotalTokens
-			if e.Status >= 400 {
-				failCount++
-			}
-		}
+	agg := r.daily[time.Now().Format("2006-01-02")]
+	if agg == nil {
+		return 0, 0, 0
 	}
-	return reqCount, tokenSum, failCount
+	return agg.ReqCount, agg.TotalTokens, agg.FailCount
 }
 
 // ModelTokenStat 单个模型的用量统计
@@ -240,7 +447,7 @@ type Analytics struct {
 	DailyTrend    []DailyTokenStat   `json:"daily_trend"`
 }
 
-// Analytics 返回基于审计记录的多维 Token 分析
+// Analytics 返回基于日聚合的多维 Token 分析，跨重启累计完整。
 func (r *Recorder) Analytics() Analytics {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -248,73 +455,61 @@ func (r *Recorder) Analytics() Analytics {
 	res := Analytics{
 		ChannelTokens: make(map[string]int64),
 	}
-
 	modelMap := make(map[string]*ModelTokenStat)
 	clientMap := make(map[string]*ClientTokenStat)
 	accountMap := make(map[string]*AccountTokenStat)
-	dailyMap := make(map[string]*DailyTokenStat)
 
-	for _, e := range r.entries {
-		res.TotalRequests++
-		res.TotalTokens += e.TotalTokens
-		res.PromptTokens += e.PromptTokens
-		res.CompTokens += e.CompletionTokens
-		res.CacheTokens += e.CacheTokens
+	for _, agg := range r.daily {
+		res.TotalRequests += agg.ReqCount
+		res.TotalTokens += agg.TotalTokens
+		res.PromptTokens += agg.Prompt
+		res.CompTokens += agg.Completion
+		res.CacheTokens += agg.Cache
 
-		if e.Channel != "" {
-			res.ChannelTokens[e.Channel] += e.TotalTokens
+		for ch, ds := range agg.Channels {
+			res.ChannelTokens[ch] += ds.Tokens
 		}
-
-		if e.UID != "" {
-			acctKey := e.Channel + "/" + e.UID
+		for key, ds := range agg.Accounts {
+			idx := strings.Index(key, "/")
+			if idx < 0 {
+				continue
+			}
+			acctKey := key
 			aSt := accountMap[acctKey]
 			if aSt == nil {
-				aSt = &AccountTokenStat{UID: e.UID, Channel: e.Channel}
+				aSt = &AccountTokenStat{UID: key[idx+1:], Channel: key[:idx]}
 				accountMap[acctKey] = aSt
 			}
-			aSt.TotalTokens += e.TotalTokens
-			aSt.ReqCount++
+			aSt.TotalTokens += ds.Tokens
+			aSt.ReqCount += ds.ReqCount
 		}
-
-		mName := e.ModelReq
-		if mName == "" {
-			mName = e.ModelTarget
-		}
-		if mName != "" {
-			st := modelMap[mName]
+		for name, ds := range agg.Models {
+			st := modelMap[name]
 			if st == nil {
-				st = &ModelTokenStat{Model: mName}
-				modelMap[mName] = st
+				st = &ModelTokenStat{Model: name}
+				modelMap[name] = st
 			}
-			st.TotalTokens += e.TotalTokens
-			st.ReqCount++
+			st.TotalTokens += ds.Tokens
+			st.ReqCount += ds.ReqCount
+		}
+		for name, ds := range agg.Clients {
+			st := clientMap[name]
+			if st == nil {
+				st = &ClientTokenStat{Client: name}
+				clientMap[name] = st
+			}
+			st.TotalTokens += ds.Tokens
+			st.ReqCount += ds.ReqCount
 		}
 
-		cName := e.Client
-		if cName == "" {
-			cName = "Default"
-		}
-		cSt := clientMap[cName]
-		if cSt == nil {
-			cSt = &ClientTokenStat{Client: cName}
-			clientMap[cName] = cSt
-		}
-		cSt.TotalTokens += e.TotalTokens
-		cSt.ReqCount++
-
-		if len(e.Time) >= 10 {
-			day := e.Time[:10]
-			dSt := dailyMap[day]
-			if dSt == nil {
-				dSt = &DailyTokenStat{Day: day}
-				dailyMap[day] = dSt
-			}
-			dSt.Prompt += e.PromptTokens
-			dSt.Completion += e.CompletionTokens
-			dSt.Cache += e.CacheTokens
-			dSt.Total += e.TotalTokens
-			dSt.ReqCount++
-		}
+		res.DailyTrend = append(res.DailyTrend, DailyTokenStat{
+			Day:        agg.Day,
+			Prompt:     agg.Prompt,
+			Completion: agg.Completion,
+			Cache:      agg.Cache,
+			Total:      agg.TotalTokens,
+			ReqCount:   agg.ReqCount,
+		})
 	}
 
 	for _, m := range modelMap {
@@ -344,9 +539,6 @@ func (r *Recorder) Analytics() Analytics {
 		res.TopAccounts = res.TopAccounts[:15]
 	}
 
-	for _, d := range dailyMap {
-		res.DailyTrend = append(res.DailyTrend, *d)
-	}
 	sort.Slice(res.DailyTrend, func(i, j int) bool {
 		return res.DailyTrend[i].Day < res.DailyTrend[j].Day
 	})
