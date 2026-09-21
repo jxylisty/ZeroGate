@@ -4,6 +4,7 @@ package pool
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -443,14 +444,21 @@ func (p *Pool) saveLocked() {
 	}
 	raw, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
+		log.Printf("pool state marshal failed fp=%s: %v", p.stateFp, err)
 		return
 	}
 	if dir := filepath.Dir(p.stateFp); dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Printf("pool state mkdir failed dir=%s: %v", dir, err)
+			return
+		}
 	}
 	tmp := p.stateFp + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		log.Printf("pool state save failed fp=%s: %v（账号状态未持久化，重启将丢失冷却/签到记录）", tmp, err)
 		return
 	}
-	_ = os.Rename(tmp, p.stateFp)
+	if err := os.Rename(tmp, p.stateFp); err != nil {
+		log.Printf("pool state rename failed tmp=%s fp=%s: %v", tmp, p.stateFp, err)
+	}
 }
