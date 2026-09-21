@@ -47,8 +47,12 @@ const (
 	ProxyBase = "https://autoglm-acceleration-api.zhipuai.cn"
 	ProxyPath = "/autoclaw-proxy/proxy/autoclaw"
 	ChatPath  = ProxyPath + "/chat/completions"
-	// 忙窗 failover 上限（含跨 host），对齐桌面端 DEFAULT_MAX_RETRIES=2。
-	MaxFailover = 2
+	// 忙窗自愈重试窗口与退避上限。AutoClaw 忙窗（400/403 pay-view 810001）是平台
+	// 暂时拦截、自愈时间一次可达数十秒到几分钟。固定重试次数会在窗口内提前放弃，
+	// 逼用户手动重发——这里改为「时间窗内持续重试」：递增退避（封顶 retryMaxBackoff），
+	// 忙窗一过自动恢复并返回，全程无需人工干预。窗口默认对齐上游超时(300s)的 90%。
+	retryWindow     = 270 * time.Second
+	retryMaxBackoff = 5 * time.Second
 	// 每日签到/任务领取端点（web 签名头实测有效返回 reward_points=200）。
 	// 注意：task-complete 挂在 proxy 根下，再拼 ProxyPath 会多出 /autoclaw 段导致 401 Invalid token。
 	TaskCompletePath = "/autoclaw-proxy/proxy/autoclaw-task-complete"
@@ -390,7 +394,15 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	}
 
 	tok := rawToken(a)
-	for attempt := 1; attempt <= MaxFailover+1; attempt++ {
+	deadline := time.Now().Add(retryWindow)
+	backoff := 500 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		if time.Now().After(deadline) {
+			// 重试窗口耗尽仍未恢复：返回中文软错 502，交由上层按服务异常处理，避免一直挂住请求。
+			log.Printf("autoclaw chat_stream uid=%s route=%s 忙窗重试窗口(%ds)耗尽，放弃", a.UID, route.routeID, retryWindow/time.Second)
+			return nil, http.StatusBadGateway,
+				[]byte("AutoClaw 忙窗持续未恢复（重试约 4 分钟后仍失败），请稍后再试。"), nil
+		}
 		reqURL := c.Base + ChatPath
 		headers := c.proxyHeaders(tok, route.routeID)
 		log.Printf("autoclaw chat_stream uid=%s route=%s body_model=%s endpoint=%s attempt=%d",
@@ -409,6 +421,10 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		if derr != nil {
 			log.Printf("autoclaw chat_stream uid=%s route=%s attempt=%d transport: %v",
 				a.UID, route.routeID, attempt, derr)
+			time.Sleep(backoff)
+			if backoff < retryMaxBackoff {
+				backoff *= 2
+			}
 			continue
 		}
 		if resp.StatusCode >= 400 {
@@ -418,20 +434,22 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			bodyText := truncate(string(raw), 200)
 			log.Printf("autoclaw chat_stream uid=%s route=%s attempt=%d upstream %d %s body=%s",
 				a.UID, route.routeID, attempt, resp.StatusCode, kind, bodyText)
-			if isFailoverable(resp.StatusCode, string(raw)) && attempt <= MaxFailover {
-				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond) // 退避随次数递增
+			if isFailoverable(resp.StatusCode, string(raw)) {
+				// 忙窗/额度：递增退避后继续，直到窗口过去自动成功，无需人工干预。
+				time.Sleep(backoff)
+				if backoff < retryMaxBackoff {
+					backoff *= 2
+				}
 				continue
 			}
-			// 忙窗重试用尽或非可重试业务错误：返回中文软错 502，交由上层按服务异常处理。
+			// 非可重试业务错误：返回中文软错 502，交由上层按服务异常处理。
 			// 关键：绝不回吐上游 4xx（401/400/403/405），否则 handler 会误判为会话失效/参数错，
 			// 导致账号被永久禁用，且客户端把自己的 Key 当成失效而崩溃终止会话。
 			return nil, http.StatusBadGateway,
-				[]byte("AutoClaw 忙窗或额度受限，重试后仍失败，请稍后再试。"), nil
+				[]byte("AutoClaw 请求被拒绝，请稍后再试。"), nil
 		}
 		return resp.Body, resp.StatusCode, nil, nil
 	}
-	// 理论不可达：循环内已 return。
-	return nil, http.StatusBadGateway, []byte("AutoClaw 忙窗或额度受限，请稍后再试。"), nil
 }
 
 // autoclawModels 静态模型目录（官方 model-config 实测；上下文 1M / 输出上限来自配置）。

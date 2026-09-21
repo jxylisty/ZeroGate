@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -275,7 +276,26 @@ func (c *Client) GrowthTravel(a *auth.Auth) error {
 	return nil
 }
 
-// GrowthLotterySimple 盲盒：chances balance>0 → draw 循环（上限 20）。
+// growthIOf 整数解析（对齐参考）：数字截断取整，字符串去空白后 ParseInt；失败返回 0。
+func growthIOf(v any) int64 {
+	switch t := v.(type) {
+	case float64:
+		return int64(t)
+	case json.Number:
+		n, _ := t.Int64()
+		return n
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	return 0
+}
+
+// GrowthLotterySimple 盲盒：chances balance>0 → draw 循环（上限 maxDraws）。
+// 返回 (msg, authErr)；无可用次数以 "skip: " 前缀的 msg 表示，由包装器转为 error 上抛。
 func (c *Client) GrowthLotterySimple(a *auth.Auth, maxDraws int) (string, bool) {
 	if maxDraws <= 0 {
 		maxDraws = 20
@@ -291,17 +311,11 @@ func (c *Client) GrowthLotterySimple(a *auth.Auth, maxDraws int) (string, bool) 
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return "lottery/chances 响应解析失败", false
 	}
-	balance := 0
-	if b := growthDig(body, "balance"); b != nil {
-		switch t := b.(type) {
-		case float64:
-			balance = int(t)
-		case json.Number:
-			f, _ := t.Float64()
-			balance = int(f)
-		}
+	balance := growthIOf(growthDig(body, "balance", "chances", "count", "remain"))
+	if balance <= 0 {
+		return "skip: 无可用次数", false
 	}
-	draws, rewards := 0, 0
+	draws, rewardTxts := 0, []string{}
 	for draws < maxDraws && balance > 0 {
 		st, r2 := c.growthPost(c.growthURL(a, "lottery/draw"), a, map[string]any{})
 		if st == http.StatusUnauthorized {
@@ -314,28 +328,24 @@ func (c *Client) GrowthLotterySimple(a *auth.Auth, maxDraws int) (string, bool) 
 		balance--
 		var b2 map[string]any
 		if err := json.Unmarshal(r2, &b2); err == nil {
-			rw := growthDig(b2, "reward", "credits")
-			if rw == nil {
-				rw = growthDig(b2, "reward")
-			}
-			if rw != nil && growthStr(rw) != "" {
-				rewards++
+			if rw := growthDig(b2, "reward", "credits", "points", "amount"); rw != nil {
+				if txt := growthDisplay(rw); txt != "" {
+					rewardTxts = append(rewardTxts, txt)
+				}
 			}
 		}
 	}
 	if draws == 0 {
-		if balance <= 0 {
-			return "盲盒机会已用完", false
-		}
 		return "draw 不可用", false
 	}
-	return fmt.Sprintf("抽取 %d 次（%d 次有奖励）", draws, rewards), false
+	return fmt.Sprintf("抽取 %d 次（奖励 %s）", draws, strings.Join(rewardTxts, "/")), false
 }
 
-// GrowthLottery 成长中心接口：每日幸运抽奖（默认抽完所有机会）
+// GrowthLottery 成长中心接口：每日幸运抽奖（默认抽完所有机会）。
+// 跳过（"skip: " 前缀）与登录态失效均以 error 上抛，scheduler 按前缀分流展示。
 func (c *Client) GrowthLottery(a *auth.Auth) error {
-	msg, ok := c.GrowthLotterySimple(a, 20)
-	if !ok {
+	msg, authErr := c.GrowthLotterySimple(a, 20)
+	if authErr || strings.HasPrefix(msg, "skip: ") {
 		return fmt.Errorf("%s", msg)
 	}
 	log.Printf("growth lottery done uid=%s msg=%s", a.UID, msg)
@@ -371,10 +381,7 @@ func (c *Client) GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult {
 		result.Message = "tasks 响应解析失败"
 		return result
 	}
-	tasks := growthDig(body, "tasks", "list")
-	if tasks == nil {
-		tasks = growthDig(body, "tasks", "records")
-	}
+	tasks := growthDig(body, "tasks", "list", "records")
 	list, ok := tasks.([]any)
 	if !ok {
 		result.Message = "tasks 无可领任务"
@@ -401,7 +408,7 @@ func (c *Client) GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult {
 			acceptStatus = growthStr(growthDig(obj, "acceptStatus"))
 		}
 
-		taskName := growthStr(growthDig(obj, "name"))
+		taskName := growthStr(growthDig(obj, "name", "title"))
 		if taskName == "" {
 			taskName = growthStr(growthDig(obj, "task_name"))
 		}
@@ -409,6 +416,9 @@ func (c *Client) GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult {
 		code := growthStr(growthDig(obj, "task_code"))
 		if code == "" {
 			code = growthStr(growthDig(obj, "taskCode"))
+		}
+		if code == "" {
+			code = growthStr(growthDig(obj, "code"))
 		}
 
 		switch acceptStatus {
@@ -439,27 +449,27 @@ func (c *Client) GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult {
 			var reward provider.TaskReward
 			reward.Name = taskName
 
-			var rw any
-			if rw = growthDig(rawResp, "reward", "credits"); rw != nil {
+			// 关键：accept 响应必须先反序列化再 dig，否则永远挖不到奖励字段。
+			var bResp map[string]any
+			_ = json.Unmarshal(rawResp, &bResp)
+			if rw := growthDig(bResp, "reward", "credits", "points", "amount", "value"); rw != nil {
 				switch v := rw.(type) {
 				case float64:
 					reward.Credits = int64(v)
 				case json.Number:
 					f, _ := v.Int64()
 					reward.Credits = f
-				}
-			} else if rw = growthDig(rawResp, "reward"); rw != nil {
-				if m, ok := rw.(map[string]any); ok {
-					if cVal := growthDig(m, "credits"); cVal != nil {
-						switch v := cVal.(type) {
+				case map[string]any:
+					if cVal := growthDig(v, "credits", "points", "amount"); cVal != nil {
+						switch n := cVal.(type) {
 						case float64:
-							reward.Credits = int64(v)
+							reward.Credits = int64(n)
 						case json.Number:
-							f, _ := v.Int64()
+							f, _ := n.Int64()
 							reward.Credits = f
 						}
 					}
-					if cn := growthStr(growthDig(m, "coupon_name")); cn != "" {
+					if cn := growthStr(growthDig(v, "coupon_name", "couponName")); cn != "" {
 						reward.CouponName = cn
 					}
 				}
@@ -632,10 +642,10 @@ func (h *GrowthHistory) GetSummary() map[string]any {
 		totalCredits += r.TotalCredits
 		couponCount += r.CouponCount
 		taskCount += len(r.TaskDetails)
-		if r.Lottery != "" && !strings.Contains(r.Lottery, "无可抽") {
+		if r.Lottery != "" && !strings.Contains(r.Lottery, "skip") && !strings.Contains(r.Lottery, "无可") {
 			lotteryCount++
 		}
-		if r.Travel != "" && !strings.Contains(r.Travel, "已在路上") && !strings.Contains(r.Travel, "已领取") {
+		if r.Travel != "" && !strings.Contains(r.Travel, "skip") && !strings.Contains(r.Travel, "在途") {
 			travelCount++
 		}
 	}
