@@ -15,6 +15,9 @@ func WorkArea() (int32, int32, int32, int32) {
 	return 0, 0, 1440, 900
 }
 
+// AttachParentConsole macOS：标准流本就是终端，无需附加。
+func AttachParentConsole() {}
+
 // InfoBox macOS：用 osascript 弹对话框。
 func InfoBox(title, msg string) {
 	_ = exec.Command("osascript", "-e",
@@ -76,6 +79,9 @@ func LaunchIncognito(app, flag, url string) error {
 	}
 	return exec.Command("open", args...).Start()
 }
+
+// HideWindow macOS：无控制台窗口概念，空实现。
+func HideWindow(cmd *exec.Cmd) {}
 
 // OpenURL 用系统默认方式打开 URL。
 func OpenURL(url string) error {
@@ -143,3 +149,6 @@ func AutostartEnabled() bool {
 func OpenWithTextEditor(path string) error {
 	return exec.Command("open", "-a", "TextEdit", path).Start()
 }
+
+// PromoteTrayIcon macOS：菜单栏图标无折叠区概念，空实现。
+func PromoteTrayIcon() {}

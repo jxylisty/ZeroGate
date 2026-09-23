@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 )
-
 // WorkArea 其他平台：返回 0,0,0,0（未实现）。
 func WorkArea() (int32, int32, int32, int32) { return 0, 0, 0, 0 }
+
+// AttachParentConsole 其他平台：标准流本就是终端，无需附加。
+func AttachParentConsole() {}
 
 // InfoBox 其他平台：输出到 stderr。
 func InfoBox(title, msg string) { Notify(title, msg) }
@@ -27,6 +29,9 @@ func DefaultBrowserIncognito() (exePath, flag string, ok bool) { return "", "", 
 // LaunchIncognito 其他平台：直接 open url。
 func LaunchIncognito(exe, flag, url string) error { return OpenURL(url) }
 
+// HideWindow 其他平台：无控制台窗口概念，空实现。
+func HideWindow(cmd *exec.Cmd) {}
+
 // OpenURL 其他平台：xdg-open。
 func OpenURL(url string) error { return exec.Command("xdg-open", url).Start() }
 
@@ -35,6 +40,9 @@ func SetAutostart(on bool) error { return nil }
 
 // AutostartEnabled 其他平台：false。
 func AutostartEnabled() bool { return false }
+
+// PromoteTrayIcon 其他平台：无托盘折叠区概念，空实现。
+func PromoteTrayIcon() {}
 
 // OpenWithTextEditor 其他平台：xdg-open。
 func OpenWithTextEditor(path string) error { return exec.Command("xdg-open", path).Start() }

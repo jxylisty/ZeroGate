@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 func TestDailyCheckinClaimsWhenNotCheckedIn(t *testing.T) {

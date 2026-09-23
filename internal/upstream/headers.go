@@ -5,7 +5,7 @@ package upstream
 import (
 	"net/http"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 const (

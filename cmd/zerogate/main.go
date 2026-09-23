@@ -1,4 +1,4 @@
-// Command wild-work 系统托盘 daemon 入口。
+// Command zerogate 系统托盘 daemon 入口。
 // 单进程 = OpenAI 兼容 HTTP 服务 + 自动签到调度器 + 系统托盘 + 静态 Web UI。
 // 双击 exe 启动常驻托盘；托盘菜单：打开主界面 / 刷新积分 / 查看日志 / 退出；
 // 打开主界面或双击托盘 → 系统浏览器打开 Web UI。
@@ -19,24 +19,26 @@ import (
 	"syscall"
 	"time"
 
-	"wild-work/internal/app"
-	"wild-work/internal/atria"
-	"wild-work/internal/audit"
-	"wild-work/internal/auth"
-	"wild-work/internal/autoclaw"
-	"wild-work/internal/clientkey"
-	"wild-work/internal/config"
-	"wild-work/internal/intl"
-	"wild-work/internal/platform"
-	"wild-work/internal/pool"
-	"wild-work/internal/provider"
-	"wild-work/internal/qoder"
-	"wild-work/internal/scheduler"
-	"wild-work/internal/server"
-	"wild-work/internal/systray"
-	"wild-work/internal/traework"
-	"wild-work/internal/upstream"
-	"wild-work/internal/zcode"
+	"golang.org/x/sys/windows"
+
+	"zerogate/internal/app"
+	"zerogate/internal/atria"
+	"zerogate/internal/audit"
+	"zerogate/internal/auth"
+	"zerogate/internal/autoclaw"
+	"zerogate/internal/clientkey"
+	"zerogate/internal/config"
+	"zerogate/internal/intl"
+	"zerogate/internal/platform"
+	"zerogate/internal/pool"
+	"zerogate/internal/provider"
+	"zerogate/internal/qoder"
+	"zerogate/internal/scheduler"
+	"zerogate/internal/server"
+	"zerogate/internal/systray"
+	"zerogate/internal/traework"
+	"zerogate/internal/upstream"
+	"zerogate/internal/zcode"
 )
 
 //go:embed all:web
@@ -78,6 +80,17 @@ func main() {
 	}
 	_ = os.MkdirAll(cfg.AuthDir, 0o755)
 	_ = os.MkdirAll(filepath.Dir(cfg.StateFile), 0o755)
+
+	// 崩溃现场捕获：goroutine panic / fatal error 落到 data/crash-stderr.log。
+	// daemon 是 GUI 子系统，stderr 默认不可见，panic 会静默带走整个进程
+	// （表现为"不知道怎么就退了"）。实测 SetStdHandle + os.Stderr 重定向
+	// 能完整抓到 Go 运行时 panic 堆栈，下次异常退出就有据可查。
+	crashFP := filepath.Join(filepath.Dir(cfg.StateFile), "crash-stderr.log")
+	if cf, err := os.OpenFile(crashFP, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+		defer cf.Close()
+		_ = windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(cf.Fd()))
+		os.Stderr = cf
+	}
 
 	// 多渠道运行时：每个渠道一条描述符（渠道注册表），统一走
 	// load → prepare → pool → upstream → scheduler 装配流水线。
@@ -175,7 +188,7 @@ func main() {
 			},
 			// ZCode 无签到活动；JWT 无刷新，keepalive 仅为空转
 			afterSync: func(p *pool.Pool) {
-				zcode.StartWeeklyClaim(context.Background(), p, zcode.BridgeKeyFromEnv())
+				zcode.StartWeeklyClaim(context.Background(), zcode.BridgeKeyFromEnv())
 			},
 			staticModels: zcode.StaticModels, runScheduler: true,
 		},
@@ -300,23 +313,41 @@ func main() {
 			"如无必要请改回 127.0.0.1（config.json → listen.host）。", cfg.Listen.Addr())
 	}
 
-	// 调度器后台运行（runScheduler=false 的渠道仅保留面板结构）
+	// 调度器后台运行（runScheduler=false 的渠道仅保留面板结构）。
+	// 每个调度器 goroutine 加 recover：签到/保活协程崩溃不应当场带走整个网关，
+	// 记日志后由 crash-stderr.log 留现场（HTTP 服务与其余调度器不受影响）。
 	sctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	for _, rt := range rts {
 		if rt.spec.runScheduler {
-			go rt.sch.Run(sctx)
+			name := rt.spec.name
+			sch := rt.sch
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("调度器 %s panic：%v（已捕获，该渠道调度停止）", name, r)
+					}
+				}()
+				sch.Run(sctx)
+			}()
 		}
 	}
 
-	// 启动提示（非 --autostart）：系统通知
+	// 本地桥开机编排：豆包桥 / chatui / 隧道 / CLIProxyAPI / copilot2api 等
+	// 统一由 daemon 隐藏拉起（取代各自的注册表 Run 自启项，不再弹 cmd 窗口）。
+	appInst.StartAutostartBridges(sctx)
+
+	// 启动提示（非 --autostart）：托盘图标本身就是常驻标识，不再弹模态框。
+	// 旧实现走 platform.Notify（Windows 上是 MessageBoxW，会阻塞），
+	// 用户不点"确定"托盘图标就一直不出现 —— 正是"托盘有时候不显示"的一个成因。
 	if !autostart && !noTray {
-		platform.Notify("wild-work 已启动",
-			fmt.Sprintf("OpenAI 兼容 API 地址：\nhttp://%s:%d\n\n点击右下角托盘图标或菜单打开主界面。", displayHost(cfg), cfg.Listen.Port))
+		log.Printf("ZeroGate 已启动：http://%s:%d/（托盘图标可打开主界面）", displayHost(cfg), cfg.Listen.Port)
 	}
 
 	if noTray {
-		// 无头模式：打印信息，阻塞等待信号
+		// 无头模式：接回父控制台才能看到下面的输出（daemon 以 GUI 子系统构建）。
+		// 托盘模式绝不能调用，否则关闭该控制台会连带结束本进程。
+		platform.AttachParentConsole()
 		addr := cfg.Listen.Addr()
 		host := displayHost(cfg)
 		total := 0
@@ -339,19 +370,18 @@ func main() {
 		return
 	}
 
-	// 系统托盘（阻塞）。无桌面环境（如 SSH/服务会话）下托盘初始化失败时
-	// 捕获 panic，提示用户使用 --no-tray 参数启动。
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "Tray init failed: %v\n", r)
-				fmt.Fprintf(os.Stderr, "Use --no-tray to run in headless mode\n")
-				stop()
-				appInst.Stop()
-				os.Exit(1)
-			}
-		}()
-		systray.Run(trayIconICO, "ZeroGate — 渠道聚合代理", systray.Actions{
+	// ── 系统托盘（监督循环，不再承载进程生命）─────────────────────────────
+	//
+	// 历史事故（用户：打开网页再关掉，ZeroGate 就自己退了）：托盘消息循环
+	// 收到 WM_CLOSE/WM_QUIT（Explorer 异常、会话事件、外部工具等都可能发出）
+	// 后 systray.Run 返回，而 main() 里它后面什么都没有 → 整个网关静默退出，
+	// 日志最后一行只有 "托盘已退出"，无任何报错。
+	//
+	// 修复：HTTP 服务、调度器、桥编排都在独立 goroutine 上运行，托盘只负责
+	// 图标/菜单。systray.Run 返回 = 循环意外终止 → 记日志、等 3 秒、重建托盘，
+	// 网关服务始终不受影响。唯一退出路径 = 托盘菜单「退出」（确认框）或
+	// fatal()，两者都直接 os.Exit，永不"正常返回"到 main 末尾。
+	trayActions := systray.Actions{
 		OpenUI: func() {
 			_ = platform.OpenURL(fmt.Sprintf("http://%s:%d/", displayHost(cfg), cfg.Listen.Port))
 		},
@@ -361,14 +391,37 @@ func main() {
 			}
 		},
 		Quit: func() {
-			if platform.AskYesNo("wild-work", "确定退出 wild-work 吗？") {
+			if platform.AskYesNo("ZeroGate", "确定退出 ZeroGate 吗？") {
 				stop()
 				appInst.Stop()
 				os.Exit(0)
 			}
 		},
-	})
-	}()
+	}
+	for trayAttempt := 1; ; trayAttempt++ {
+		initFailed := false
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					initFailed = true
+					log.Printf("托盘初始化失败（第 %d 次）：%v；网关服务不受影响", trayAttempt, r)
+				}
+			}()
+			// Win11 默认把新图标收进折叠区；每次重建前都提升一次，
+			// 保证图标出现在任务栏常驻区
+			platform.PromoteTrayIcon()
+			systray.Run(trayIconICO, "ZeroGate — 渠道聚合代理", trayActions)
+		}()
+		// 到这里 = 托盘循环意外结束（菜单退出会直接 os.Exit，不会走到这）
+		delay := 3 * time.Second
+		if initFailed {
+			delay = 30 * time.Second // 无桌面环境（SSH/服务会话）时退避，避免刷屏
+			log.Printf("（第 %d 次）若本机确实无桌面环境，请改用 --no-tray 参数运行", trayAttempt)
+		} else {
+			log.Printf("托盘消息循环意外结束（第 %d 次），%v 后重建；网关服务不受影响", trayAttempt, delay)
+		}
+		time.Sleep(delay)
+	}
 }
 
 func displayHost(cfg *config.Config) string {
@@ -383,7 +436,7 @@ func displayHost(cfg *config.Config) string {
 func fatal(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	log.Printf("%s", msg)
-	platform.InfoBox("wild-work", msg)
+	platform.InfoBox("ZeroGate", msg)
 	os.Exit(1)
 }
 

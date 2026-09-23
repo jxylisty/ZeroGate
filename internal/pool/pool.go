@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 // CoolKind 冷却类型。

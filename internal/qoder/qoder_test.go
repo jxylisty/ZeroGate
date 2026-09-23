@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"wild-work/internal/provider"
+	"zerogate/internal/provider"
 )
 
 func TestNormalizeModelName(t *testing.T) {

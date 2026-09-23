@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/pool"
-	"wild-work/internal/provider"
-	"wild-work/internal/upstream"
+	"zerogate/internal/auth"
+	"zerogate/internal/pool"
+	"zerogate/internal/provider"
+	"zerogate/internal/upstream"
 )
 
 func TestNextFire(t *testing.T) {

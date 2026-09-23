@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 // GrowthResult 成长中心单次执行结果。

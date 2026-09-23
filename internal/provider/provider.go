@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 // Kind 平台标识，同时也是模型名前缀。

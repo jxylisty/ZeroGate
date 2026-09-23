@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
-	"wild-work/internal/upstream"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
+	"zerogate/internal/upstream"
 )
 
 const (

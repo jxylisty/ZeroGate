@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 // lesson 06 回归（2026-09-21 契约反转）：

@@ -1,5 +1,5 @@
 // Package app 业务编排层：HTTP 管理 API + 托盘动作 + 登录编排 + 日志。
-// 由 daemon 入口（cmd/wild-work）装配，替代旧版 wails 绑定层。
+// 由 daemon 入口（cmd/zerogate）装配，替代旧版 wails 绑定层。
 package app
 
 import (
@@ -22,24 +22,25 @@ import (
 	"sync/atomic"
 	"time"
 
-	"wild-work/internal/audit"
-	"wild-work/internal/auth"
-	"wild-work/internal/autoclaw"
-	"wild-work/internal/clientkey"
-	"wild-work/internal/config"
-	"wild-work/internal/doubao"
-	"wild-work/internal/login"
-	loginqoder "wild-work/internal/login_qoder"
-	logintrae "wild-work/internal/login_trae"
-	"wild-work/internal/platform"
-	"wild-work/internal/pool"
-	"wild-work/internal/provider"
-	"wild-work/internal/qoder"
-	"wild-work/internal/scheduler"
-	"wild-work/internal/server"
-	"wild-work/internal/upstream"
-	"wild-work/internal/usage"
-	"wild-work/internal/zcode"
+	"zerogate/internal/audit"
+	"zerogate/internal/auth"
+	"zerogate/internal/autoclaw"
+	"zerogate/internal/bridge"
+	"zerogate/internal/clientkey"
+	"zerogate/internal/config"
+	"zerogate/internal/doubao"
+	"zerogate/internal/login"
+	loginqoder "zerogate/internal/login_qoder"
+	logintrae "zerogate/internal/login_trae"
+	"zerogate/internal/platform"
+	"zerogate/internal/pool"
+	"zerogate/internal/provider"
+	"zerogate/internal/qoder"
+	"zerogate/internal/scheduler"
+	"zerogate/internal/server"
+	"zerogate/internal/upstream"
+	"zerogate/internal/usage"
+	"zerogate/internal/zcode"
 )
 
 // Version 版本号。
@@ -109,6 +110,9 @@ type App struct {
 	growthHistoryFP string
 	// growthHistory 成长中心历史记录管理器（懒加载）
 	growthHistory *upstream.GrowthHistory
+
+	// bridges 本地桥（豆包桥 / zcode 实例）编排器
+	bridges *bridge.Manager
 }
 
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
@@ -133,6 +137,15 @@ func New(opts Options) (*App, error) {
 	a.usage = usage.New(filepath.Join(filepath.Dir(opts.Config.StateFile), "usage.csv"))
 	a.growthHistoryFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "growth-history.json")
 	a.stop = make(chan struct{})
+
+	// 本地桥编排：豆包视觉桥 + zcode-proxy 实例（面板「本地桥」Tab）
+	zcode.SetClaimResultFile(filepath.Join(filepath.Dir(opts.Config.StateFile), "zcode-claim-result.json"))
+	a.bridges = bridge.NewManager(bridge.Config{
+		ZcodeDir:  os.Getenv("ZCODE_PROXY_ROOT"),
+		DoubaoDir: os.Getenv("DOUBAO_BRIDGE_DIR"),
+		DoubaoKey: "DoubaoAPI",
+		BridgeKey: zcode.BridgeKeyFromEnv(),
+	})
 
 	// 日志文件 data/app.log
 	logFP := filepath.Join(filepath.Dir(opts.Config.StateFile), "app.log")
@@ -194,6 +207,17 @@ func (a *App) captureUsage() {
 			a.usage.SetCheckin(st.UID, st.LastCheckinOK, fmtTime(st.LastCheckinAt), st.LastCheckinMsg)
 		}
 	}
+}
+
+// StartAutostartBridges 拉起「本地桥」中标记 Autostart 的常驻服务（后台，非阻塞）。
+//
+// 收编原先散落在注册表 Run 键里的 .bat 自启项：那些脚本各弹一个 cmd 窗口，
+// 误关窗口会连带杀掉服务。改由 daemon 单点隐藏拉起后，托盘是唯一入口。
+func (a *App) StartAutostartBridges(ctx context.Context) {
+	if a.bridges == nil {
+		return
+	}
+	a.bridges.StartAutostart(ctx)
 }
 
 // Close 关闭日志文件与后台任务。
@@ -403,7 +427,7 @@ func (a *App) Stop() {
 	a.Close()
 }
 
-// Quit 退出整个程序（Web UI“退出”按钮调用）。
+// Quit 退出整个程序（供外部显式调用；Web UI 已无对应按钮）。
 func (a *App) Quit() {
 	a.Stop()
 	os.Exit(0)
@@ -1211,6 +1235,136 @@ func (a *App) ResourceDetail(uid string) (int64, []provider.ResourceItem, error)
 }
 
 // ---------------------------------------------------------------------------
+// Atria 官方 API Key 集中管理
+// ---------------------------------------------------------------------------
+
+// AddAtriaKey 导入单个 Atria Key：经 auth.SaveAtomic 写嵌套 JSON
+// （auth.accessToken=Key，与手工账号 apiKey 字段等价，Parse 自动回退兼容），
+// 文件名 auths/atria-<uid>.json，随后 reloadAccounts 入池。同 key 去重。
+func (a *App) AddAtriaKey(key, uid, nickname string) (map[string]any, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, fmt.Errorf("key 不能为空")
+	}
+	if dupUID, exists := a.atriaKeyExists(key); exists {
+		return nil, fmt.Errorf("该 Key 已存在（uid=%s）", dupUID)
+	}
+	if uid = strings.TrimSpace(uid); uid == "" {
+		uid = fmt.Sprintf("atria-%d", time.Now().UnixNano()%1000000)
+	}
+	if nickname = strings.TrimSpace(nickname); nickname == "" {
+		nickname = uid
+	}
+	au := &auth.Auth{
+		Kind:        "atria",
+		AccessToken: key,
+		UID:         uid,
+		Nickname:    nickname,
+		ExpiresAt:   time.Now().Add(365 * 24 * time.Hour).Unix(),
+	}
+	au.FilePath = filepath.Join(a.cfg.AuthDir, fmt.Sprintf("atria-%s.json", strings.TrimPrefix(uid, "atria-")))
+	if err := au.SaveAtomic(); err != nil {
+		return nil, fmt.Errorf("凭证落盘失败: %v", err)
+	}
+	log.Printf("atria 面板导入 Key uid=%s nickname=%s", uid, nickname)
+	a.reloadAccounts()
+	return map[string]any{"ok": true, "uid": uid, "nickname": nickname}, nil
+}
+
+// AddAtriaKeysBatch 批量导入：每行一个 key，支持 "key 备注名"。
+// 返回逐行结果（added/duplicate/error），单行失败不中断整体。
+func (a *App) AddAtriaKeysBatch(keysText string) map[string]any {
+	type rowRes struct {
+		Line   int    `json:"line"`
+		Key    string `json:"key"`
+		Status string `json:"status"` // added | duplicate | error
+		UID    string `json:"uid,omitempty"`
+		Detail string `json:"detail,omitempty"`
+	}
+	res := []rowRes{}
+	added := 0
+	for i, line := range strings.Split(strings.ReplaceAll(keysText, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, nick := line, ""
+		if idx := strings.IndexAny(line, " \t"); idx > 0 {
+			key, nick = strings.TrimSpace(line[:idx]), strings.TrimSpace(line[idx+1:])
+		}
+		if !strings.HasPrefix(key, "atr_") {
+			res = append(res, rowRes{Line: i + 1, Key: maskKey(key), Status: "error", Detail: "key 应以 atr_ 开头"})
+			continue
+		}
+		out, err := a.AddAtriaKey(key, "", nick)
+		if err != nil {
+			status := "error"
+			if strings.Contains(err.Error(), "已存在") {
+				status = "duplicate"
+			}
+			res = append(res, rowRes{Line: i + 1, Key: maskKey(key), Status: status, Detail: err.Error()})
+			continue
+		}
+		added++
+		res = append(res, rowRes{Line: i + 1, Key: maskKey(key), Status: "added", UID: out["uid"].(string)})
+	}
+	log.Printf("atria 批量导入完成：added=%d total=%d", added, len(res))
+	return map[string]any{"ok": true, "added": added, "results": res}
+}
+
+// atriaKeyExists 扫 auths/atria*.json 原始凭证做同 key 去重（不能用
+// atriaAccounts 的掩码比较），命中返回其 uid。
+func (a *App) atriaKeyExists(key string) (string, bool) {
+	files, _ := filepath.Glob(filepath.Join(a.cfg.AuthDir, "atria*.json"))
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if au, err := auth.Parse(raw); err == nil && au.AccessToken == key {
+			uid := au.UID
+			if uid == "" {
+				uid = strings.TrimSuffix(filepath.Base(f), ".json")
+			}
+			return uid, true
+		}
+	}
+	return "", false
+}
+
+// atriaAccounts Atria 渠道账号清单（uid/昵称/key 掩码/停用状态）。
+func (a *App) atriaAccounts() []map[string]any {
+	out := []map[string]any{}
+	rt := a.runtime(provider.Atria)
+	if rt == nil || rt.Pool == nil {
+		return out
+	}
+	for _, s := range rt.Pool.List() {
+		au := rt.Pool.AuthByUID(s.UID)
+		key := ""
+		if au != nil {
+			key = au.AccessToken
+		}
+		out = append(out, map[string]any{
+			"uid":      s.UID,
+			"nickname": s.Nickname,
+			"key":      maskKey(key),
+			"disabled": s.Disabled,
+			"credits":  s.Credits,
+		})
+	}
+	return out
+}
+
+// maskKey API Key 掩码显示（前 8 后 4）。
+func maskKey(k string) string {
+	if len(k) <= 12 {
+		return k
+	}
+	return k[:8] + "..." + k[len(k)-4:]
+}
+
+// ---------------------------------------------------------------------------
 // 配置操作
 // ---------------------------------------------------------------------------
 
@@ -1713,6 +1867,85 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		a.reloadAccounts()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "nickname": uname})
 	})
+	// Atria 官方 API Key 导入（单个）：key 存扁平 JSON 的 apiKey 字段（与手工账号一致）
+	mux.HandleFunc("POST /api/atria/add", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Key      string `json:"key"`
+			Nickname string `json:"nickname"`
+			UID      string `json:"uid"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		key := strings.TrimSpace(req.Key)
+		if key == "" {
+			apiError(w, http.StatusBadRequest, "key 不能为空")
+			return
+		}
+		if !strings.HasPrefix(key, "atr_") {
+			apiError(w, http.StatusBadRequest, "key 格式不对：Atria API Key 应以 atr_ 开头")
+			return
+		}
+		res, err := a.AddAtriaKey(key, req.UID, req.Nickname)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
+	// Atria 批量导入：一行一个 key（可 "key 备注名"），重复 key 自动跳过
+	mux.HandleFunc("POST /api/atria/add_batch", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Keys string `json:"keys"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.TrimSpace(req.Keys) == "" {
+			apiError(w, http.StatusBadRequest, "keys 不能为空")
+			return
+		}
+		writeJSON(w, http.StatusOK, a.AddAtriaKeysBatch(req.Keys))
+	})
+	// Atria 渠道账号清单（uid/昵称/停用状态，供管理界面回显）
+	mux.HandleFunc("GET /api/atria/list", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"accounts": a.atriaAccounts()})
+	})
+	// 本地桥：探测 / 启动 / 停止 / 一键全启
+	mux.HandleFunc("GET /api/bridges", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"bridges": a.bridges.ProbeAll()})
+	})
+	mux.HandleFunc("POST /api/bridges/start", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		st, err := a.bridges.Start(r.Context(), req.ID)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"status": st, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": st})
+	})
+	mux.HandleFunc("POST /api/bridges/start_all", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"statuses": a.bridges.StartAll(r.Context())})
+	})
+	mux.HandleFunc("POST /api/bridges/stop", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		st, err := a.bridges.Stop(r.Context(), req.ID)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"status": st, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": st})
+	})
+	// ZCode 周末包领取：最近结果 + 手动触发（CLI 路径，勿改走 HTTP admin 端点）
+	mux.HandleFunc("GET /api/zcode/claim_status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"report": zcode.ClaimLastReport()})
+	})
+	mux.HandleFunc("POST /api/zcode/claim_now", func(w http.ResponseWriter, r *http.Request) {
+		go zcode.ClaimNow("manual")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": "领取已启动，稍后刷新查看结果"})
+	})
 	mux.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
@@ -1876,10 +2109,10 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
 	})
-	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		go a.safeGo(func() { a.Quit() })
-	})
+	// POST /api/quit 已移除（2026-09-23）：
+// 前端从不调用它，是旧版 Web UI 遗留的孤儿路由；任何本地进程 POST 一下就会
+// 无声杀掉整个网关（日志无痕，表现为"自己退掉了"）。退出统一走托盘菜单「退出」。
+// （如确需远程退出，请显式恢复并加鉴权，勿静默。)
 
 	// 客户端 Key 管理
 	mux.HandleFunc("GET /api/clients", func(w http.ResponseWriter, r *http.Request) {

@@ -28,8 +28,9 @@ import (
 	"sync"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/platform"
+	"zerogate/internal/provider"
 )
 
 // Client ZCode 上游客户端，实现 provider.Upstream。
@@ -1079,6 +1080,7 @@ func (m *CaptchaManager) runSolver(scene, region, prefix string) (string, error)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "node", solver, scene, region, prefix)
 	cmd.Dir = m.dir
+	platform.HideWindow(cmd)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

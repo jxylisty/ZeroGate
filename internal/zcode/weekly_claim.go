@@ -1,26 +1,69 @@
-// Weekly claim for ZCode weekend build: every Friday 23:30, call each bridged
-// zcode-proxy instance's /admin/claim-now endpoint once (single attempt per
-// account, no retry loop — retry loops are what got accounts WAF-flagged).
-// See AGENTS.md §7.8/7.9 for the mechanism and the 3001-header pitfall.
+// Weekly claim for ZCode weekend build: every Friday/Saturday 19:00-19:15,
+// run `zcode-proxy claim now` once per instance (CLI mode; the HTTP
+// /admin/claim-now endpoint kills the instance process — see lessons/04).
+// 2026-09-21: results are persisted (data/zcode-claim-result.json) and
+// surfaced on the panel; manual trigger available via zcode.ClaimNow.
 package zcode
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	"wild-work/internal/pool"
+	"zerogate/internal/platform"
 )
+
+// ClaimRecord 单实例领取结果。
+type ClaimRecord struct {
+	Instance string `json:"instance"`
+	Output   string `json:"output"`
+	OK       bool   `json:"ok"`    // true = 领到
+	Failed   bool   `json:"failed"`
+	At       string `json:"at"` // 15:04:05
+}
+
+// ClaimReport 一次批量领取报告。
+type ClaimReport struct {
+	At        string        `json:"at"`
+	Trigger   string        `json:"trigger"` // auto | manual
+	Total     int           `json:"total"`
+	Claimed   int           `json:"claimed"`
+	NoClaim   int           `json:"no_claim"`
+	Failed    int           `json:"failed"`
+	Instances []ClaimRecord `json:"instances"`
+}
+
+// claimResultFile 领取结果落盘路径（main 启动时按 stateDir 重设）。
+var (
+	claimResultMu   sync.Mutex
+	claimResultFile = "data/zcode-claim-result.json"
+)
+
+// SetClaimResultFile 重设领取结果文件路径（须在首次领取前调用）。
+func SetClaimResultFile(fp string) {
+	claimResultMu.Lock()
+	claimResultFile = fp
+	claimResultMu.Unlock()
+}
+
+// ClaimResultFile 领取结果文件路径（面板回读用）。
+func ClaimResultFile() string {
+	claimResultMu.Lock()
+	defer claimResultMu.Unlock()
+	return claimResultFile
+}
 
 // StartWeeklyClaim 启动周五/周六 19:00 的周末包领取 goroutine（卡片 19 点投放即领，23:00 激活；每日名额第二天可能刷新补货）。
 // bridgeKey 为访问实例管理端点的凭证（ZCODE_BRIDGE_KEY）。
-func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
+func StartWeeklyClaim(ctx context.Context, bridgeKey string) {
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
@@ -31,12 +74,13 @@ func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
 				return
 			case now := <-t.C:
 				// 周五+周六 19:00：周末包每日名额刷新（用户经验：当天领完第二天会补货）
-				if (now.Weekday() != time.Friday && now.Weekday() != time.Saturday) || now.Hour() != 19 || now.Minute() < 0 || now.Minute() >= 15 {
+				if (now.Weekday() != time.Friday && now.Weekday() != time.Saturday) || now.Hour() != 19 || now.Minute() >= 15 {
 					continue
 				}
 				if lastTrigger.IsZero() || lastTrigger.Year() != now.Year() || lastTrigger.YearDay() != now.YearDay() {
 					lastTrigger = now
-					runWeeklyClaim(p, bridgeKey)
+					rep := ClaimNow("auto")
+					log.Printf("zcode weekly claim(auto): claimed=%d no_claim=%d failed=%d", rep.Claimed, rep.NoClaim, rep.Failed)
 				}
 			}
 		}
@@ -44,18 +88,73 @@ func StartWeeklyClaim(ctx context.Context, p *pool.Pool, bridgeKey string) {
 	log.Printf("zcode: 周末包领取调度已启动（周五/周六 19:00，账号级桥接）")
 }
 
+// ClaimNow 立即执行一轮全实例领取并落盘结果（定时与面板手动共用）。
+func ClaimNow(trigger string) ClaimReport {
+	rep := runWeeklyClaim(trigger)
+	saveClaimReport(rep)
+	return rep
+}
+
+// ClaimLastReport 最近一次领取报告（无记录返回 nil）。
+func ClaimLastReport() *ClaimReport {
+	raw, err := os.ReadFile(ClaimResultFile())
+	if err != nil {
+		return nil
+	}
+	var rep ClaimReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		return nil
+	}
+	return &rep
+}
+
+func saveClaimReport(rep ClaimReport) {
+	fp := ClaimResultFile()
+	if err := os.MkdirAll(filepath.Dir(fp), 0o755); err != nil {
+		log.Printf("zcode weekly claim: 结果目录创建失败 %s: %v", fp, err)
+		return
+	}
+	raw, _ := json.MarshalIndent(rep, "", "  ")
+	tmp := fp + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		log.Printf("zcode weekly claim: 结果写盘失败 %s: %v", fp, err)
+		return
+	}
+	_ = os.Rename(tmp, fp)
+}
+
+// classifyClaim 解析 CLI 输出：Claimed / No claimable / error。
+func classifyClaim(out string) (ok, failed bool) {
+	s := strings.ToLower(out)
+	switch {
+	case strings.Contains(s, "claimed") && !strings.Contains(s, "no claimable"):
+		return true, false
+	case strings.Contains(s, "error") || strings.Contains(s, "fail"):
+		return false, true
+	default:
+		return false, false // 含 "no claimable" 及未知输出：未领到但非失败
+	}
+}
+
 // runWeeklyClaim 对每个 zcode-proxy 实例执行一次 CLI claim（实例目录遍历）。
 // 不用 HTTP /admin/claim-now：实测该端点处理后会弄死实例进程（2026-09-18）；
 // CLI 方式（claim now）19:2x 验证可靠且幂等。
-func runWeeklyClaim(p *pool.Pool, bridgeKey string) {
-	instDir := strings.TrimSpace(os.Getenv("ZCODE_PROXY_INSTANCES_DIR"))
-	if instDir == "" {
+func runWeeklyClaim(trigger string) ClaimReport {
+	instDir := os.Getenv("ZCODE_PROXY_INSTANCES_DIR")
+	if strings.TrimSpace(instDir) == "" {
 		instDir = "D:/wild-work/research/zcode-proxy/instances"
 	}
+	rep := ClaimReport{At: time.Now().Format("2006-01-02 15:04:05"), Trigger: trigger}
 	dirs, err := os.ReadDir(instDir)
 	if err != nil {
 		log.Printf("zcode weekly claim: 实例目录不可读 %s: %v", instDir, err)
-		return
+		rep.Instances = append(rep.Instances, ClaimRecord{
+			Instance: "(instances)", Output: fmt.Sprintf("实例目录不可读: %v", err),
+			Failed: true, At: time.Now().Format("15:04:05"),
+		})
+		rep.Failed = 1
+		rep.Total = 1
+		return rep
 	}
 	for _, d := range dirs {
 		if !d.IsDir() || !strings.HasPrefix(d.Name(), "acc-") {
@@ -63,18 +162,34 @@ func runWeeklyClaim(p *pool.Pool, bridgeKey string) {
 		}
 		credsDir := filepath.Join(instDir, d.Name(), "creds")
 		out, err := claimCLI(credsDir)
+		rec := ClaimRecord{Instance: d.Name(), Output: strings.TrimSpace(out), At: time.Now().Format("15:04:05")}
 		if err != nil {
-			log.Printf("zcode weekly claim %s: %v", d.Name(), err)
-			continue
+			rec.Output = strings.TrimSpace(rec.Output + " " + err.Error())
+			rec.Failed = true
+			rep.Failed++
+		} else {
+			rec.OK, rec.Failed = classifyClaim(out)
+			switch {
+			case rec.OK:
+				rep.Claimed++
+			case rec.Failed:
+				rep.Failed++
+			default:
+				rep.NoClaim++
+			}
 		}
-		log.Printf("zcode weekly claim %s: %s", d.Name(), strings.TrimSpace(out))
+		rep.Total++
+		rep.Instances = append(rep.Instances, rec)
+		log.Printf("zcode weekly claim %s: %s", d.Name(), rec.Output)
 	}
+	return rep
 }
 
 // claimCLI 以 CLI 单次模式执行 claim（输出含 Claimed/No claimable/error）。
 func claimCLI(credsDir string) (string, error) {
 	exe := "D:/wild-work/research/zcode-proxy/zcode-proxy.exe"
 	cmd := exec.Command(exe, "claim", "now")
+	platform.HideWindow(cmd)
 	cmd.Env = append(os.Environ(),
 		"ZCODE_CREDENTIALS_DIR="+credsDir,
 		"ZCODE_CLAIM_ENABLED=false",

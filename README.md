@@ -1,4 +1,4 @@
-# ZeroGate（wild-work）
+# ZeroGate（ZeroGate）
 
 > 多渠道 AI 账号聚合网关——把 WorkBuddy(CodeBuddy)、WorkBuddy 国际版、TraeWork、Qoder、ZCode、AutoClaw、Atria 等 8 个渠道的多个账号聚合成一个 OpenAI 兼容 API，双击启动，浏览器管理。
 
@@ -22,7 +22,7 @@
 
 ### Windows
 
-1. 从 [Releases](https://github.com/jxylisty/ZeroGate/releases) 下载 `wild-work.exe`
+1. 从 [Releases](https://github.com/jxylisty/ZeroGate/releases) 下载 `ZeroGate.exe`
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「+ WorkBuddy」或「+ TraeWork」或「+ Qoder」添加账号
@@ -37,7 +37,7 @@
 ### 无头模式（Linux 服务器）
 
 ```bash
-./wild-work --no-tray
+./ZeroGate --no-tray
 ```
 
 启动后打印 API 地址、Key 等信息，阻塞运行，Ctrl+C 退出。
@@ -46,7 +46,7 @@
 
 ### 1. 获取模型列表
 
-wild-work 的 `/v1/models` 端点返回当前所有可用模型。在终端中执行：
+ZeroGate 的 `/v1/models` 端点返回当前所有可用模型。在终端中执行：
 
 ```bash
 curl -s -H "Authorization: Bearer WildWorkAPI" http://127.0.0.1:7863/v1/models
@@ -54,13 +54,13 @@ curl -s -H "Authorization: Bearer WildWorkAPI" http://127.0.0.1:7863/v1/models
 
 ### 2. 配置 Pi（models.json）
 
-Pi 不支持自动拉取模型列表，需要手动编辑 `~/.pi/agent/models.json`（Windows 路径 `C:\Users\<用户名>\.pi\agent\models.json`），在 `providers` 中加入 wild-work 配置：
+Pi 不支持自动拉取模型列表，需要手动编辑 `~/.pi/agent/models.json`（Windows 路径 `C:\Users\<用户名>\.pi\agent\models.json`），在 `providers` 中加入 ZeroGate 配置：
 
 ```json
 {
   "providers": {
-    "wild-work": {
-      "name": "wild-work",
+    "ZeroGate": {
+      "name": "ZeroGate",
       "api": "openai-completions",
       "baseUrl": "http://127.0.0.1:7863/v1",
       "apiKey": "WildWorkAPI",

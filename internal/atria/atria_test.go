@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 func TestClassify(t *testing.T) {

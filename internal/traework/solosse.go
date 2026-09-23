@@ -32,7 +32,7 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/provider"
+	"zerogate/internal/provider"
 )
 
 // SOLOEvent 单条 SOLO SSE 事件（归一化）。

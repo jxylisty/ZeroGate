@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 // DynamicModel 上游 chat scene 单个模型。

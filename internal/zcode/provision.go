@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"zerogate/internal/platform"
 )
 
 // Provision 实例编排器（面板自助加号用）。
@@ -101,6 +103,7 @@ func (p *Provision) Start(provider string) (string, error) {
 	// 启动服务实例（常驻，DATA 目录独立）
 	st.serveCmd = exec.Command(p.exePath, "--cli", "serve", filepath.Join(accDir, "config.yaml"))
 	st.serveCmd.Dir = filepath.Dir(p.exePath)
+	platform.HideWindow(st.serveCmd)
 	st.serveCmd.Env = append(os.Environ(),
 		"ZCODE_CREDENTIALS_DIR="+credsDir,
 		"ZCODE_CLAIM_ENABLED=false",
@@ -119,6 +122,7 @@ func (p *Provision) Start(provider string) (string, error) {
 	// 发起 auth login（后台），从 stdout 解析授权 URL
 	st.loginCmd = exec.Command(p.exePath, "auth", "login", provider)
 	st.loginCmd.Dir = filepath.Dir(p.exePath)
+	platform.HideWindow(st.loginCmd)
 	st.loginCmd.Env = append(os.Environ(),
 		"ZCODE_CREDENTIALS_DIR="+credsDir,
 		"HTTPS_PROXY=", "HTTP_PROXY=", "ALL_PROXY=",

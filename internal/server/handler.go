@@ -19,12 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"wild-work/internal/audit"
-	"wild-work/internal/auth"
-	"wild-work/internal/clientkey"
-	"wild-work/internal/pool"
-	"wild-work/internal/provider"
-	"wild-work/internal/usage"
+	"zerogate/internal/audit"
+	"zerogate/internal/auth"
+	"zerogate/internal/clientkey"
+	"zerogate/internal/pool"
+	"zerogate/internal/provider"
+	"zerogate/internal/usage"
 )
 
 // Runtime 是一个平台的一组运行时资源：pool + upstream + 静态模型兜底。

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/pool"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/pool"
+	"zerogate/internal/provider"
 )
 
 func TestBridgeRotationSpreadsAndSkipsDisabled(t *testing.T) {

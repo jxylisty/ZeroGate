@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长。

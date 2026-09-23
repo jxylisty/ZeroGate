@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 func TestPickLowestCredits(t *testing.T) {

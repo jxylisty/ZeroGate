@@ -3,7 +3,7 @@ package traework
 import (
 	"net/http"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 const clientUA = "Trae/" + IdeVersion

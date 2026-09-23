@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 var sessionDeadMarkers = []string{"login", "token 失效", "token invalid", "session", "unauthorized", "401"}

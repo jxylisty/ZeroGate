@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 // requireNet 打真实上游/依赖本机网络的测试统一由此门控：

@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
-	"wild-work/internal/upstream"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
+	"zerogate/internal/upstream"
 )
 
 // Client 国际版 CodeBuddy 上游客户端，实现 provider.Upstream。

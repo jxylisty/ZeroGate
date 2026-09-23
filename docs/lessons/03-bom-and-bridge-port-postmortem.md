@@ -46,7 +46,7 @@ Post "http://127.0.0.1:18080/v1/chat/completions": dial tcp 127.0.0.1:18080: con
    - `entry` 增加 `placeholder: true` 标记（由 `pool.load()` 赋予，仅当收到真实 `Add` 或 `SyncToDir` 时解除）。
    - `healthy()` 判定：若 `e.placeholder == true` 则直接视为不健康，**绝对禁止将无真实凭证的空壳账号派发给请求**。
 
-3. **启动对齐全量改用 SyncToDir**（[`cmd/wild-work/main.go`](file:///d:/wild-work/src-true/cmd/wild-work/main.go)）：
+3. **启动对齐全量改用 SyncToDir**（[`cmd/zerogate/main.go`](file:///d:/wild-work/src-true/cmd/zerogate/main.go)）：
    - 启动时所有平台统一通过 `pool.SyncToDir(auths)` 初始化，磁盘上已被删除的陈旧账号直接从内存剔除。
 
 4. **兜底端口修正**（[`internal/zcode/zcode.go`](file:///d:/wild-work/src-true/internal/zcode/zcode.go) 与 [`restart.bat`](file:///d:/wild-work/src-true/restart.bat)）：

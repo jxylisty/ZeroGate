@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/traework"
+	"zerogate/internal/auth"
+	"zerogate/internal/traework"
 )
 
 var ErrPending = errors.New("login pending")

@@ -370,7 +370,7 @@
           <button class="btn small primary" id="btnBridgeStartAll"><span data-ic="zap"></span>一键全启</button>
         </div>
       </div>
-      <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span>本机所有后台常驻服务统一在这里托管：豆包桥、ZCode 桥实例、对话台、验证码服务、公网隧道、探针，以及 AutoClaw / CLIProxyAPI / copilot2api 等开机自启应用。绿灯 = 在线；橙灯 = 已拉起未就绪；灰灯 = 未运行。标有 <span class="tag neutral">只读</span> 的外部托管应用仅支持探测与拉起，不接受面板停止。</p>
+      <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span>本机所有后台常驻服务统一在这里托管：豆包桥、ZCode 桥实例、对话台、验证码服务、公网隧道、探针，以及 AutoClaw / CLIProxyAPI / copilot2api 等常驻应用。绿灯 = 在线；橙灯 = 已拉起未就绪；灰灯 = 未运行。标有 <span class="tag blue">随网关自启</span> 的服务由 ZeroGate 启动时自动拉起（隐藏窗口，不再弹 cmd 黑框，也不再依赖各自的 .bat 开机项）；标有 <span class="tag neutral">只读</span> 的外部应用仅支持探测与拉起，不接受面板停止。</p>
       <div id="bridgeList">
         <div class="empty-hint">加载中…</div>
       </div>

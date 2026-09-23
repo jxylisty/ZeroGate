@@ -1,4 +1,4 @@
-# wild-work 开发者文档（面向 AI Agent）
+# ZeroGate 开发者文档（面向 AI Agent）
 
 > 本文件为**代码维护者（含 AI Agent）**而写，供新 Agent 快速接手二次开发。
 > 普通用户请看 [README.md](README.md)，项目决议见 [AGENTS.md](AGENTS.md)，交接记录见 [HANDOFF.md](HANDOFF.md)。
@@ -7,15 +7,15 @@
 
 - **是什么**：多平台（Win/mac/Linux）系统托盘 daemon + 浏览器 Web UI 的多渠道账号聚合工具。单进程 = HTTP 代理 + 调度器 + 托盘 + 静态 Web UI。
 - **技术栈**：Go 1.25+ / energye/systray（托盘）/ 纯静态前端 HTML/CSS/JS（go:embed 无构建链）/ 无 wails/WebView2。
-- **模块**：`wild-work`（go.mod module name）。
+- **模块**：`ZeroGate`（go.mod module name）。
 - **平台**：Windows（完整）、macOS（代码已写，需 cgo 编译）、Linux（无头模式 `--no-tray`）。
 - **数据文件**：`config.json`（配置）、`auths/<kind>-*.json`（凭证，勿外泄）、`data/state-<kind>.json`（冷却/签到状态）、`data/app.log`（日志）、`data/pricing-cache.json`（费率缓存）。
 
 ## 1. 代码地图
 
 ```
-cmd/wild-work/main.go         # daemon 入口：装配三渠道 → 启动 HTTP → 调度器 → 托盘/无头
-cmd/wild-work/web/             # 纯静态 Web UI（index.html / app.js / style.css）
+cmd/zerogate/main.go         # daemon 入口：装配三渠道 → 启动 HTTP → 调度器 → 托盘/无头
+cmd/zerogate/web/             # 纯静态 Web UI（index.html / app.js / style.css）
 cmd/genicon/                   # 图标生成（纯 Go）
 internal/
 ├── app/app.go                 # 业务编排：HTTP 管理 API + 登录流程 + 费率缓存 + 日志
@@ -104,7 +104,7 @@ Base: `openapi.qoder.com.cn`, Gateway: `gateway.qoder.com.cn`
 
 1. 新建 `internal/<channel>/` 包，实现 `provider.Upstream` 接口
 2. 新建 `internal/login_<channel>/` 包，实现登录编排
-3. 在 `cmd/wild-work/main.go` 装配处注册 Runtime
+3. 在 `cmd/zerogate/main.go` 装配处注册 Runtime
 
 `provider.Upstream` 接口：
 ```go
@@ -139,16 +139,16 @@ type Upstream interface {
 
 ```bash
 # Windows（WSL 交叉编译）
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.exe ./cmd/wild-work
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/ZeroGate.exe ./cmd/zerogate
 
 # macOS（需要 macOS 真机或 CI，cgo 必需）
-GOOS=darwin GOARCH=arm64 go build -o dist/wild-work-darwin ./cmd/wild-work
+GOOS=darwin GOARCH=arm64 go build -o dist/ZeroGate-darwin ./cmd/zerogate
 
 # Linux 无头
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/wild-work-linux ./cmd/wild-work
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/ZeroGate-linux ./cmd/zerogate
 ```
 
-Windows 图标嵌入：`rsrc -ico cmd/wild-work/icon.ico -o cmd/wild-work/rsrc_windows_amd64.syso`
+Windows 图标嵌入：`rsrc -ico cmd/zerogate/icon.ico -o cmd/zerogate/rsrc_windows_amd64.syso`
 
 ## 6. 数据流
 
@@ -268,8 +268,8 @@ const (
 
 ```bash
 go build ./... && go vet ./... && go test ./...     # 全量校验
-GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.exe ./cmd/wild-work
-./wild-work --no-tray                                # 无头模式调试
+GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/ZeroGate.exe ./cmd/zerogate
+./ZeroGate --no-tray                                # 无头模式调试
 ```
 
 ## 8. 已知注意事项

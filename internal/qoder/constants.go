@@ -6,7 +6,7 @@ package qoder
 import (
 	"sort"
 
-	"wild-work/internal/provider"
+	"zerogate/internal/provider"
 )
 
 // 上游域名与端点（CN only）。

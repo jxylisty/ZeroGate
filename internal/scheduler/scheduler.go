@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/pool"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/pool"
+	"zerogate/internal/provider"
 )
 
 // Config 调度器依赖。

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"wild-work/internal/auth"
+	"zerogate/internal/auth"
 )
 
 func TestClassify(t *testing.T) {

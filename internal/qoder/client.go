@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
 )
 
 // Client QoderWork 上游客户端。

@@ -1,4 +1,4 @@
-// wild-work 管理面板前端（原生 JS，无构建步骤，直接 fetch 管理 API）
+// ZeroGate 管理面板前端（原生 JS，无构建步骤，直接 fetch 管理 API）
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -2345,6 +2345,9 @@ function bridgeCardHTML(st) {
     ? `<span class="tag ok">在线</span>`
     : st.running ? `<span class="tag warn">启动中</span>` : `<span class="tag neutral">未运行</span>`;
   const roTag = st.no_stop ? `<span class="tag neutral" title="外部/自启动托管，面板不提供停止">只读</span>` : "";
+  // 自启标记：由 ZeroGate 启动时统一拉起（取代原注册表 Run 里的 .bat，不再弹 cmd 窗口）
+  const autoTag = st.autostart
+    ? `<span class="tag blue" title="ZeroGate 启动时自动拉起（隐藏窗口，无 cmd 弹窗）">随网关自启</span>` : "";
   const detail = esc(st.detail || st.error || "");
   const lastAct = st.last_action ? `<div class="br-last">最近操作：${esc(st.last_action)} · ${esc(st.last_action_at || "")}</div>` : "";
   const startBtn = st.online ? "" :
@@ -2358,7 +2361,7 @@ function bridgeCardHTML(st) {
         ${bridgeDot(st)}
         <span class="br-name">${esc(st.name)}</span>
         ${st.port ? `<code class="br-port">:${st.port}</code>` : ""}
-        ${stateTag}${roTag}
+        ${stateTag}${autoTag}${roTag}
       </div>
       <div class="br-desc">${esc(st.desc || "")}</div>
       ${detail ? `<div class="br-detail">${detail}</div>` : ""}

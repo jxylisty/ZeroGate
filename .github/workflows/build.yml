@@ -74,8 +74,8 @@ jobs:
         if: matrix.needs_rsrc
         run: |
           go install github.com/akavel/rsrc@latest
-          cp build/windows/icon.ico cmd/wild-work/icon.ico
-          rsrc -ico cmd/wild-work/icon.ico -o cmd/wild-work/rsrc_windows_amd64.syso
+          cp build/windows/icon.ico cmd/zerogate/icon.ico
+          rsrc -ico cmd/zerogate/icon.ico -o cmd/zerogate/rsrc_windows_amd64.syso
 
       - name: Build
         env:
@@ -84,7 +84,7 @@ jobs:
           CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           OUT="dist/wild-work-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
-          go build -ldflags "${{ matrix.ldflags }}" -o "$OUT" ./cmd/wild-work
+          go build -ldflags "${{ matrix.ldflags }}" -o "$OUT" ./cmd/zerogate
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

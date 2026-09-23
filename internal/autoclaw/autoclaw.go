@@ -32,9 +32,9 @@ import (
 	"strings"
 	"time"
 
-	"wild-work/internal/auth"
-	"wild-work/internal/provider"
-	"wild-work/internal/upstream"
+	"zerogate/internal/auth"
+	"zerogate/internal/provider"
+	"zerogate/internal/upstream"
 )
 
 // 渠道常量（上游协议逆向值，勿随意改）。
@@ -289,7 +289,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("refresh failed (http %d): %s", resp.StatusCode, truncate(string(raw), 160))
+		return &provider.Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode, Msg: truncate(string(raw), 160)}
 	}
 	var env struct {
 		Code int64 `json:"code"`
@@ -359,6 +359,10 @@ func isFailoverable(status int, body string) bool {
 	case status == http.StatusBadRequest:
 		return true // 忙窗/无效请求
 	case status == http.StatusForbidden:
+		// 410004 账号封禁：不可恢复，重试到窗口耗尽毫无意义，立即回报
+		if strings.Contains(low, "410004") || strings.Contains(low, "封禁") {
+			return false
+		}
 		return true // 忙窗 403（pay-view/quota）
 	case status == http.StatusUnauthorized:
 		return true // 该 host 不认 token
@@ -656,7 +660,7 @@ func (c *Client) scopeBalance(req *http.Request) (int64, []provider.ResourceItem
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return 0, nil, fmt.Errorf("scope http %d", resp.StatusCode)
+		return 0, nil, &provider.Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode, Msg: truncate(string(raw), 160)}
 	}
 	var env struct {
 		Code int64 `json:"code"`
@@ -738,14 +742,14 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 	}
 	if claimed > 0 {
 		// 额外尝试 token 活动奖励（不影响签到结果判断）
-		if pts, _ := c.claimTokenActivities(tok); pts > 0 {
+		if pts, _ := c.claimTokenActivities(a.UID, tok); pts > 0 {
 			claimed += pts
 		}
 		log.Printf("autoclaw checkin uid=%s claimed=%d points", a.UID, claimed)
 		return nil
 	}
 	// 签到全幂等已领时也顺带跑一次 token 活动，可能有未领的新活动
-	if p, _ := c.claimTokenActivities(tok); p > 0 {
+	if p, _ := c.claimTokenActivities(a.UID, tok); p > 0 {
 		log.Printf("autoclaw checkin token promo uid=%s points=%d", a.UID, p)
 		return nil
 	}
@@ -767,7 +771,7 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 // claimTokenActivities 扫描 autoclaw-promotion-config 里的 modals，对开启了
 // sendReward/timingReward 且未领取的活动自动 POST promotion-reward 领取 token。
 // 兼容已领取（幂等），返回本次新增积分/点数；无可用活动时静默返回。
-func (c *Client) claimTokenActivities(tok string) (claimed int, err error) {
+func (c *Client) claimTokenActivities(uid, tok string) (claimed int, err error) {
 	// 1) 拉活动配置
 	req, rerr := http.NewRequest(http.MethodGet, c.Base+PromotionConfigPath, nil)
 	if rerr != nil {
@@ -805,7 +809,7 @@ func (c *Client) claimTokenActivities(tok string) (claimed int, err error) {
 			continue
 		}
 		for _, rt := range []string{"sendReward", "timingReward"} {
-			pts, done, err := c.claimPromotionReward(tok, id, rt)
+			pts, done, err := c.claimPromotionReward(uid, tok, id, rt)
 			if err == nil && done {
 				claimed += pts
 			}
@@ -815,7 +819,7 @@ func (c *Client) claimTokenActivities(tok string) (claimed int, err error) {
 }
 
 // claimPromotionReward 领取单个 token 活动的奖励；done=true 表示新增到账。
-func (c *Client) claimPromotionReward(tok, modalID, rewardType string) (pts int, done bool, err error) {
+func (c *Client) claimPromotionReward(uid, tok, modalID, rewardType string) (pts int, done bool, err error) {
 	body, _ := json.Marshal(map[string]string{"modal_id": modalID, "reward_type": rewardType})
 	req, err := http.NewRequest(http.MethodPost, c.Base+PromotionRewardPath, bytes.NewReader(body))
 	if err != nil {
@@ -833,6 +837,10 @@ func (c *Client) claimPromotionReward(tok, modalID, rewardType string) (pts int,
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
+		// 非 200（如对不可领 modal 返回 invalid request params）：记日志但不算失败，
+		// 上游用 HTTP 错误表达「该 modal 当前不可领」，属常态而非故障。
+		log.Printf("autoclaw promotion_reward uid=%s modal=%s type=%s http=%d body=%s",
+			uid, modalID, rewardType, resp.StatusCode, truncate(string(raw), 120))
 		return 0, false, nil
 	}
 	var env struct {
@@ -845,14 +853,22 @@ func (c *Client) claimPromotionReward(tok, modalID, rewardType string) (pts int,
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return 0, false, nil
 	}
-	if env.Code != 0 || !env.Data.Success || env.Data.Points <= 0 {
+	if env.Code != 0 || !env.Data.Success {
 		return 0, false, nil
 	}
-	log.Printf("autoclaw promotion_reward uid=%s modal=%s type=%s points=%d", "?", modalID, rewardType, env.Data.Points)
+	// points=0 + success=true 也是有效响应（幂等重领/0 分活动），不算新增到账
+	if env.Data.Points <= 0 {
+		log.Printf("autoclaw promotion_reward uid=%s modal=%s type=%s points=0 (already/none)", uid, modalID, rewardType)
+		return 0, false, nil
+	}
+	log.Printf("autoclaw promotion_reward uid=%s modal=%s type=%s points=%d", uid, modalID, rewardType, env.Data.Points)
 	return env.Data.Points, true, nil
 }
 
-// promotionConfigHeaders config/reward 专属请求头：小写 authorization + 签名头。
+// promotionConfigHeaders config/reward 专属请求头。2026-09-22 实测（app.asar
+// 逆向 + 抓包）：reward 接口必须带客户端同款双鉴权头 —— authorization 之外还要
+// X-Authorization（getNewbieGuideAuthHeaders），只带 authorization 会对可领取
+// modal 返回 HTTP 错误 "invalid request params"，双头齐备才返回 200 信封。
 func promotionConfigHeaders(rawToken string) http.Header {
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 	h := http.Header{}
@@ -869,6 +885,7 @@ func promotionConfigHeaders(rawToken string) http.Header {
 	h.Set("X-Channel", "official")
 	if rawToken != "" {
 		h.Set("authorization", "Bearer "+rawToken)
+		h.Set("X-Authorization", "Bearer "+rawToken)
 	}
 	return h
 }
@@ -907,7 +924,7 @@ func (c *Client) claimTask(tok, taskID string) (pts int, done bool, err error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return 0, false, fmt.Errorf("task-complete http %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		return 0, false, &provider.Error{Kind: Classify(resp.StatusCode, string(raw)), Status: resp.StatusCode, Msg: truncate(string(raw), 120)}
 	}
 	var env struct {
 		Code int64 `json:"code"`
