@@ -112,6 +112,10 @@ type Config struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	RateLimit struct {
+		RequestsPerHour int `json:"requests_per_hour"` // 每号每小时请求上限，默认 300（GLM_proxy 同款）
+	} `json:"rate_limit"`
+
 	ModelRedirects map[string][]string `json:"model_redirects,omitempty"` // 模型别名映射与容灾列表
 
 	// 解析后
@@ -158,6 +162,7 @@ func Default() *Config {
 	c.Schedule.GrowthTimes = []string{"09:00", "21:00"}
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 120
+	c.RateLimit.RequestsPerHour = 300
 	return c
 }
 
@@ -309,6 +314,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
+	}
+	if c.RateLimit.RequestsPerHour <= 0 {
+		c.RateLimit.RequestsPerHour = 300
 	}
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863

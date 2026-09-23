@@ -4,6 +4,7 @@ package pool
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,6 +24,11 @@ const (
 	CoolSoft                       // 429 → 短冷却
 	CoolErr                        // 连续错误 → 中冷却
 	CoolLowBalance                 // 余额低于平均 60% → 15min 冷却
+)
+
+const (
+	banCooldown     = 24 * time.Hour // 封禁冷却时长（如 AutoClaw 410004）
+	banDisableAfter = 3              // 封禁累计次数达标后自动禁用
 )
 
 func (k CoolKind) String() string {
@@ -51,6 +57,7 @@ type Status struct {
 	Reason         string          `json:"reason,omitempty"`
 	Disabled       bool            `json:"disabled"`
 	ErrCount       int             `json:"err_count,omitempty"`
+	BanCount       int             `json:"ban_count,omitempty"`
 	LastCheckinOK  bool            `json:"last_checkin_ok,omitempty"`
 	LastCheckinAt  time.Time       `json:"last_checkin_at,omitempty"`
 	LastCheckinMsg string          `json:"last_checkin_msg,omitempty"`
@@ -66,6 +73,7 @@ type entry struct {
 	reason      string
 	until       time.Time
 	errCount    int
+	banCount    int // 封禁累计次数（410004 等），达 banDisableAfter 自动禁用
 
 	lastCheckinOK  bool
 	lastCheckinAt  time.Time
@@ -92,6 +100,7 @@ type accountState struct {
 	Disabled       bool      `json:"disabled"`
 	Reason         string    `json:"reason,omitempty"`
 	Until          time.Time `json:"until,omitempty"`
+	BanCount       int       `json:"ban_count,omitempty"`
 	LastCheckinOK  bool      `json:"last_checkin_ok,omitempty"`
 	LastCheckinAt  time.Time `json:"last_checkin_at,omitempty"`
 	LastCheckinMsg string    `json:"last_checkin_msg,omitempty"`
@@ -254,7 +263,27 @@ func (p *Pool) Disable(uid, reason string) {
 	p.saveLocked()
 }
 
-// SetDisabled 设置账号禁用/启用状态。
+// Ban 封禁处置（借 autoclawpi CooldownBanned + GLM_proxy 封禁分类）：
+// 24h 长冷却并累计封禁次数；累计达 banDisableAfter 次自动转禁用。
+func (p *Pool) Ban(uid, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	e.banCount++
+	if e.banCount >= banDisableAfter {
+		e.disabled = true
+		e.reason = fmt.Sprintf("%s（封禁 %d 次自动禁用）", reason, e.banCount)
+	} else {
+		e.until = time.Now().Add(banCooldown)
+		e.reason = reason
+	}
+	p.saveLocked()
+}
+
+// SetDisabled 设置账号禁用/启用状态；手动解禁时重置封禁计数。
 func (p *Pool) SetDisabled(uid string, d bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -264,6 +293,7 @@ func (p *Pool) SetDisabled(uid string, d bool) {
 			e.reason = "手动停用"
 		} else {
 			e.reason = ""
+			e.banCount = 0
 		}
 	}
 	p.saveLocked()
@@ -362,6 +392,24 @@ func (p *Pool) Auths() []*auth.Auth {
 	return out
 }
 
+// HealthyCount 返回当前健康（未禁用、未冷却）的账号数与总数。
+//
+// 供渠道级熔断判断：健康数为 0 时整池都不可用（全部封禁/冷却/停用），
+// 此时继续向上游转发毫无意义 —— 只会把"账号已被封禁"这类错误反复打给上游，
+// 反而加深风控标记（2026-09-23 AutoClaw 两账号即因此被封）。
+func (p *Pool) HealthyCount() (healthy, total int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for _, e := range p.byUID {
+		total++
+		if e.healthy(now) {
+			healthy++
+		}
+	}
+	return healthy, total
+}
+
 func (p *Pool) List() []Status {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -418,6 +466,7 @@ func (p *Pool) load() {
 			disabled:       s.Disabled,
 			reason:         s.Reason,
 			until:          s.Until,
+			banCount:       s.BanCount,
 			lastCheckinOK:  s.LastCheckinOK,
 			lastCheckinAt:  s.LastCheckinAt,
 			lastCheckinMsg: s.LastCheckinMsg,
@@ -437,6 +486,7 @@ func (p *Pool) saveLocked() {
 			Disabled:       e.disabled,
 			Reason:         e.reason,
 			Until:          e.until,
+			BanCount:       e.banCount,
 			LastCheckinOK:  e.lastCheckinOK,
 			LastCheckinAt:  e.lastCheckinAt,
 			LastCheckinMsg: e.lastCheckinMsg,

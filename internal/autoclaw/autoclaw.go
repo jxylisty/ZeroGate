@@ -54,12 +54,17 @@ const (
 	ProxyBase = "https://autoglm-acceleration-api.zhipuai.cn"
 	ProxyPath = "/autoclaw-proxy/proxy/autoclaw"
 	ChatPath  = ProxyPath + "/chat/completions"
-	// 忙窗自愈重试窗口与退避上限。AutoClaw 忙窗（400/403 pay-view 810001）是平台
-	// 暂时拦截、自愈时间一次可达数十秒到几分钟。固定重试次数会在窗口内提前放弃，
-	// 逼用户手动重发——这里改为「时间窗内持续重试」：递增退避（封顶 retryMaxBackoff），
-	// 忙窗一过自动恢复并返回，全程无需人工干预。窗口默认对齐上游超时(300s)的 90%。
-	retryWindow     = 270 * time.Second
-	retryMaxBackoff = 5 * time.Second
+	// 忙窗自愈重试窗口与退避上限。
+	//
+	// ⚠️ 2026-09-23 教训（详见 docs/lessons/09）：此处曾设为 270 秒「时间窗内持续重试」，
+	// 结果在账号被封（410004）期间，客户端每 8 秒重试一轮 × 每轮 270 秒内部重试，
+	// 把"凭证已失效"刷成"持续暴力请求"，两个账号先后被上游风控封禁。
+	// 现在收紧为短窗口 + 少量次数：忙窗（400/403 pay-view）仍能自愈，
+	// 但绝不长时间占着上游 —— 真正的封禁信号由 isFailoverable 立即中断。
+	retryWindow     = 45 * time.Second
+	retryMaxBackoff = 3 * time.Second
+	// retryMaxAttempts 单次请求内的最大尝试次数（硬上限，防退避抖动导致打太多次）。
+	retryMaxAttempts = 6
 	// 每日签到/任务领取端点（web 签名头实测有效返回 reward_points=200）。
 	// 注意：task-complete 挂在 proxy 根下，再拼 ProxyPath 会多出 /autoclaw 段导致 401 Invalid token。
 	TaskCompletePath = "/autoclaw-proxy/proxy/autoclaw-task-complete"
@@ -129,15 +134,26 @@ const (
 	ErrNotFound    = provider.ErrNotFound
 	ErrServer      = provider.ErrServer
 	ErrClient      = provider.ErrClient
+	ErrBanned      = provider.ErrBanned
 )
 
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 func (c *Client) Classify(status int, body string) provider.ErrKind { return Classify(status, body) }
 
 // Classify 独立分类（供测试直接调用）。
+// 业务码优先（借 GLM_proxy BAN-RISK 分类表）：
+//   - 410004 = 账号封禁（多在 403 中）→ ErrBanned
+//   - 810002 = 免费层限流（403 撞车信号）→ ErrSoftRate
+//   - 810000 = 积分用尽（402）→ ErrHardCredit
 func Classify(status int, body string) provider.ErrKind {
 	low := strings.ToLower(body)
 	switch {
+	case strings.Contains(low, "410004"):
+		return ErrBanned
+	case strings.Contains(low, "810002"):
+		return ErrSoftRate
+	case strings.Contains(low, "810000"):
+		return ErrHardCredit
 	case status == http.StatusUnauthorized || strings.Contains(low, "invalid token") || strings.Contains(low, "登录") && status == http.StatusUnauthorized:
 		return ErrSessionDead
 	case status == http.StatusForbidden:
@@ -145,6 +161,8 @@ func Classify(status int, body string) provider.ErrKind {
 		return ErrClient
 	case status == http.StatusTooManyRequests || strings.Contains(low, "rate limit"):
 		return ErrSoftRate
+	case status == http.StatusPaymentRequired:
+		return ErrHardCredit
 	case status >= 500:
 		return ErrServer
 	case status == http.StatusNotFound:
@@ -426,11 +444,15 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	deadline := time.Now().Add(retryWindow)
 	backoff := 500 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		if time.Now().After(deadline) {
-			// 重试窗口耗尽仍未恢复：返回中文软错 502，交由上层按服务异常处理，避免一直挂住请求。
-			log.Printf("autoclaw chat_stream uid=%s route=%s 忙窗重试窗口(%ds)耗尽，放弃", a.UID, route.routeID, retryWindow/time.Second)
-			return nil, http.StatusBadGateway,
-				[]byte("AutoClaw 忙窗持续未恢复（重试约 4 分钟后仍失败），请稍后再试。"), nil
+		// 双重上限：时间窗 + 尝试次数。任一到达即放弃，绝不长时间占着上游
+		// （封号事故根因，见常量处注释）。
+		if time.Now().After(deadline) || attempt > retryMaxAttempts {
+			log.Printf("autoclaw chat_stream uid=%s route=%s 忙窗重试放弃(attempt=%d, 窗口%ds)",
+				a.UID, route.routeID, attempt-1, retryWindow/time.Second)
+			// 429 而非 502：502 会被客户端当成"服务暂时故障"而继续重试，
+			// 429 语义明确（上游繁忙/限流），配合 Retry-After 让客户端退避。
+			return nil, http.StatusTooManyRequests,
+				[]byte("AutoClaw 上游繁忙，请稍后再试（勿频繁重试，以免账号被风控）。"), nil
 		}
 		reqURL := c.Base + ChatPath
 		headers := c.proxyHeaders(tok, route.routeID)

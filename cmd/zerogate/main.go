@@ -29,6 +29,7 @@ import (
 	"zerogate/internal/clientkey"
 	"zerogate/internal/config"
 	"zerogate/internal/intl"
+	"zerogate/internal/openaicompat"
 	"zerogate/internal/platform"
 	"zerogate/internal/pool"
 	"zerogate/internal/provider"
@@ -213,6 +214,30 @@ func main() {
 			},
 			// Atria 渠道使用静态 API Key，无需签到/keepalive，调度器仅供面板结构使用
 			staticModels: atria.StaticModels, runScheduler: false,
+		},
+		{
+			kind: provider.Copilot, name: "copilot", stateFile: "state-copilot.json",
+			load: func() ([]*auth.Auth, error) { return auth.LoadCopilotDir(cfg.AuthDir) },
+			newUpstream: func() provider.Upstream {
+				return openaicompat.New("http://127.0.0.1:4141")
+			},
+			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
+		},
+		{
+			kind: provider.Doubao, name: "doubao", stateFile: "state-doubao.json",
+			load: func() ([]*auth.Auth, error) { return auth.LoadDoubaoDir(cfg.AuthDir) },
+			newUpstream: func() provider.Upstream {
+				return openaicompat.New("http://127.0.0.1:7868")
+			},
+			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
+		},
+		{
+			kind: provider.GptGemini, name: "gptgemini", stateFile: "state-gptgemini.json",
+			load: func() ([]*auth.Auth, error) { return auth.LoadGptGeminiDir(cfg.AuthDir) },
+			newUpstream: func() provider.Upstream {
+				return openaicompat.New("http://127.0.0.1:8317")
+			},
+			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
 		},
 	}
 

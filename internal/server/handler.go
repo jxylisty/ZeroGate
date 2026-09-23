@@ -22,6 +22,7 @@ import (
 	"zerogate/internal/audit"
 	"zerogate/internal/auth"
 	"zerogate/internal/clientkey"
+	"zerogate/internal/limiter"
 	"zerogate/internal/pool"
 	"zerogate/internal/provider"
 	"zerogate/internal/usage"
@@ -75,6 +76,9 @@ type Config struct {
 
 	// ModelRedirects 模型别名映射。
 	ModelRedirects map[string][]string
+
+	// RateLimit 本地小时窗限速器（可空 = 不限速），每 (渠道, 账号) 300 req/h。
+	RateLimit *limiter.Limiter
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -97,6 +101,12 @@ type Handler struct {
 
 	rrMu     sync.Mutex                // 保护 bridgeRR
 	bridgeRR map[string]*atomic.Uint64 // 桥接渠道轮转计数（runtimeKind → 计数器）
+
+	// breakerMu 保护 breaker：渠道级熔断（runtimeKind → 熔断到期时间）。
+	// 整池不可用（全部封禁/冷却/停用）时置位，期间直接快速失败、不再转发上游 ——
+	// 防止客户端重试风暴把"账号已被封禁"反复打给上游而加深风控标记。
+	breakerMu sync.Mutex
+	breaker   map[string]time.Time
 
 	recordTokens func(kind, uid, model string, prompt, completion, cacheRead, cacheWrite int64)
 
@@ -164,6 +174,7 @@ func NewHandler(cfg Config) *Handler {
 		cfg:            cfg,
 		mux:            http.NewServeMux(),
 		sticky:         make(map[string]*stickyEntry),
+		breaker:        make(map[string]time.Time),
 		recordTokens:   cfg.RecordTokens,
 		clientKeys:     cfg.ClientKeys,
 		auditRec:       cfg.AuditRec,
@@ -341,6 +352,51 @@ func (h *Handler) stickyClear(rt *Runtime) {
 	h.stickyMu.Lock()
 	defer h.stickyMu.Unlock()
 	delete(h.sticky, h.stickyKey(rt.Kind))
+}
+
+// ---------------------------------------------------------------------------
+// 渠道级熔断（2026-09-23）
+//
+// 背景：客户端（ZCode / Trae 等）在请求失败后会自行重试，间隔可短至 8 秒。
+// 若某渠道整池都不可用（账号全部封禁/冷却/停用），daemon 仍会为每次重试
+// 向上一一转发，上游看到的是"凭证已失效却持续暴力请求" —— AutoClaw 两个
+// 账号即因此被判定风控封禁（410004）。
+//
+// 熔断语义：整池不可用时置位，冷却期内直接快速失败（不转发上游）；
+// 到期自动放行一次探测（半开），成功则清除、失败则重新置位。
+// ---------------------------------------------------------------------------
+
+// breakerCooldown 熔断保持时长：整池不可用后，多久内不再转发上游。
+const breakerCooldown = 60 * time.Second
+
+// breakerOpen 判断渠道是否处于熔断中（未到期 = 仍然熔断）。
+func (h *Handler) breakerOpen(kind provider.Kind) (bool, time.Duration) {
+	h.breakerMu.Lock()
+	defer h.breakerMu.Unlock()
+	until, ok := h.breaker[string(kind)]
+	if !ok {
+		return false, 0
+	}
+	if d := time.Until(until); d > 0 {
+		return true, d
+	}
+	// 已到期：清除记录，放行本次请求（半开探测）
+	delete(h.breaker, string(kind))
+	return false, 0
+}
+
+// breakerTrip 置位熔断（整池不可用时调用）。
+func (h *Handler) breakerTrip(kind provider.Kind) {
+	h.breakerMu.Lock()
+	defer h.breakerMu.Unlock()
+	h.breaker[string(kind)] = time.Now().Add(breakerCooldown)
+}
+
+// breakerReset 清除熔断（该渠道恢复成功时调用）。
+func (h *Handler) breakerReset(kind provider.Kind) {
+	h.breakerMu.Lock()
+	defer h.breakerMu.Unlock()
+	delete(h.breaker, string(kind))
 }
 
 type clientContextKeyType struct{}
@@ -599,6 +655,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	var lastErr error
 	var lastStatus int = http.StatusServiceUnavailable
+	var lastCandKind provider.Kind
+	totalRateLimited := 0
 
 	for _, cand := range candidates {
 		rt, targetModel, rerr := h.runtimeForModel(cand)
@@ -613,8 +671,29 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// 渠道级熔断：整池不可用（全部封禁/冷却/停用）时不转发上游 ——
+		// 客户端重试风暴下继续打上游只会加深风控标记。冷却期内快速失败。
+		// 记 lastCandKind：熔断路径也要在审计里留下渠道名，否则排查时只看到空渠道。
+		if open, wait := h.breakerOpen(rt.Kind); open {
+			lastErr = fmt.Errorf("%s 渠道熔断中（账号池整体不可用，%.0fs 后自动重试）", rt.Kind, wait.Seconds())
+			lastStatus = http.StatusServiceUnavailable
+			lastCandKind = rt.Kind
+			log.Printf("channel breaker open platform=%s wait=%.0fs (skip upstream)", rt.Kind, wait.Seconds())
+			continue
+		}
+		// 整池健康数 = 0：无需尝试，直接置位熔断并快速失败
+		if healthy, total := rt.Pool.HealthyCount(); total > 0 && healthy == 0 {
+			h.breakerTrip(rt.Kind)
+			lastErr = fmt.Errorf("%s 渠道账号池整体不可用（%d 个账号全部禁用/冷却），已暂停转发", rt.Kind, total)
+			lastStatus = http.StatusServiceUnavailable
+			lastCandKind = rt.Kind
+			log.Printf("channel breaker trip platform=%s (%d/%d healthy) — 暂停转发 %v", rt.Kind, healthy, total, breakerCooldown)
+			continue
+		}
+
 		tried := map[string]bool{}
 		candSuccess := false
+		rateLimited := 0 // 被本地限速跳过的账号数
 
 		for i := 0; i < h.cfg.MaxRotate; i++ {
 			acct := h.pickWithSticky(rt)
@@ -628,6 +707,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				if acct == nil {
 					break
 				}
+			}
+			// 本地小时窗限速（GLM_proxy 300 req/h）：超限号跳过不报错，
+			// 记入 tried 驱动轮换到下一号；全池超限时循环结束走 429。
+			if h.cfg.RateLimit != nil && !h.cfg.RateLimit.Allow(rt.Kind.String(), acct.UID) {
+				log.Printf("local rate limit skip platform=%s uid=%s", rt.Kind, acct.UID)
+				if !tried[acct.UID] {
+					tried[acct.UID] = true
+					rateLimited++
+				}
+				h.stickyClear(rt)
+				continue
 			}
 			tried[acct.UID] = true
 			if acct.NeedsRefresh(h.cfg.RefreshSkew) {
@@ -668,14 +758,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
 				case provider.ErrSessionDead:
 					rt.Pool.Disable(acct.UID, "session dead")
+				case provider.ErrBanned:
+					// 410004 等封号信号：24h 长冷却，累计 3 次自动禁用
+					rt.Pool.Ban(acct.UID, "上游封禁（410004）")
 				case provider.ErrNotFound:
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
 				default:
 					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				}
-				// 限流、排队等待(如 Qoder 10605)、余额不足、会话失效、模型未找到或服务端异常时，继续重试账号池其他账号或备选渠道
+				// 限流、排队等待(如 Qoder 10605)、余额不足、会话失效、封禁、模型未找到或服务端异常时，继续重试账号池其他账号或备选渠道
 				isRateLimit := kind == provider.ErrSoftRate || status == http.StatusTooManyRequests || strings.Contains(string(respBody), "10605")
 				if isRateLimit || kind == provider.ErrHardCredit || kind == provider.ErrSessionDead ||
+					kind == provider.ErrBanned ||
 					kind == provider.ErrNotFound || status == http.StatusPaymentRequired || status >= 500 {
 					lastErr = fmt.Errorf("upstream %s(%s) status %d: %s", rt.Kind, acct.UID, status, string(respBody))
 					if isRateLimit {
@@ -717,8 +811,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 请求成功！
 			candSuccess = true
 			defer rc.Close()
+			if h.cfg.RateLimit != nil {
+				h.cfg.RateLimit.Hit(rt.Kind.String(), acct.UID)
+			}
 			rt.Pool.NoteSuccess(acct.UID)
 			h.stickySuccess(rt)
+			h.breakerReset(rt.Kind) // 渠道恢复可用：清除熔断
 			kind, uid := rt.Kind.String(), acct.UID
 
 			if peek.Stream {
@@ -853,6 +951,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if candSuccess {
 			return
 		}
+		totalRateLimited += rateLimited
+		lastCandKind = rt.Kind
 		log.Printf("model candidate %q exhausted, trying next candidate in fallback chain...", cand)
 	}
 
@@ -860,11 +960,19 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}
+	if totalRateLimited > 0 {
+		// 全部候选耗尽且发生过本地限速跳号：按 429 返回，Retry-After 估到小时窗重置
+		lastStatus = http.StatusTooManyRequests
+		msg = fmt.Sprintf("%s（本地限速跳过 %d 次）", msg, totalRateLimited)
+	}
 	if h.auditRec != nil {
+		// Channel/UID 一并记录：失败请求此前不落渠道，排查"是谁在打、打到哪个渠道"
+		// 时只能翻 app.log（2026-09-23 AutoClaw 封号排查即卡在这里）。
 		h.auditRec.Record(audit.Entry{
 			Client:     caller.Name,
 			KeySnippet: keySnippet,
 			ModelReq:   requestedModel,
+			Channel:    string(lastCandKind),
 			DurationMs: time.Since(startTime).Milliseconds(),
 			Status:     lastStatus,
 			Error:      msg,
@@ -872,7 +980,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if lastStatus == http.StatusTooManyRequests {
-		w.Header().Set("Retry-After", "2")
+		if totalRateLimited > 0 && h.cfg.RateLimit != nil {
+			if d := h.cfg.RateLimit.RetryAfter(string(lastCandKind), ""); d > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(int((d+time.Second-1)/time.Second)))
+			}
+		} else {
+			w.Header().Set("Retry-After", "2")
+		}
 	}
 	writeOpenAIError(w, lastStatus, "no_healthy_account", msg)
 }

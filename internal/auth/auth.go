@@ -441,3 +441,48 @@ func LoadAtriaDir(dir string) ([]*Auth, error) {
 	}
 	return out, nil
 }
+
+// LoadCopilotDir 扫描 copilot.json（白嫖服务 127.0.0.1:4141）。
+func LoadCopilotDir(dir string) ([]*Auth, error) {
+	f := filepath.Join(dir, "copilot.json")
+	raw, err := os.ReadFile(f)
+	if err != nil {
+		return nil, nil // 缺文件不算错，启动时不暴露渠道
+	}
+	a, err := Parse(raw)
+	if err != nil {
+		return nil, nil
+	}
+	a.Kind, a.FilePath = "copilot", f
+	return []*Auth{a}, nil
+}
+
+// LoadDoubaoDir 扫描 doubao.json（白嫖服务 127.0.0.1:7868）。
+func LoadDoubaoDir(dir string) ([]*Auth, error) {
+	f := filepath.Join(dir, "doubao.json")
+	raw, err := os.ReadFile(f)
+	if err != nil {
+		return nil, nil
+	}
+	a, err := Parse(raw)
+	if err != nil {
+		return nil, nil
+	}
+	a.Kind, a.FilePath = "doubao", f
+	return []*Auth{a}, nil
+}
+
+// LoadGptGeminiDir 扫描 gptgemini.json（白嫖服务 127.0.0.1:8317）。
+func LoadGptGeminiDir(dir string) ([]*Auth, error) {
+	f := filepath.Join(dir, "gptgemini.json")
+	raw, err := os.ReadFile(f)
+	if err != nil {
+		return nil, nil
+	}
+	a, err := Parse(raw)
+	if err != nil {
+		return nil, nil
+	}
+	a.Kind, a.FilePath = "gptgemini", f
+	return []*Auth{a}, nil
+}

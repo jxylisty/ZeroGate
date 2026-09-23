@@ -81,7 +81,12 @@ ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder /
    豆包桥 / chatui / Cloudflare 隧道 / CLIProxyAPI / copilot2api 已从注册表 Run 里的 .bat 收编进 `internal/bridge`（`Instance.Autostart=true`），daemon 启动时 `App.StartAutostartBridges` 隐藏窗口统一拉起。旧自启项已删除，备份在 `data/autostart-backup/HKCU-Run-backup.reg`（可回滚）。**以后新增常驻服务优先挂到 bridge 编排，别再加注册表 .bat。**
 9. **子进程必须隐藏窗口**：
    一切 `exec.Command` 拉起的控制台子进程（服务 / tasklist / schtasks / node solver / zcode-proxy CLI）必须走 `platform.HideWindow`（`CREATE_NO_WINDOW`），否则面板刷新探测会闪黑框。
-10. **托盘图标显示**：
+10. **失败要快速返回 + 渠道级熔断（2026-09-23 AutoClaw 封号事故铁律，详见 lessons/09）**：
+    - **不可恢复错误（410004 封禁 / 401 凭证失效）必须立即中断**，绝不长时间重试 —— 上游把"持续重试"判定为恶意请求（`9cf661f` 把重试上限改成 270s 时间窗，即事故放大器）。
+    - **渠道级熔断优先于账号级轮换**：整池健康数为 0 时 `Handler` 自动置位 60s 熔断，期间不转发上游（`breakerOpen/Trip/Reset` + `Pool.HealthyCount`）。
+    - 失败返回用 **429/503 + 明确文案**，不要用会被客户端误读为"稍后能好"的 502（客户端会自动重试形成风暴）。
+    - **审计必须覆盖失败路径并带 `Channel`**，否则事后查不出是谁在打哪个渠道。
+11. **托盘图标显示**：
     - **托盘不承载进程生命（2026-09-23 修复见教训 08）**：`systray.Run` 返回 ≠ 退出进程。main 里是监督循环：托盘消息循环意外结束（外部发 WM_CLOSE/WM_QUIT、Explorer 异常等）→ 记日志 → 3 秒后重建托盘，网关服务不受影响。唯一退出路径 = 托盘菜单「退出」（AskYesNo 后 os.Exit）或 fatal()。**别再让 main() 在 systray.Run 后直接结束。**
     - `platform.PromoteTrayIcon()` 启动时把图标从 Win11 折叠区提升到常驻区（写 `HKCU\Control Panel\NotifyIconSettings`）。
     - systray 菜单图标必须用 ICO（`systray.miniICO`）——Windows `LoadImage(IMAGE_ICON)` 不认 PNG，喂 PNG 会静默失败。

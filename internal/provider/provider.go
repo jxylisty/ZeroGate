@@ -22,6 +22,9 @@ const (
 	ZCode     Kind = "zcode"      // 智谱 ZCode (Z.AI) https://zcode.z.ai
 	AutoClaw  Kind = "autoclaw"   // AutoClaw（Z.ai 官方代理通道）
 	Atria     Kind = "atria"      // Atria Dawn Preview（上海人工智能实验室）https://api.atria-asi.ai
+	Copilot   Kind = "copilot"    // 本机白嫖服务 127.0.0.1:4141（OpenAI 兼容）
+	Doubao    Kind = "doubao"     // 本机白嫖服务 127.0.0.1:7868（OpenAI 兼容）
+	GptGemini Kind = "gptgemini"  // 本机白嫖服务 127.0.0.1:8317（OpenAI 兼容）
 )
 
 func (k Kind) String() string { return string(k) }
@@ -37,6 +40,7 @@ const (
 	ErrNotFound                   // 404 上游偶发 → 短冷却不累计 errCount
 	ErrServer                     // 5xx 上游故障
 	ErrClient                     // 其他 4xx / 业务错误
+	ErrBanned                     // 封禁（如 410004）→ 24h 长冷却，重复 3 次转禁用
 )
 
 func (k ErrKind) String() string {
@@ -51,6 +55,8 @@ func (k ErrKind) String() string {
 		return "not_found"
 	case ErrServer:
 		return "server"
+	case ErrBanned:
+		return "banned"
 	case ErrClient:
 		return "client"
 	default:

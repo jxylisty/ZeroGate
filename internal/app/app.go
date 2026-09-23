@@ -852,6 +852,30 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
+	if rt := a.runtime(provider.Copilot); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadCopilotDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload copilot accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.Doubao); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadDoubaoDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload doubao accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.GptGemini); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadGptGeminiDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload gptgemini accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
 }
 
 // CheckinAccount 单个账号立即签到。
