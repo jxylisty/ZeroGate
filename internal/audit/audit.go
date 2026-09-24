@@ -45,6 +45,7 @@ type Recorder struct {
 	entries []Entry
 	in      chan Entry
 	closed  chan struct{}
+	writerDone chan struct{}
 
 	dailyFP    string             // audit_daily.json：按日聚合，统计接口的事实源
 	daily      map[string]*DayAgg // day → 聚合
@@ -59,19 +60,19 @@ func New(fp string, maxMem int) *Recorder {
 		maxMem = 500
 	}
 	r := &Recorder{
-		fp:      fp,
-		maxMem:  maxMem,
-		entries: make([]Entry, 0, maxMem),
-		in:      make(chan Entry, 256),
-		closed:  make(chan struct{}),
-		daily:   make(map[string]*DayAgg),
+		fp:         fp,
+		maxMem:     maxMem,
+		entries:    make([]Entry, 0, maxMem),
+		in:         make(chan Entry, 256),
+		closed:     make(chan struct{}),
+		writerDone: make(chan struct{}),
+		daily:      make(map[string]*DayAgg),
 	}
 	if fp != "" {
 		r.dailyFP = filepath.Join(filepath.Dir(fp), "audit_daily.json")
 	}
-	r.loadRecent()
 	r.loadDaily()
-	r.backfillDimensions()
+	r.initFromDisk()
 	go r.writer()
 	go r.flusher()
 	return r
@@ -80,19 +81,22 @@ func New(fp string, maxMem int) *Recorder {
 // Close 优雅关闭写入协程，并同步落盘最后一次按日聚合。
 func (r *Recorder) Close() {
 	r.closedOnce.Do(func() { close(r.closed) })
+	<-r.writerDone
 	r.saveDaily()
 }
 
-func (r *Recorder) loadRecent() {
+// initFromDisk 单次读取流水文件，同时完成内存窗口载入与维度回填（避免二次读盘膨胀内存）。
+func (r *Recorder) initFromDisk() {
 	if r.fp == "" {
 		return
 	}
 	raw, err := os.ReadFile(r.fp)
-	if err != nil {
+	if err != nil || len(raw) == 0 {
 		return
 	}
 	lines := splitLines(raw)
-	// 只加载最后 maxMem 行
+
+	// 1. 最近流水载入内存（只取最后 maxMem 行）
 	start := 0
 	if len(lines) > r.maxMem {
 		start = len(lines) - r.maxMem
@@ -106,6 +110,32 @@ func (r *Recorder) loadRecent() {
 		if err := json.Unmarshal(line, &e); err == nil {
 			r.entries = append(r.entries, e)
 		}
+	}
+
+	// 2. 检查是否有缺失维度的日聚合需要回填
+	filled := 0
+	r.mu.Lock()
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		var e Entry
+		if json.Unmarshal(line, &e) != nil || len(e.Time) < 10 {
+			continue
+		}
+		agg := r.daily[e.Time[:10]]
+		if agg == nil {
+			continue
+		}
+		if n := agg.fillDims(&e); n > 0 {
+			filled += n
+			r.dailyDirty = true
+		}
+	}
+	r.mu.Unlock()
+	if filled > 0 {
+		log.Printf("[audit] 已从流水回填 %d 条维度明细到日聚合", filled)
+		go r.saveDaily()
 	}
 }
 
@@ -279,45 +309,7 @@ func (r *Recorder) recordDailyLocked(e *Entry) {
 	r.dailyDirty = true
 }
 
-// backfillDimensions 启动时从全量 JSONL 流水回填日聚合缺失的维度明细。
-// 背景：日聚合机制上线前的旧数据只有总量标量（或早期版本只落了部分维度），
-// 导致 TOP 模型/客户端/账号榜只剩机制上线当天起的数据。
-// 这里只补维度 map（channels/models/clients/accounts），不碰标量计数，避免双计；
-// 回填后标记 dirty 由 flusher 统一落盘。
-func (r *Recorder) backfillDimensions() {
-	if r.fp == "" {
-		return
-	}
-	raw, err := os.ReadFile(r.fp)
-	if err != nil || len(raw) == 0 {
-		return
-	}
-	filled := 0
-	r.mu.Lock()
-	for _, line := range splitLines(raw) {
-		if len(line) == 0 {
-			continue
-		}
-		var e Entry
-		if json.Unmarshal(line, &e) != nil || len(e.Time) < 10 {
-			continue
-		}
-		agg := r.daily[e.Time[:10]]
-		if agg == nil {
-			// 该日完全无聚合（历史太久被 30 天裁剪）：跳过，避免凭空造出只含维度的残缺日
-			continue
-		}
-		if n := agg.fillDims(&e); n > 0 {
-			filled += n
-			r.dailyDirty = true
-		}
-	}
-	r.mu.Unlock()
-	if filled > 0 {
-		log.Printf("[audit] 已从流水回填 %d 条维度明细到日聚合", filled)
-		go r.saveDaily()
-	}
-}
+
 
 // loadDaily 启动时恢复历史日聚合。
 func (r *Recorder) loadDaily() {
@@ -408,30 +400,70 @@ func (r *Recorder) flusher() {
 	}
 }
 
+const maxAuditFileSize = 20 * 1024 * 1024 // 20MB 单文件上限
+
 func (r *Recorder) writer() {
 	var f *os.File
-	if r.fp != "" {
+	var currentSize int64
+
+	openFile := func() {
+		if r.fp == "" {
+			return
+		}
 		_ = os.MkdirAll(filepath.Dir(r.fp), 0o755)
-		f, _ = os.OpenFile(r.fp, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		var err error
+		f, err = os.OpenFile(r.fp, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err == nil {
+			if fi, err := f.Stat(); err == nil {
+				currentSize = fi.Size()
+			}
+		}
 	}
+	openFile()
 	defer func() {
 		if f != nil {
 			_ = f.Close()
 		}
+		close(r.writerDone)
 	}()
+
+	writeEntry := func(e Entry) {
+		if f == nil {
+			return
+		}
+		data, err := json.Marshal(e)
+		if err != nil {
+			return
+		}
+		data = append(data, '\n')
+		n, err := f.Write(data)
+		if err == nil {
+			currentSize += int64(n)
+			if currentSize >= maxAuditFileSize {
+				_ = f.Close()
+				f = nil
+				bak := r.fp + ".1"
+				_ = os.Remove(bak)
+				_ = os.Rename(r.fp, bak)
+				openFile()
+			}
+		}
+	}
 
 	for {
 		select {
 		case <-r.closed:
-			return
-		case e := <-r.in:
-			if f != nil {
-				data, err := json.Marshal(e)
-				if err == nil {
-					data = append(data, '\n')
-					_, _ = f.Write(data)
+			// 退出时 drain 剩余未落盘的记录，杜绝停机丢日志
+			for {
+				select {
+				case e := <-r.in:
+					writeEntry(e)
+				default:
+					return
 				}
 			}
+		case e := <-r.in:
+			writeEntry(e)
 		}
 	}
 }

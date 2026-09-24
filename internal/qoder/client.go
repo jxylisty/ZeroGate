@@ -427,9 +427,119 @@ func normalizeExpireMs(ts int64) int64 {
 	return ts
 }
 
-// DailyCheckin Qoder 当前无签到活动：直接返回已签到语义错误，避免调用上游。
+// DailyCheckin Qoder 每日签到（campaigns 活动流程，每日 100 Credits）。
+// 链路照抄 qoder2api（桌面端抓包还原）：GET campaigns 找 CLAIMABLE 的
+// CLAIM_BENEFIT 活动 → POST {id}/claim 空 body 领取。鉴权仅需 dt- Bearer +
+// cosy-clienttype: 10，无需 COSY 签名。claim 幂等：已领返回 replayed=true。
+// 已领取时返回"已签到"错误（scheduler isAlready 识别为成功状态）。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
-	return fmt.Errorf("qoder 暂无签到活动")
+	dt := a.JWT()
+	if dt == "" {
+		return fmt.Errorf("no dt- available")
+	}
+	headers := func(req *http.Request) {
+		billingHeaders(req, dt)
+		req.Header.Set("accept-language", "zh-CN")
+		req.Header.Set("user-agent", "Qoder")
+		req.Header.Set("cosy-clienttype", "10")
+	}
+
+	// Step 1: 查询活动列表
+	req, err := http.NewRequest(http.MethodGet, c.base()+EpCampaigns, nil)
+	if err != nil {
+		return err
+	}
+	headers(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	raw, err := readBody(resp)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return c.classifyError(resp.StatusCode, string(raw))
+	}
+	var list struct {
+		Campaigns []struct {
+			CampaignID  string `json:"campaignId"`
+			CampaignKey string `json:"campaignKey"`
+			ActionType  string `json:"actionType"`
+			ClaimStatus string `json:"claimStatus"`
+		} `json:"campaigns"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return fmt.Errorf("campaigns parse: %w", err)
+	}
+	target := ""
+	targetKey := ""
+	already := false
+	for _, cp := range list.Campaigns {
+		if cp.ActionType != "CLAIM_BENEFIT" {
+			continue
+		}
+		switch cp.ClaimStatus {
+		case "CLAIMABLE":
+			if target == "" {
+				target, targetKey = cp.CampaignID, cp.CampaignKey
+			}
+		case "CLAIMED":
+			already = true
+		}
+	}
+	if target == "" {
+		if already {
+			log.Printf("qoder checkin already uid=%s", a.UID)
+			return fmt.Errorf("已签到")
+		}
+		return fmt.Errorf("无可用签到活动")
+	}
+
+	// Step 2: 领取（空 body，抓包确认；POST 需带 origin）
+	claimPath := fmt.Sprintf(EpCampaignClaim, target)
+	req, err = http.NewRequest(http.MethodPost, c.base()+claimPath, nil)
+	if err != nil {
+		return err
+	}
+	headers(req)
+	req.Header.Set("origin", "https://openapi.qoder.com.cn")
+	resp, err = c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	raw, err = readBody(resp)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return c.classifyError(resp.StatusCode, string(raw))
+	}
+	var claim struct {
+		Status   string `json:"status"`
+		Replayed bool   `json:"replayed"`
+		Benefit  *struct {
+			Kind   string `json:"kind"`
+			Amount int    `json:"amount"`
+		} `json:"benefit"`
+	}
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		return fmt.Errorf("claim parse: %w", err)
+	}
+	switch {
+	case claim.Status == "CLAIMED" && !claim.Replayed:
+		amount := 0
+		if claim.Benefit != nil {
+			amount = claim.Benefit.Amount
+		}
+		log.Printf("qoder checkin claimed uid=%s campaign=%s amount=%d", a.UID, targetKey, amount)
+		return nil
+	case claim.Status == "CLAIMED" && claim.Replayed:
+		log.Printf("qoder checkin already(replayed) uid=%s", a.UID)
+		return fmt.Errorf("已签到")
+	default:
+		return fmt.Errorf("claim status=%s", claim.Status)
+	}
 }
 
 // Classify 实现 provider.Upstream。

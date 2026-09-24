@@ -2,8 +2,13 @@ package qoder
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
+	"zerogate/internal/auth"
 	"zerogate/internal/provider"
 )
 
@@ -132,6 +137,144 @@ func TestQoder10605ClassifyAndParse(t *testing.T) {
 	kind := Classify(403, string(sample10605))
 	if kind != provider.ErrSoftRate {
 		t.Fatalf("Classify 10605 failed: got %v, want ErrSoftRate", kind)
+	}
+}
+
+// campaignsResp 构造 GET campaigns 的响应体。
+func campaignsResp(items ...map[string]string) string {
+	cps := make([]string, 0, len(items))
+	for _, it := range items {
+		b, _ := json.Marshal(map[string]string{
+			"campaignId":  it["id"],
+			"campaignKey": it["key"],
+			"actionType":  it["type"],
+			"claimStatus": it["status"],
+		})
+		cps = append(cps, string(b))
+	}
+	return `{"campaigns":[` + strings.Join(cps, ",") + `]}`
+}
+
+func checkinTestAuth(t *testing.T) *auth.Auth {
+	t.Helper()
+	a := &auth.Auth{UID: "u-test", AccessToken: "dt-token-xyz", ExpiresAt: 99999999999}
+	if a.JWT() != "dt-token-xyz" {
+		t.Fatal("JWT snapshot mismatch")
+	}
+	return a
+}
+
+func TestDailyCheckinClaimsWhenClaimable(t *testing.T) {
+	var getCalls, postCalls atomic.Int32
+	var claimedPath atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 鉴权头断言：dt- Bearer + 客户端类型
+		if got := r.Header.Get("Authorization"); got != "Bearer dt-token-xyz" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("cosy-clienttype"); got != "10" {
+			t.Errorf("cosy-clienttype = %q", got)
+		}
+		if got := r.Header.Get("user-agent"); got != "Qoder" {
+			t.Errorf("user-agent = %q", got)
+		}
+		switch r.URL.Path {
+		case EpCampaigns:
+			getCalls.Add(1)
+			if r.Method != http.MethodGet {
+				t.Errorf("campaigns method = %s", r.Method)
+			}
+			w.Write([]byte(campaignsResp(map[string]string{
+				"id": "camp-1", "key": "daily-checkin", "type": "CLAIM_BENEFIT", "status": "CLAIMABLE",
+			})))
+		case "/sash/api/v1/me/campaigns/camp-1/claim":
+			postCalls.Add(1)
+			if r.Method != http.MethodPost {
+				t.Errorf("claim method = %s", r.Method)
+			}
+			if got := r.Header.Get("origin"); got != "https://openapi.qoder.com.cn" {
+				t.Errorf("claim origin = %q", got)
+			}
+			claimedPath.Store(r.URL.Path)
+			w.Write([]byte(`{"status":"CLAIMED","replayed":false,"benefit":{"kind":"CREDIT","amount":100}}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithBase(srv.URL, srv.URL)
+	err := c.DailyCheckin(checkinTestAuth(t))
+	if err != nil {
+		t.Fatalf("DailyCheckin: %v", err)
+	}
+	if got := claimedPath.Load(); got != "/sash/api/v1/me/campaigns/camp-1/claim" {
+		t.Errorf("claim path = %v", got)
+	}
+	if getCalls.Load() != 1 || postCalls.Load() != 1 {
+		t.Errorf("calls: get=%d post=%d", getCalls.Load(), postCalls.Load())
+	}
+}
+
+func TestDailyCheckinAlreadyClaimedInList(t *testing.T) {
+	var postCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == EpCampaigns {
+			w.Write([]byte(campaignsResp(map[string]string{
+				"id": "camp-1", "key": "daily-checkin", "type": "CLAIM_BENEFIT", "status": "CLAIMED",
+			})))
+			return
+		}
+		postCalls.Add(1) // 不应走到 claim
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewWithBase(srv.URL, srv.URL)
+	err := c.DailyCheckin(checkinTestAuth(t))
+	if err == nil || !strings.Contains(err.Error(), "已签到") {
+		t.Fatalf("want 已签到, got %v", err)
+	}
+	if postCalls.Load() != 0 {
+		t.Errorf("claim should not be called, got %d", postCalls.Load())
+	}
+}
+
+func TestDailyCheckinReplayedIsAlready(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case EpCampaigns:
+			w.Write([]byte(campaignsResp(map[string]string{
+				"id": "camp-1", "key": "daily-checkin", "type": "CLAIM_BENEFIT", "status": "CLAIMABLE",
+			})))
+		case "/sash/api/v1/me/campaigns/camp-1/claim":
+			// 服务端幂等：重复领取返回 replayed=true
+			w.Write([]byte(`{"status":"CLAIMED","replayed":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithBase(srv.URL, srv.URL)
+	err := c.DailyCheckin(checkinTestAuth(t))
+	if err == nil || !strings.Contains(err.Error(), "已签到") {
+		t.Fatalf("want 已签到, got %v", err)
+	}
+}
+
+func TestDailyCheckinNoCampaign(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 只有非 CLAIM_BENEFIT 的活动
+		w.Write([]byte(campaignsResp(map[string]string{
+			"id": "camp-2", "key": "growth-task", "type": "FINISH_TASK", "status": "UNFINISHED",
+		})))
+	}))
+	defer srv.Close()
+
+	c := NewWithBase(srv.URL, srv.URL)
+	err := c.DailyCheckin(checkinTestAuth(t))
+	if err == nil || !strings.Contains(err.Error(), "无可用签到活动") {
+		t.Fatalf("want 无可用签到活动, got %v", err)
 	}
 }
 

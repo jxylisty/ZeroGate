@@ -442,9 +442,11 @@ func LoadAtriaDir(dir string) ([]*Auth, error) {
 	return out, nil
 }
 
-// LoadCopilotDir 扫描 copilot.json（白嫖服务 127.0.0.1:4141）。
-func LoadCopilotDir(dir string) ([]*Auth, error) {
-	f := filepath.Join(dir, "copilot.json")
+// LoadOpenAICompatDir 读取单文件 API-key 型渠道凭证（OpenAI 兼容云端渠道通用）。
+// 文件名 = <name>.json，格式 {apiKey, uid, nickname}；缺文件/解析失败返回
+// (nil, nil)，启动时静默不暴露渠道（与本地白嫖渠道同一约定）。
+func LoadOpenAICompatDir(dir, name string) ([]*Auth, error) {
+	f := filepath.Join(dir, name+".json")
 	raw, err := os.ReadFile(f)
 	if err != nil {
 		return nil, nil // 缺文件不算错，启动时不暴露渠道
@@ -453,28 +455,29 @@ func LoadCopilotDir(dir string) ([]*Auth, error) {
 	if err != nil {
 		return nil, nil
 	}
-	a.Kind, a.FilePath = "copilot", f
+	a.Kind, a.FilePath = name, f
+	a.Mode = "direct" // 直连云端 API，面板分区用
 	return []*Auth{a}, nil
+}
+
+// LoadCopilotDir 扫描 copilot.json（白嫖服务 127.0.0.1:4141）。
+func LoadCopilotDir(dir string) ([]*Auth, error) {
+	return loadLocalCompatDir(dir, "copilot")
 }
 
 // LoadDoubaoDir 扫描 doubao.json（白嫖服务 127.0.0.1:7868）。
 func LoadDoubaoDir(dir string) ([]*Auth, error) {
-	f := filepath.Join(dir, "doubao.json")
-	raw, err := os.ReadFile(f)
-	if err != nil {
-		return nil, nil
-	}
-	a, err := Parse(raw)
-	if err != nil {
-		return nil, nil
-	}
-	a.Kind, a.FilePath = "doubao", f
-	return []*Auth{a}, nil
+	return loadLocalCompatDir(dir, "doubao")
 }
 
 // LoadGptGeminiDir 扫描 gptgemini.json（白嫖服务 127.0.0.1:8317）。
 func LoadGptGeminiDir(dir string) ([]*Auth, error) {
-	f := filepath.Join(dir, "gptgemini.json")
+	return loadLocalCompatDir(dir, "gptgemini")
+}
+
+// loadLocalCompatDir 本地桥接服务单文件加载（无鉴权直连，Mode 不标 direct）。
+func loadLocalCompatDir(dir, name string) ([]*Auth, error) {
+	f := filepath.Join(dir, name+".json")
 	raw, err := os.ReadFile(f)
 	if err != nil {
 		return nil, nil
@@ -483,6 +486,6 @@ func LoadGptGeminiDir(dir string) ([]*Auth, error) {
 	if err != nil {
 		return nil, nil
 	}
-	a.Kind, a.FilePath = "gptgemini", f
+	a.Kind, a.FilePath = name, f
 	return []*Auth{a}, nil
 }

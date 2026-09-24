@@ -209,3 +209,34 @@ func TestBackfillDimensionsFromJSONL(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditShutdownDrainsBuffer(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "requests.jsonl")
+	r := New(fp, 100)
+	now := time.Now()
+
+	// 快速写入一批请求并立即 Close
+	const n = 30
+	for i := 0; i < n; i++ {
+		r.Record(newTestEntry(now, "channel", "u1", "m1", "client", 10, 200))
+	}
+	r.Close()
+
+	// 验证所有日志均已落盘
+	raw, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("read requests.jsonl: %v", err)
+	}
+	lines := splitLines(raw)
+	validLines := 0
+	for _, l := range lines {
+		if len(l) > 0 {
+			validLines++
+		}
+	}
+	if validLines != n {
+		t.Fatalf("want %d lines drained to disk, got %d", n, validLines)
+	}
+}
+

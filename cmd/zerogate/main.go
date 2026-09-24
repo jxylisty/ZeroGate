@@ -106,6 +106,33 @@ func main() {
 	}
 	upTimeout := time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 
+	// firstAuth 取 Load*Dir 结果的首个账号（供构造 upstream 时读 key）。
+	firstAuth := func(auths []*auth.Auth, err error) *auth.Auth {
+		if err != nil || len(auths) == 0 {
+			return nil
+		}
+		return auths[0]
+	}
+
+	// glmFlashModels 智谱免费 Flash 家族（永久免费循环层；4.7 优先，降级到 4.5/4）。
+	glmFlashModels := func() []provider.ModelInfo {
+		return []provider.ModelInfo{
+			{ID: "glm-4.7-flash", Name: "GLM-4.7 Flash"},
+			{ID: "glm-4.5-flash", Name: "GLM-4.5 Flash"},
+			{ID: "glm-4-flash", Name: "GLM-4 Flash"},
+		}
+	}
+
+	// groqModels Groq 免费层主力模型（2026-09-24 实测目录：Llama 系已下架，
+	// 当前聊天主力 = GPT-OSS 120B/20B + Qwen3.8-27B）。
+	groqModels := func() []provider.ModelInfo {
+		return []provider.ModelInfo{
+			{ID: "openai/gpt-oss-120b", Name: "GPT OSS 120B"},
+			{ID: "openai/gpt-oss-20b", Name: "GPT OSS 20B"},
+			{ID: "qwen/qwen3.8-27b", Name: "Qwen3.8 27B"},
+		}
+	}
+
 	type channelSpec struct {
 		kind         provider.Kind
 		name         string // 调度器/通知用的渠道名
@@ -152,8 +179,9 @@ func main() {
 				u.HTTP.Timeout = upTimeout
 				return u
 			},
-			// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）
-			staticModels: qoder.StaticModels, runScheduler: true,
+			// Qoder 每日签到走 campaigns 活动（每日 100 Credits，10:00 刷新窗口），
+			// 与其他渠道共用全局签到时间窗
+			checkin: true, staticModels: qoder.StaticModels, runScheduler: true,
 		},
 		{
 			kind: provider.CodeBuddy, name: "codebuddy", stateFile: "state-codebuddy.json",
@@ -238,6 +266,29 @@ func main() {
 				return openaicompat.New("http://127.0.0.1:8317")
 			},
 			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
+		},
+		{
+			kind: provider.GlmFlash, name: "glmflash", stateFile: "state-glmflash.json",
+			load: func() ([]*auth.Auth, error) { return auth.LoadOpenAICompatDir(cfg.AuthDir, "glmflash") },
+			newUpstream: func() provider.Upstream {
+				// 智谱开放平台：Bearer 鉴权 + /v4 路径（非标准 /v1）
+				if a := firstAuth(auth.LoadOpenAICompatDir(cfg.AuthDir, "glmflash")); a != nil {
+					return openaicompat.NewWithKey("https://open.bigmodel.cn/api/paas/v4", a.AccessToken, "/chat/completions")
+				}
+				return openaicompat.NewWithKey("https://open.bigmodel.cn/api/paas/v4", "", "/chat/completions")
+			},
+			checkin:      false, staticModels: glmFlashModels, runScheduler: false,
+		},
+		{
+			kind: provider.Groq, name: "groq", stateFile: "state-groq.json",
+			load: func() ([]*auth.Auth, error) { return auth.LoadOpenAICompatDir(cfg.AuthDir, "groq") },
+			newUpstream: func() provider.Upstream {
+				if a := firstAuth(auth.LoadOpenAICompatDir(cfg.AuthDir, "groq")); a != nil {
+					return openaicompat.NewWithKey("https://api.groq.com/openai/v1", a.AccessToken, "/chat/completions")
+			}
+			return openaicompat.NewWithKey("https://api.groq.com/openai/v1", "", "/chat/completions")
+			},
+			checkin:      false, staticModels: groqModels, runScheduler: false,
 		},
 	}
 

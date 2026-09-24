@@ -250,3 +250,32 @@ func TestPlaceholderNeverPicked(t *testing.T) {
 		t.Fatalf("valid account should be picked after Add, got %+v", got)
 	}
 }
+
+func TestConcurrentCooldownAndPick(t *testing.T) {
+	dir := t.TempDir()
+	stateFp := filepath.Join(dir, "state.json")
+	p := New(stateFp)
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Add(&auth.Auth{UID: "u2"})
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			p.Cooldown("u1", CoolSoft, 50*time.Millisecond, "rate limit")
+			time.Sleep(time.Millisecond)
+		}
+		close(done)
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			// Pick should never deadlock or panic
+			_ = p.Pick()
+			time.Sleep(500 * time.Microsecond)
+		}
+	}
+}
+

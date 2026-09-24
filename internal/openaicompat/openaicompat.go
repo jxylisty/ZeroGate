@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,21 +14,46 @@ import (
 
 	"zerogate/internal/auth"
 	"zerogate/internal/provider"
+	"zerogate/internal/upstream"
 )
 
 // Client 通用 OpenAI 兼容客户端。
 type Client struct {
 	BaseURL string
 	ApiKey  string
+	// ChatPath 聊天端点路径，缺省 /v1/chat/completions。
+	// 云端渠道路径各异：智谱 /api/paas/v4/chat/completions、Groq /openai/v1/chat/completions。
+	ChatPath string
 }
 
-// ChatStream POST /v1/chat/completions(stream=true)。
-func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+// chatEndpoint 返回聊天端点完整 URL。
+func (c *Client) chatEndpoint() string {
+	if c.ChatPath != "" {
+		return c.BaseURL + c.ChatPath
+	}
+	return c.BaseURL + "/v1/chat/completions"
+}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+// ChatStream POST <chatEndpoint>(stream=true)。
+// 统一强制 stream:true：本实现 Stream/Aggregate 只吃上游 SSE，非流式
+// 客户端由 handler 的 Aggregate 聚合回标准 JSON（与 WorkBuddy 同款约定）。
+//
+// 超时/取消生命周期说明：request context 的 cancel 绑定到返回的响应体上
+// （cancelOnCloseReader），函数返回后流仍需持续读取——若 defer cancel()，
+// SSE 流会在函数返回瞬间被 context canceled 掐断（实测 stream aborted）。
+// handler 侧对 rc 有 defer Close()，读取结束即释放。
+func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
+	var obj map[string]any
+	if json.Unmarshal(body, &obj) == nil {
+		obj["stream"] = true
+		if nb, merr := json.Marshal(obj); merr == nil {
+			body = nb
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.chatEndpoint(), bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, 0, nil, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -37,14 +61,34 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		cancel()
 		return nil, 0, nil, fmt.Errorf("do request: %w", err)
 	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
+		cancel()
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, 200, nil, nil
+	// 120s 是"整条流最长生命周期"兜底（含连接建立）；每行读取由客户端驱动。
+	return newCancelOnCloseReader(resp.Body, cancel), resp.StatusCode, nil, nil
+}
+
+// cancelOnCloseReader 包装上游响应体：Close 时同步释放 request context，
+// 防止超时 context 泄漏。流式读取期间不触发 cancel。
+type cancelOnCloseReader struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func newCancelOnCloseReader(rc io.ReadCloser, cancel context.CancelFunc) io.ReadCloser {
+	return &cancelOnCloseReader{ReadCloser: rc, cancel: cancel}
+}
+
+func (r *cancelOnCloseReader) Close() error {
+	err := r.ReadCloser.Close()
+	r.cancel()
+	return err
 }
 
 // FetchModels GET /v1/models。
@@ -109,15 +153,17 @@ func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
 func (c *Client) RefreshToken(a *auth.Auth) error { return nil }
 
 // Classify 标准 OpenAI 错误码分类。
+// 云端渠道特判：403 多为地区限制/WAF 拦截（如 Groq 国内直连），按 404 同款
+// 短冷却处理而不是 session_dead，避免唯一账号被一次性禁用。
 func (c *Client) Classify(status int, body string) provider.ErrKind {
 	switch status {
 	case 429:
 		return provider.ErrSoftRate
 	case 402:
 		return provider.ErrHardCredit
-	case 401, 403:
+	case 401:
 		return provider.ErrSessionDead
-	case 404:
+	case 403, 404:
 		return provider.ErrNotFound
 	case 500, 502, 503, 504:
 		return provider.ErrServer
@@ -126,70 +172,36 @@ func (c *Client) Classify(status int, body string) provider.ErrKind {
 	}
 }
 
-// Stream 透传 SSE 流（剥离 usage 行，避免重复解析）。
+// Stream 透传上游 SSE 到客户端（r = ChatStream 返回的上游响应体）。
+// 委托 upstream.StreamWithThink：逐行 flush + 剥离思考字段 + 保证 [DONE]，
+// 与 WorkBuddy/copilot 等渠道走同一套 SSE 处理。绝不二次 POST——
+// 本实现早期版本误将上游响应当请求体重发，导致流式 400。
 func (c *Client) Stream(w http.ResponseWriter, r io.Reader) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return errors.New("streaming unsupported")
-	}
-
-	data, _ := io.ReadAll(r)
-	rc, status, _, err := c.ChatStream(nil, data)
-	if err != nil || status >= 400 {
-		if status >= 400 && rc != nil {
-			rc.Close()
-		}
-		return fmt.Errorf("chat stream status %d", status)
-	}
-	defer rc.Close()
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := rc.Read(buf)
-		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return werr
-			}
-			flusher.Flush()
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return upstream.StreamWithThink(w, r, false)
 }
 
-// Aggregate 非流式聚合响应。
+// Aggregate 聚合上游 SSE 为非流式响应（r = 上游响应体）。
 func (c *Client) Aggregate(r io.Reader) (map[string]any, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return upstream.AggregateWithThink(r, true)
 }
 
-// ThinkPassthrough 支持思考字段透传（doubao 等输出带 <think> 前缀时保留）。
+// ThinkPassthrough 支持思考字段透传（chatui 带 think:true 时保留 reasoning_content）。
 func (c *Client) StreamWithThink(w http.ResponseWriter, r io.Reader, passthrough bool) error {
-	return c.Stream(w, r)
+	return upstream.StreamWithThink(w, r, passthrough)
 }
 
 func (c *Client) AggregateWithThink(r io.Reader, keepReasoning bool) (map[string]any, error) {
-	return c.Aggregate(r)
+	return upstream.AggregateWithThink(r, keepReasoning)
 }
 
-// New 创建通用 OpenAI 兼容客户端。
+// New 创建通用 OpenAI 兼容客户端（本地桥接服务，无鉴权）。
 func New(baseURL string) *Client {
 	return &Client{BaseURL: baseURL}
+}
+
+// NewWithKey 创建带 Bearer 鉴权的 OpenAI 兼容客户端（云端免费层渠道）。
+func NewWithKey(baseURL, apiKey, chatPath string) *Client {
+	return &Client{BaseURL: baseURL, ApiKey: apiKey, ChatPath: chatPath}
 }
 
 // StaticModels 白嫖渠道静态模型列表（占位，实际由 FetchModels 动态获取）。

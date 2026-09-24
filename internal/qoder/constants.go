@@ -15,8 +15,11 @@ const (
 	GatewayBase = "https://gateway.qoder.com.cn" // 推理网关（COSY 签名）
 
 	EpQuotaUsage = "/api/v2/quota/usage"
-	EpCheckinSt  = "/sash/api/v1/me/daily-check-in/status"
-	EpCheckinCl  = "/sash/api/v1/me/daily-check-in/claim"
+	// 签到走 campaigns 活动流程（桌面端抓包还原，每日 10:00 UTC+8 刷新窗口）。
+	// 旧 daily-check-in legacy 端点已全局 DISABLED：claim 恒 409 且不发积分，
+	// 绝不可用其结果判定签到状态（qoder2api 实测 2026-09）。
+	EpCampaigns     = "/sash/api/v1/me/campaigns"
+	EpCampaignClaim = "/sash/api/v1/me/campaigns/%s/claim"
 	EpPlan       = "/api/v2/user/plan"
 	EpUserInfo   = "/api/v1/userinfo"
 	EpDTRefresh  = "/api/v1/deviceToken/refresh"

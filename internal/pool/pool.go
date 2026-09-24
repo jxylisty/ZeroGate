@@ -115,6 +115,7 @@ type Pool struct {
 	mu      sync.RWMutex
 	byUID   map[string]*entry
 	stateFp string
+	saveMu  sync.Mutex // 独立写锁：保证磁盘 I/O 串行且不阻塞 mu 读写锁
 }
 
 // New 构建池；stateFp 非空时尝试加载旧状态。
@@ -210,66 +211,71 @@ func (p *Pool) SetCredits(uid string, credits int64) {
 // SetCreditsExpire 更新账号余额与最早到期时间（expireAt Unix 秒，0 不清除现有时限）。
 func (p *Pool) SetCreditsExpire(uid string, credits, expireAt int64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.credits = credits
 		if expireAt > 0 {
 			e.expireAt = expireAt
 		}
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // SetResourceItems 更新账号积分分类明细（含到期时间）。
 func (p *Pool) SetResourceItems(uid string, items []provider.ResourceItem) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.resourceItems = items
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // SetExpire 仅更新账号最早到期时间（expireAt Unix 秒，0=无时限）。
 func (p *Pool) SetExpire(uid string, expireAt int64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.expireAt = expireAt
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // Cooldown 冷却账号至 now+d。
 func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.until = time.Now().Add(d)
 		e.reason = reason
 		e.errCount = 0
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // Disable 永久禁用（session 死亡），需人工重登后手工恢复或文件替换。
 func (p *Pool) Disable(uid, reason string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.disabled = true
 		e.reason = reason
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // Ban 封禁处置（借 autoclawpi CooldownBanned + GLM_proxy 封禁分类）：
 // 24h 长冷却并累计封禁次数；累计达 banDisableAfter 次自动转禁用。
 func (p *Pool) Ban(uid, reason string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	e, ok := p.byUID[uid]
 	if !ok {
+		p.mu.Unlock()
 		return
 	}
 	e.banCount++
@@ -280,13 +286,14 @@ func (p *Pool) Ban(uid, reason string) {
 		e.until = time.Now().Add(banCooldown)
 		e.reason = reason
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // SetDisabled 设置账号禁用/启用状态；手动解禁时重置封禁计数。
 func (p *Pool) SetDisabled(uid string, d bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.disabled = d
 		if d {
@@ -296,13 +303,14 @@ func (p *Pool) SetDisabled(uid string, d bool) {
 			e.banCount = 0
 		}
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // ReenableIfCredits 签到后解冻：仅当 remain > 0 且账号处于冷却（非禁用）时恢复。
 func (p *Pool) ReenableIfCredits(uid string, remain int64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.credits = remain
 		if remain > 0 && !e.disabled {
@@ -311,33 +319,36 @@ func (p *Pool) ReenableIfCredits(uid string, remain int64) {
 			e.errCount = 0
 		}
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // RecordCheckin 记录一次签到结果（含错误信息），随 state.json 持久化。
 func (p *Pool) RecordCheckin(uid string, ok bool, msg string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.lastCheckinOK = ok
 		e.lastCheckinAt = time.Now()
 		e.lastCheckinMsg = msg
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // Remove 从池中移除账号（内存 + 状态文件）；auth 文件删除由调用方负责。
 func (p *Pool) Remove(uid string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.byUID, uid)
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // NoteError 记录一次非余额/非 429 错误；达到 threshold 自动冷却 d 时长。
 func (p *Pool) NoteError(uid string, threshold int, d time.Duration) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.errCount++
 		if e.errCount >= threshold {
@@ -346,7 +357,9 @@ func (p *Pool) NoteError(uid string, threshold int, d time.Duration) {
 			e.errCount = 0
 		}
 	}
-	p.saveLocked()
+	sf := p.snapshotLocked()
+	p.mu.Unlock()
+	p.saveSnapshot(sf)
 }
 
 // NoteSuccess 成功请求重置错误计数。
@@ -474,11 +487,9 @@ func (p *Pool) load() {
 	}
 }
 
-func (p *Pool) saveLocked() {
-	if p.stateFp == "" {
-		return
-	}
-	sf := stateFile{Accounts: map[string]accountState{}}
+// snapshotLocked 生成当前账号池状态快照（调用方必须持有 p.mu，耗时 < 1µs）。
+func (p *Pool) snapshotLocked() stateFile {
+	sf := stateFile{Accounts: make(map[string]accountState, len(p.byUID))}
 	for uid, e := range p.byUID {
 		sf.Accounts[uid] = accountState{
 			Credits:        e.credits,
@@ -492,6 +503,23 @@ func (p *Pool) saveLocked() {
 			LastCheckinMsg: e.lastCheckinMsg,
 		}
 	}
+	return sf
+}
+
+// saveLocked 保留兼容测试与持锁调用场景。
+func (p *Pool) saveLocked() {
+	sf := p.snapshotLocked()
+	p.saveSnapshot(sf)
+}
+
+// saveSnapshot 将快照持久化到磁盘（不在 p.mu 读写锁内执行，杜绝磁盘 I/O 阻塞 Pick 调度）。
+func (p *Pool) saveSnapshot(sf stateFile) {
+	if p.stateFp == "" {
+		return
+	}
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
+
 	raw, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		log.Printf("pool state marshal failed fp=%s: %v", p.stateFp, err)
@@ -508,7 +536,16 @@ func (p *Pool) saveLocked() {
 		log.Printf("pool state save failed fp=%s: %v（账号状态未持久化，重启将丢失冷却/签到记录）", tmp, err)
 		return
 	}
-	if err := os.Rename(tmp, p.stateFp); err != nil {
-		log.Printf("pool state rename failed tmp=%s fp=%s: %v", tmp, p.stateFp, err)
+	// Windows 杀毒软件/索引服务瞬时锁定重命名重试
+	var renErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		renErr = os.Rename(tmp, p.stateFp)
+		if renErr == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if renErr != nil {
+		log.Printf("pool state rename failed tmp=%s fp=%s: %v", tmp, p.stateFp, renErr)
 	}
 }

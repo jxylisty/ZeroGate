@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -762,8 +763,7 @@ func (a *App) completeWbintlLogin(r login.Result) {
 	a.finishLogin()
 }
 
-// completeQoderLogin 登录成功：生成机器指纹、写 auth 文件、重载账号池。
-// Qoder 当前无签到活动，不做首次签到。
+// completeQoderLogin 登录成功：生成机器指纹、写 auth 文件、重载账号池、首次签到。
 func (a *App) completeQoderLogin(r loginqoder.Result) {
 	log.Printf("qoder 登录成功 uid=%s nickname=%s expires_in=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresIn, r.RefreshToken != "")
 	au := &auth.Auth{Kind: "qoder", AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, UID: r.UID, Nickname: r.Nickname}
@@ -776,6 +776,17 @@ func (a *App) completeQoderLogin(r loginqoder.Result) {
 	log.Printf("qoder 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
 	a.reloadAccounts()
 	a.finishLogin()
+	a.safeGo(func() {
+		rt := a.runtime(provider.Qoder)
+		if rt == nil || rt.Scheduler == nil {
+			return
+		}
+		if res, err := rt.Scheduler.CheckinAccount(r.UID); err != nil {
+			log.Printf("Qoder 新账号签到失败 %s: %v", r.Nickname, err)
+		} else {
+			log.Printf("Qoder 新账号签到完成 %s：%s", r.Nickname, res.Msg)
+		}
+	})
 }
 
 func (a *App) finishLogin() {
@@ -876,6 +887,22 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
+	if rt := a.runtime(provider.GlmFlash); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadOpenAICompatDir(a.cfg.AuthDir, "glmflash")
+		if err != nil {
+			log.Printf("reload glmflash accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.Groq); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadOpenAICompatDir(a.cfg.AuthDir, "groq")
+		if err != nil {
+			log.Printf("reload groq accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
 }
 
 // CheckinAccount 单个账号立即签到。
@@ -884,7 +911,7 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 	if rt == nil || rt.Scheduler == nil {
 		return scheduler.CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
-	if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria {
+	if rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria {
 		return scheduler.CheckinResult{}, fmt.Errorf("%s 渠道无签到活动", rt.Kind)
 	}
 	res, err := rt.Scheduler.CheckinAccount(uid)
@@ -903,7 +930,7 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 		if rt == nil || rt.Pool == nil || rt.Scheduler == nil {
 			continue
 		}
-		if rt.Kind == provider.Qoder || rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria { // 无签到活动，跳过
+		if rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria { // 无签到活动，跳过
 			continue
 		}
 		for _, st := range rt.Pool.List() {
@@ -1737,9 +1764,70 @@ func apiError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"error": msg})
 }
 
+// isAllowedOrigin 校验跨域来源是否可信（防恶意网页 CSRF）。
+// 允许来源：同源请求、本地回环、局域网私有网段 IP、以及绑定的域名。
+func isAllowedOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	originHost := u.Hostname()
+	reqHost, _, err := net.SplitHostPort(host)
+	if err != nil {
+		reqHost = host
+	}
+	// 1. 完全匹配当前 Host
+	if strings.EqualFold(originHost, reqHost) {
+		return true
+	}
+	// 2. 本地回环
+	if originHost == "127.0.0.1" || originHost == "localhost" || originHost == "::1" {
+		return true
+	}
+	// 3. 局域网私有网段 (10.x, 172.16-31.x, 192.168.x)
+	if ip := net.ParseIP(originHost); ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
+		return true
+	}
+	// 4. 用户自有域名（如 chatui.my123.bond 或 my123.bond）
+	if strings.HasSuffix(originHost, ".my123.bond") || originHost == "my123.bond" {
+		return true
+	}
+	return false
+}
+
+// csrfGuard 针对浏览器发起的跨域写操作进行来源核验，拦截外部恶意网页盲打本地管理 API。
+func (a *App) csrfGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 读操作（GET/HEAD/OPTIONS）不产生服务端写副作用，直接放行
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// 无 Origin 头：非浏览器跨域请求（如本地后端进程、curl、移动端直连、ChatUI 后端调用），直接放行
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 来自浏览器的写请求：校验 Origin 是否合法
+		if isAllowedOrigin(origin, r.Host) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		log.Printf("[security] 拦截可疑跨域 CSRF 请求: origin=%s target=%s method=%s host=%s", origin, r.URL.Path, r.Method, r.Host)
+		apiError(w, http.StatusForbidden, "Cross-origin request rejected (CSRF protection)")
+	})
+}
+
 // HandleAPI 注册管理 API 路由（挂到 server handler 的 /api/* 上）。
-// 无鉴权（个人单机工具），监听 0.0.0.0 时风险由用户承担。
+// 内置 CSRF 来源核验，杜绝第三方恶意网页跨域盲打。
 func (a *App) HandleAPI(mux *http.ServeMux) {
+	apiMux := http.NewServeMux()
+	a.registerAPIRoutes(apiMux)
+	mux.Handle("/api/", a.csrfGuard(apiMux))
+}
+
+func (a *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.GetState())
 	})

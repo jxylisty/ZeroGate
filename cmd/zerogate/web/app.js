@@ -54,7 +54,7 @@ function chColor(kind) {
 function groupMeta(g) {
   switch (g) {
     case "traework": return { cls: "trae", name: "TraeWork", checkin: false };
-    case "qoder": return { cls: "qoder", name: "Qoder", checkin: true };
+    case "qoder": return { cls: "qoder", name: "Qoder", checkin: false };
     case "codebuddy": return { cls: "cb", name: "CodeBuddy(国际)", checkin: true };
     case "wbintl": return { cls: "wbi", name: "WorkBuddy(国际)", checkin: true };
     case "zcode": return { cls: "zc", name: "ZCode (Z.AI)", checkin: false };
@@ -623,7 +623,7 @@ function openCheckinDialog() {
     const gName = groupMeta(g).name;
     html += `<div class="ci-group"><div class="ci-gname">${gName}</div>`;
     for (const a of list) {
-      const noCheckin = a.group === "qoder" || a.group === "codebuddy" || a.group === "wbintl" || a.group === "zcode";
+      const noCheckin = a.group === "codebuddy" || a.group === "wbintl" || a.group === "zcode";
       if (!noCheckin) ciSel.add(a.uid);
       html += ciRowHtml(a, noCheckin);
     }

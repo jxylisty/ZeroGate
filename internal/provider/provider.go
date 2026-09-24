@@ -25,6 +25,8 @@ const (
 	Copilot   Kind = "copilot"    // 本机白嫖服务 127.0.0.1:4141（OpenAI 兼容）
 	Doubao    Kind = "doubao"     // 本机白嫖服务 127.0.0.1:7868（OpenAI 兼容）
 	GptGemini Kind = "gptgemini"  // 本机白嫖服务 127.0.0.1:8317（OpenAI 兼容）
+	GlmFlash  Kind = "glmflash"   // 智谱开放平台 Flash 家族（永久免费层，OpenAI 兼容）
+	Groq      Kind = "groq"       // Groq 免费层（Llama/Qwen 推理云，OpenAI 兼容）
 )
 
 func (k Kind) String() string { return string(k) }

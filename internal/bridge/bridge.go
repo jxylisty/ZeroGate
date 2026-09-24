@@ -87,15 +87,15 @@ type Config struct {
 	CopilotKey string
 }
 
-// NewManager 构造编排器，目录缺省用约定路径。
+// NewManager 构造编排器，目录缺省用相对工作区路径定位。
 func NewManager(cfg Config) *Manager {
 	zd := strings.TrimSpace(cfg.ZcodeDir)
 	if zd == "" {
-		zd = "D:/wild-work/research/zcode-proxy"
+		zd = resolveWorkspacePath(filepath.Join("research", "zcode-proxy"))
 	}
 	dd := strings.TrimSpace(cfg.DoubaoDir)
 	if dd == "" {
-		dd = "D:/wild-work/research/doubao2api"
+		dd = resolveWorkspacePath(filepath.Join("research", "doubao2api"))
 	}
 	dk := strings.TrimSpace(cfg.DoubaoKey)
 	if dk == "" {
@@ -348,6 +348,88 @@ func (m *Manager) httpGet(ins Instance, path, key string) ([]byte, error) {
 // （python.exe / cloudflared.exe / zcode-proxy.exe 等），不设此标志会各自弹出黑框。
 func hideWindow(cmd *exec.Cmd) { platform.HideWindow(cmd) }
 
+// resolveWorkspacePath 动态定位工作区路径：优先相对当前目录或父目录，回退到历史盘符。
+func resolveWorkspacePath(rel string) string {
+	cleanRel := filepath.Clean(rel)
+	// 1. 如果当前工作目录直接存在该路径
+	if _, err := os.Stat(cleanRel); err == nil {
+		if abs, err := filepath.Abs(cleanRel); err == nil {
+			return abs
+		}
+		return cleanRel
+	}
+	// 2. 如果在 src-true 运行，尝试上级目录 ..
+	parentRel := filepath.Join("..", cleanRel)
+	if _, err := os.Stat(parentRel); err == nil {
+		if abs, err := filepath.Abs(parentRel); err == nil {
+			return abs
+		}
+		return parentRel
+	}
+	// 3. 回退历史默认绝对路径
+	return filepath.Join(`D:\wild-work`, cleanRel)
+}
+
+// resolvePython 探测 Python 解释器。preferGui 为 true 时优先 pythonw。
+func resolvePython(preferGui bool) string {
+	if preferGui {
+		if v := os.Getenv("PYTHONW_PATH"); v != "" {
+			return v
+		}
+		for _, candidate := range []string{
+			`D:\anaconda\pythonw.exe`,
+			`C:\anaconda3\pythonw.exe`,
+			`C:\ProgramData\anaconda3\pythonw.exe`,
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+		if p, err := exec.LookPath("pythonw"); err == nil {
+			return p
+		}
+		return "pythonw"
+	}
+
+	if v := os.Getenv("PYTHON_PATH"); v != "" {
+		return v
+	}
+	for _, candidate := range []string{
+		`D:\anaconda\python.exe`,
+		`C:\anaconda3\python.exe`,
+		`C:\ProgramData\anaconda3\python.exe`,
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if p, err := exec.LookPath("python"); err == nil {
+		return p
+	}
+	return "python"
+}
+
+// resolveExe 探测外部可执行程序路径。
+func resolveExe(name string, fallbackPaths ...string) string {
+	if v := os.Getenv(strings.ToUpper(strings.TrimSuffix(name, ".exe")) + "_EXE"); v != "" {
+		if _, err := os.Stat(v); err == nil {
+			return v
+		}
+	}
+	for _, fb := range fallbackPaths {
+		if _, err := os.Stat(fb); err == nil {
+			return fb
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	if len(fallbackPaths) > 0 {
+		return fallbackPaths[0]
+	}
+	return name
+}
+
 // hiddenOutput 执行一次性探测命令并隐藏其控制台窗口。
 // 探测用的 tasklist/schtasks 同样是控制台程序：面板每次刷新都会调用，
 // 不加隐藏标志会在每次刷新时闪一个黑框（用户视角=服务"一直在弹 cmd"）。
@@ -356,6 +438,7 @@ func hiddenOutput(name string, args ...string) ([]byte, error) {
 	hideWindow(cmd)
 	return cmd.Output()
 }
+
 // Start 启动单个服务（已在线则幂等跳过）。
 func (m *Manager) Start(ctx context.Context, id string) (Status, error) {
 	ins, err := m.find(id)
@@ -373,10 +456,7 @@ func (m *Manager) Start(ctx context.Context, id string) (Status, error) {
 	var cmd *exec.Cmd
 	switch ins.Kind {
 	case "doubao":
-		py := `D:\anaconda\pythonw.exe`
-		if _, err := os.Stat(py); err != nil {
-			py = "pythonw"
-		}
+		py := resolvePython(true)
 		cmd = exec.Command(py, "bridge.py")
 		cmd.Dir = m.doubaoDir
 		cmd.Env = append(os.Environ(), "PYTHONPATH="+m.doubaoDir)
@@ -399,32 +479,33 @@ func (m *Manager) Start(ctx context.Context, id string) (Status, error) {
 			"HTTPS_PROXY=", "HTTP_PROXY=", "ALL_PROXY=",
 		)
 	case "chatui":
-		py := `D:\anaconda\python.exe`
-		if _, err := os.Stat(py); err != nil {
-			py = "python"
-		}
-		dir := `D:\wild-work\tools\chatui`
-		if _, err := os.Stat(filepath.Join(dir, "server.py")); err != nil {
-			return Status{}, fmt.Errorf("chatui 不存在: %s\\server.py", dir)
+		py := resolvePython(false)
+		dir := resolveWorkspacePath(filepath.Join("tools", "chatui"))
+		serverScript := filepath.Join(dir, "server.py")
+		if _, err := os.Stat(serverScript); err != nil {
+			return Status{}, fmt.Errorf("chatui 不存在: %s", serverScript)
 		}
 		cmd = exec.Command(py, "server.py")
 		cmd.Dir = dir
 	case "mailcode":
-		py := `D:\anaconda\pythonw.exe`
-		if _, err := os.Stat(py); err != nil {
-			py = "pythonw"
+		py := resolvePython(true)
+		script := resolveWorkspacePath(filepath.Join("src-true", "tools", "mail_code_server.py"))
+		if _, err := os.Stat(script); err != nil {
+			script = resolveWorkspacePath(filepath.Join("tools", "mail_code_server.py"))
 		}
-		script := `D:\wild-work\src-true\tools\mail_code_server.py`
 		if _, err := os.Stat(script); err != nil {
 			return Status{}, fmt.Errorf("脚本不存在: %s", script)
 		}
 		cmd = exec.Command(py, script)
 		cmd.Dir = filepath.Dir(script)
 	case "tunnel":
-		if _, err := os.Stat(`D:\cloudflared.exe`); err != nil {
-			return Status{}, fmt.Errorf("cloudflared 不存在: D:\\cloudflared.exe")
+		bin := resolveExe("cloudflared.exe", `D:\cloudflared.exe`, `C:\cloudflared.exe`)
+		if _, err := os.Stat(bin); err != nil {
+			if _, lerr := exec.LookPath("cloudflared"); lerr != nil {
+				return Status{}, fmt.Errorf("cloudflared 不存在: %s", bin)
+			}
 		}
-		cmd = exec.Command(`D:\cloudflared.exe`, "tunnel", "run", "chatui")
+		cmd = exec.Command(bin, "tunnel", "run", "chatui")
 		// 必须清代理：Clash 拦 7844 会导致隧道 530/1033
 		cmd.Env = []string{
 			"HTTP_PROXY=", "HTTPS_PROXY=", "http_proxy=", "https_proxy=", "ALL_PROXY=", "all_proxy=",
@@ -435,22 +516,22 @@ func (m *Manager) Start(ctx context.Context, id string) (Status, error) {
 			"PATH=" + os.Getenv("PATH"),
 		}
 	case "cpa":
-		exe := `D:\wild-work\research\CLIProxyAPI\bin\server.exe`
-		cfgY := `D:\wild-work\research\CLIProxyAPI\config.local.yaml`
+		exe := resolveWorkspacePath(filepath.Join("research", "CLIProxyAPI", "bin", "server.exe"))
+		cfgY := resolveWorkspacePath(filepath.Join("research", "CLIProxyAPI", "config.local.yaml"))
 		if _, err := os.Stat(exe); err != nil {
 			return Status{}, fmt.Errorf("server.exe 不存在: %s", exe)
 		}
 		cmd = exec.Command(exe, "-config", cfgY)
 		cmd.Dir = filepath.Dir(exe)
 	case "copilot":
-		exe := `D:\wild-work\research\copilot2api-go\copilot2api.exe`
+		exe := resolveWorkspacePath(filepath.Join("research", "copilot2api-go", "copilot2api.exe"))
 		if _, err := os.Stat(exe); err != nil {
 			return Status{}, fmt.Errorf("copilot2api.exe 不存在: %s", exe)
 		}
 		cmd = exec.Command(exe, "--web-port", "3900", "--proxy-port", "4141")
 		cmd.Dir = filepath.Dir(exe)
 	case "autoclaw":
-		exe := `D:\autoclaw\AutoClaw.exe`
+		exe := resolveExe("AutoClaw.exe", `D:\autoclaw\AutoClaw.exe`, `C:\autoclaw\AutoClaw.exe`)
 		if _, err := os.Stat(exe); err != nil {
 			return Status{}, fmt.Errorf("AutoClaw 不存在: %s", exe)
 		}
