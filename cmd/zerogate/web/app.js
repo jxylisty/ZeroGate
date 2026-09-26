@@ -46,7 +46,7 @@ function cssVar(name) {
 function chColor(kind) {
   const v = cssVar("--ch-" + kind);
   if (v) return v;
-  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", wbintl: "#ea580c", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7" };
+  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", wbintl: "#ea580c", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7", copilot: "#475569", doubao: "#dc2626", gptgemini: "#db2777", glmflash: "#65a30d", groq: "#f59e0b" };
   return fb[kind] || "#64748b";
 }
 
@@ -60,9 +60,17 @@ function groupMeta(g) {
     case "zcode": return { cls: "zc", name: "ZCode (Z.AI)", checkin: false };
     case "autoclaw": return { cls: "ac", name: "AutoClaw", checkin: true };
     case "atria": return { cls: "atria", name: "Atria", checkin: false };
+    case "copilot": return { cls: "copilot", name: "Copilot (Key)", checkin: false };
+    case "doubao": return { cls: "doubao", name: "Doubao (Key)", checkin: false };
+    case "gptgemini": return { cls: "gptgemini", name: "GptGemini (Key)", checkin: false };
+    case "glmflash": return { cls: "glmflash", name: "GLM-Flash (Key)", checkin: false };
+    case "groq": return { cls: "groq", name: "Groq (Key)", checkin: false };
     default: return { cls: "wb", name: "WorkBuddy", checkin: false };
   }
 }
+
+// NO_CHECKIN_GROUPS 无签到活动的渠道：无网页签到体系渠道 + key 型白嫖渠道。
+const NO_CHECKIN_GROUPS = ["codebuddy", "wbintl", "zcode", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq"];
 
 // ---------- 全局状态 ----------
 let state = null;
@@ -211,7 +219,7 @@ const MODE_SECTIONS = [
   { key: "bridge", name: "桥接账号", desc: "转发到本地 zcode-proxy 实例，网关不直接持有凭证" },
   { key: "direct", name: "直连账号", desc: "官方 API Key 直连，非反代，独立管理" },
 ];
-const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw", "atria"];
+const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq"];
 const GROUP_KEY_LS = "zg_acct_groups";
 let acctSearchQ = "";
 let acctFilterKey = "all";
@@ -436,6 +444,11 @@ const feeThemes = {
   wbintl:    ["#f59e0b", "#fbbf24"],
   zcode:     ["#10b981", "#34d399"],
   autoclaw:  ["#6366f1", "#818cf8"],
+  copilot:   ["#334155", "#64748b"],
+  doubao:    ["#dc2626", "#f87171"],
+  gptgemini: ["#db2777", "#f472b6"],
+  glmflash:  ["#65a30d", "#a3e635"],
+  groq:      ["#f59e0b", "#fbbf24"],
   workbuddy: ["#2563eb", "#3b82f6"],
 };
 
@@ -462,6 +475,8 @@ function renderFees(fees) {
 
     let rows = "";
     for (const m of models) {
+      // 防御：自定义反代模型名含斜杠（形如 "qoder/xxx"），拼接后成多段怪名，直接跳过
+      if (!m.model || m.model.includes("/")) continue;
       const rate = m.rate ? Number(m.rate) : 0;
       let badgeClass = "free";
       if (rate > 0 && rate <= 0.15) badgeClass = "low";
@@ -613,17 +628,17 @@ function openCheckinDialog() {
   ciSel.clear();
   const groups = {};
   for (const a of accounts) {
-    const g = a.group === "traework" ? "traework" : (a.group === "qoder" ? "qoder" : (a.group === "codebuddy" ? "codebuddy" : (a.group === "wbintl" ? "wbintl" : (a.group === "zcode" ? "zcode" : (a.group === "autoclaw" ? "autoclaw" : "workbuddy")))));
+    const g = CHANNEL_ORDER.includes(a.group) ? a.group : "workbuddy";
     (groups[g] = groups[g] || []).push(a);
   }
   let html = "";
-  for (const g of ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw"]) {
+  for (const g of CHANNEL_ORDER) {
     const list = groups[g];
     if (!list || !list.length) continue;
     const gName = groupMeta(g).name;
     html += `<div class="ci-group"><div class="ci-gname">${gName}</div>`;
     for (const a of list) {
-      const noCheckin = a.group === "codebuddy" || a.group === "wbintl" || a.group === "zcode";
+      const noCheckin = NO_CHECKIN_GROUPS.includes(a.group);
       if (!noCheckin) ciSel.add(a.uid);
       html += ciRowHtml(a, noCheckin);
     }

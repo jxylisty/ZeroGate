@@ -905,13 +905,23 @@ func (a *App) reloadAccounts() {
 	}
 }
 
+// kindNoCheckin 无签到活动的渠道：无网页签到体系渠道 + OpenAI 兼容 key 型渠道。
+func kindNoCheckin(k provider.Kind) bool {
+	switch k {
+	case provider.CodeBuddy, provider.WBIntl, provider.ZCode, provider.Atria,
+		provider.Copilot, provider.Doubao, provider.GptGemini, provider.GlmFlash, provider.Groq:
+		return true
+	}
+	return false
+}
+
 // CheckinAccount 单个账号立即签到。
 func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 	rt, _ := a.findRuntimeAuth(uid)
 	if rt == nil || rt.Scheduler == nil {
 		return scheduler.CheckinResult{}, fmt.Errorf("unknown account %s", uid)
 	}
-	if rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria {
+	if kindNoCheckin(rt.Kind) {
 		return scheduler.CheckinResult{}, fmt.Errorf("%s 渠道无签到活动", rt.Kind)
 	}
 	res, err := rt.Scheduler.CheckinAccount(uid)
@@ -930,7 +940,7 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 		if rt == nil || rt.Pool == nil || rt.Scheduler == nil {
 			continue
 		}
-		if rt.Kind == provider.CodeBuddy || rt.Kind == provider.WBIntl || rt.Kind == provider.ZCode || rt.Kind == provider.Atria { // 无签到活动，跳过
+		if kindNoCheckin(rt.Kind) { // 无签到活动，跳过
 			continue
 		}
 		for _, st := range rt.Pool.List() {
@@ -1606,12 +1616,17 @@ func (a *App) GetState() State {
 	return st
 }
 
-// channelDefaultMode 渠道缺省接入方式：zcode 走本地 zcode-proxy 桥接，
-// atria 是纯 API Key 直连，其余渠道均为网关持有凭证的反代。
-// auth 文件里账号级 account.mode 可覆盖（见 auth.Parse）。
+// channelDefaultMode 渠道缺省接入方式：zcode 与本机白嫖三件套（copilot/doubao/gptgemini）
+// 走本地桥接，atria 与 OpenAI 兼容 key 渠道（glmflash/groq）为 API Key 直连，
+// 其余渠道均为网关持有凭证的反代。auth 文件里账号级 account.mode 可覆盖（见 auth.Parse）。
 var channelDefaultMode = map[string]string{
-	"zcode": "bridge",
-	"atria": "direct",
+	"zcode":     "bridge",
+	"copilot":   "bridge",
+	"doubao":    "bridge",
+	"gptgemini": "bridge",
+	"atria":     "direct",
+	"glmflash":  "direct",
+	"groq":      "direct",
 }
 
 func defaultChannelMode(kind string) string {
@@ -2365,9 +2380,13 @@ func (a *App) FeesInfo() map[string]any {
 		go a.safeGo(func() { a.RefreshPricing() })
 	}
 
-	// 按渠道分组
+	// 按渠道分组。过滤用户自定义反代模型：其模型名形如 "渠道/模型"（含斜杠），
+	// 展示时会拼成 "渠道/渠道/模型" 多段怪名，且普遍无倍率被误标限免。
 	groups := map[string][]map[string]any{}
 	for _, p := range cached {
+		if p.Model == "" || strings.Contains(p.Model, "/") {
+			continue
+		}
 		groups[p.Channel] = append(groups[p.Channel], map[string]any{
 			"model": p.Model,
 			"rate":  p.Rate,

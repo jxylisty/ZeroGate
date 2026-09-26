@@ -226,8 +226,10 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 
 // FetchModelPricing 从 /api/remote/v1/models 拉取模型积分倍率。
 // 按 config_name 去重，解析 features.consumption_rate.rate。
+// 注意：不带 show_custom_model，否则会混入用户自定义的反代模型（名字形如 "qoder/xxx"），
+// 对外显示成 "traework/qoder/xxx" 且被误标限免，需过滤掉。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
-	url := WorkHost + EpModelsPricing + "?functions=solo_agent_remote,solo_work_remote,solo_design_remote&show_custom_model=true"
+	url := WorkHost + EpModelsPricing + "?functions=solo_agent_remote,solo_work_remote,solo_design_remote"
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -272,6 +274,11 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 	out := make([]provider.ModelPricing, 0)
 	for _, fn := range env.Data.List {
 		for _, m := range fn.Models {
+			// 过滤用户自定义反代模型：其 name 形如 "渠道/模型"（含斜杠），
+			// 非 traework 官方模型，混入展示会变成 "traework/渠道/模型" 多段怪名。
+			if m.Name == "" || strings.Contains(m.Name, "/") {
+				continue
+			}
 			if seen[m.Name] {
 				continue
 			}
