@@ -750,6 +750,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if status >= 400 {
 				lastStatus = status
 				h.stickyClear(rt)
+				// 诊断（ZG_DUMP_BODY=1 时生效）：落盘实际转发给上游的请求体，
+				// 用于排查 11128 等"渠道校验不通过"类拒绝的具体触发字段。
+				ensureDumpInit()
+				dumpRequestBody(rt.Kind.String(), targetModel, status, respBody, candBody)
 				kind := rt.Upstream.Classify(status, string(respBody))
 				switch kind {
 				case provider.ErrHardCredit:
