@@ -214,6 +214,7 @@ func (m *Manager) probe(ins Instance) Status {
 	case "doubao":
 		body, err := m.httpGet(ins, "/stats", m.doubaoKey)
 		if err != nil {
+			st.Detail = probeFailReason(err)
 			return st
 		}
 		var v struct {
@@ -232,6 +233,7 @@ func (m *Manager) probe(ins Instance) Status {
 	case "zcode":
 		body, err := m.httpGet(ins, "/quota", m.bridgeKey)
 		if err != nil {
+			st.Detail = probeFailReason(err)
 			return st
 		}
 		var q struct {
@@ -256,6 +258,8 @@ func (m *Manager) probe(ins Instance) Status {
 			if portAccept(ins.Port) {
 				st.Online = true
 				st.Detail = "端口已就绪，模型接口预热中"
+			} else {
+				st.Detail = probeFailReason(err)
 			}
 			return st
 		}
@@ -309,6 +313,15 @@ func (m *Manager) kindKey(kind string) string {
 	default:
 		return ""
 	}
+}
+
+// probeFailReason 把探测失败的原始错误放进 Detail：面板上直接看出"为什么离线"，
+// 而不是只显示 OFFLINE 让人无从判断（2026-09-27）。
+func probeFailReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "离线原因: " + fmt.Sprintf("%.110s", err.Error())
 }
 
 func (m *Manager) httpGet(ins Instance, path, key string) ([]byte, error) {

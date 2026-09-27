@@ -380,7 +380,7 @@ func (c *Client) bridgeChatStream(a *auth.Auth, model string, rawBody []byte) (i
 	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("zcode bridge uid=%s model=%s: transport error: %v", a.UID, model, err)
-		return nil, 0, nil, err
+		return nil, 0, nil, friendlyBridgeErr(err)
 	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -483,6 +483,48 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	return remain, items, nil
 }
 
+// zcodeInstanceNames 本地桥端口 → 实例显示名（与 bridge.Manager 的实例清单对应，
+// 用于把连接错误翻译成用户能看懂的提示）。
+var zcodeInstanceNames = map[string]string{
+	"18083": "主号bigmodel acc-big",
+	"18084": "副卡gmail acc-fuka",
+	"18085": "副卡bigmodel acc-cn",
+	"18086": "主号gmail acc-fuka2",
+}
+
+// friendlyBridgeErr 把本地桥实例的连接失败翻译成可操作的中文提示。
+// 原始错误形如 `Get "http://127.0.0.1:18085/quota": dial tcp ... connectex:
+// No connection could be made ...`，用户读不出"桥没启动、面板可一键拉起、
+// 账号没坏"这个事实（2026-09-27 用户体验修复）。
+func friendlyBridgeErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	i := strings.Index(msg, "127.0.0.1:")
+	if i < 0 {
+		return err
+	}
+	port := msg[i+len("127.0.0.1:"):]
+	if j := strings.IndexAny(port, "/\"' :"); j >= 0 {
+		port = port[:j]
+	}
+	name, ok := zcodeInstanceNames[port]
+	if !ok && !strings.HasPrefix(port, "1808") {
+		return err // 不是本地桥端口，原样返回
+	}
+	if name == "" {
+		name = "zcode 桥实例"
+	}
+	if strings.Contains(msg, "refused") || strings.Contains(msg, "connectex") {
+		return fmt.Errorf("zcode 桥实例未启动（%s，端口 %s）——账号本身没坏，打开面板「本地桥」页点启动即可恢复", name, port)
+	}
+	if strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "Client.Timeout") {
+		return fmt.Errorf("zcode 桥实例无响应（%s，端口 %s）——可到面板「本地桥」页重启该实例（原始错误: %v）", name, port, err)
+	}
+	return err
+}
+
 // bridgeUserResource 桥接模式额度：GET {账号实例}/quota（Bearer bridgeKey），
 // 返回 balances 的 token 数（showName/remainingUnits/totalUnits/usedUnits/
 // unitType/expiresAt，camelCase，见 routes-quota.ts）。
@@ -500,7 +542,7 @@ func (c *Client) bridgeUserResource(a *auth.Auth) (int64, []provider.ResourceIte
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, friendlyBridgeErr(err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
