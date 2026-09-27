@@ -1,6 +1,7 @@
 // payload.go 改写发往上游的 chat 请求体：
 //  1. 强制 stream:true（上游拒绝非流式）
 //  2. tool_choice 归一化（上游该字段是 string，对象形式会 400 code=11101）
+//  3. 剥离 system 里的 gitStatus 段（code=11128 渠道校验触发源，见 stripGitStatus）
 package upstream
 
 import (
@@ -21,6 +22,7 @@ func PrepareBody(src []byte) []byte {
 	normalizeToolChoice(obj)
 	normalizeRoles(obj) // developer → system（上游对 developer 角色触发内容过滤误杀）
 	stripMaxTokens(obj) // 思考模型 max_tokens 被思考占满 → 正文为空（ZCode empty_model_response）
+	stripGitStatus(obj) // 剥离客户端注入的 git 状态段（渠道校验 11128 触发源）
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return src
@@ -53,6 +55,33 @@ func normalizeRoles(obj map[string]any) {
 		}
 		if r, _ := mm["role"].(string); r == "developer" {
 			mm["role"] = "system"
+		}
+	}
+}
+
+// stripGitStatus 删除 system 消息里客户端注入的 git 状态段。
+//
+// ZCode/Trae 类客户端在 git 仓库会话开局会把 git 快照写进 system 提示词
+// （gitStatus: ... / Current branch: main / Git user: <name> / Recent commits: ...）。
+// 实测发往 workbuddy 上游时该段会触发 code=11128 "Illegal API invocation from an
+// unapproved channel"：同一秒的对照请求，system 含 "Git user:" 行恒 400，不含则恒 200。
+// 该段属客户端会话元信息而非对话内容，剥离不影响正常问答与工具调用。
+func stripGitStatus(obj map[string]any) {
+	msgs, ok := obj["messages"].([]any)
+	if !ok {
+		return
+	}
+	for _, m := range msgs {
+		mm, ok := m.(map[string]any)
+		if !ok || mm["role"] != "system" {
+			continue
+		}
+		c, ok := mm["content"].(string)
+		if !ok {
+			continue
+		}
+		if i := strings.Index(c, "gitStatus"); i >= 0 {
+			mm["content"] = strings.TrimRight(c[:i], "\r\n \t")
 		}
 	}
 }

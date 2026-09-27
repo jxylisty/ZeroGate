@@ -127,19 +127,22 @@ type Config struct {
 // DefaultModelRedirects 返回开箱即用的默认模型别名与备选链。
 func DefaultModelRedirects() map[string][]string {
 	return map[string][]string{
-		"claude-3-5-sonnet": {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
-		"claude-3.5-sonnet": {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
-		"claude-3-7-sonnet": {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
-		"claude-3.7-sonnet": {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
-		"claude-3-5-haiku":  {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
-		"claude-3.5-haiku":  {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
-		"deepseek-chat":             {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
-		"deepseek-v3":               {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
-		"deepseek-reasoner":         {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
-		"deepseek-r1":               {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"claude-3-5-sonnet":             {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
+		"claude-3.5-sonnet":             {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
+		"claude-3-7-sonnet":             {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
+		"claude-3.7-sonnet":             {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
+		"claude-3-5-haiku":              {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
+		"claude-3.5-haiku":              {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
+		"deepseek-chat":                 {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"deepseek-v3":                   {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"deepseek-reasoner":             {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
+		"deepseek-r1":                   {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
 		"workbuddy/deepseek-v4.1-flash": {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash"}, // workbuddy 上游 11128 不可用 -> 走 codebuddy 同款(实测 200)
-		"gpt-4o":                    {"qoder/gpt-4o", "traework/glm-5.2"},
-		"qwen-2.5-coder":    {"traework/qwen3-coder", "workbuddy/glm-5.2"},
+		// workbuddy/glm-5.3-flash 首选原渠道（upstream.PrepareBody 已剥离 gitStatus），
+		// 仍被 11128 拦截则退到 zcode 同名模型（实测 system 带 Git user 段也稳定 200）。
+		"workbuddy/glm-5.3-flash": {"workbuddy/glm-5.3-flash", "zcode/glm-5.3-flash"},
+		"gpt-4o":                  {"qoder/gpt-4o", "traework/glm-5.2"},
+		"qwen-2.5-coder":          {"traework/qwen3-coder", "workbuddy/glm-5.2"},
 	}
 }
 

@@ -65,6 +65,39 @@ func TestPrepareBodyInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestPrepareBodyStripsGitStatus(t *testing.T) {
+	in := `{"model":"glm-5.3-flash","messages":[` +
+		`{"role":"system","content":"You are ZCode.\n\ngitStatus: This is the git status at the start of the conversation.\n\nCurrent branch: main\n\nGit user: jxylisty\n\nStatus:\nM a.txt"},` +
+		`{"role":"user","content":"hi"}]}`
+	out := PrepareBody([]byte(in))
+	var m map[string]any
+	json.Unmarshal(out, &m)
+	msgs, _ := m["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("messages changed: %d", len(msgs))
+	}
+	sys, _ := msgs[0].(map[string]any)["content"].(string)
+	if strings.Contains(sys, "gitStatus") || strings.Contains(sys, "Git user") {
+		t.Errorf("gitStatus not stripped: %q", sys)
+	}
+	if !strings.Contains(sys, "You are ZCode.") {
+		t.Errorf("normal prompt lost: %q", sys)
+	}
+	if m["stream"] != true {
+		t.Error("stream should be forced true")
+	}
+}
+
+func TestPrepareBodyKeepsSystemWithoutGitStatus(t *testing.T) {
+	out := PrepareBody([]byte(`{"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"hi"}]}`))
+	var m map[string]any
+	json.Unmarshal(out, &m)
+	sys, _ := m["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if sys != "You are helpful." {
+		t.Errorf("system should be untouched, got %q", sys)
+	}
+}
+
 const sseFixture = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你好\"}}]}\n\n" +
 	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"，世界\"}}]}\n\n" +
 	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n" +
