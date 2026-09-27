@@ -442,6 +442,38 @@ func LoadAtriaDir(dir string) ([]*Auth, error) {
 	return out, nil
 }
 
+// LoadTierflowDir 扫描 tierflow.cn 免费聚合渠道凭证（tierflow-*.json，多账号轮换）。
+// 每文件形如 {apiKey|accessToken, uid, nickname}；UID 缺失时以文件名（去扩展名）
+// 兜底，保证多号在账号池中互不覆盖。缺文件返回 (nil, nil)，启动时静默不暴露渠道。
+func LoadTierflowDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "tierflow-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		base := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
+		if a.UID == "" {
+			a.UID = base
+		}
+		if a.Nickname == "" {
+			a.Nickname = a.UID
+		}
+		a.Kind, a.FilePath = "tierflow", f
+		a.Mode = "direct" // 直连云端 API，面板分区用
+		out = append(out, a)
+	}
+	return out, nil
+}
+
 // LoadOpenAICompatDir 读取单文件 API-key 型渠道凭证（OpenAI 兼容云端渠道通用）。
 // 文件名 = <name>.json，格式 {apiKey, uid, nickname}；缺文件/解析失败返回
 // (nil, nil)，启动时静默不暴露渠道（与本地白嫖渠道同一约定）。

@@ -46,7 +46,7 @@ function cssVar(name) {
 function chColor(kind) {
   const v = cssVar("--ch-" + kind);
   if (v) return v;
-  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", wbintl: "#ea580c", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7", copilot: "#475569", doubao: "#dc2626", gptgemini: "#db2777", glmflash: "#65a30d", groq: "#f59e0b" };
+  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", wbintl: "#ea580c", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7", copilot: "#475569", doubao: "#dc2626", gptgemini: "#db2777", glmflash: "#65a30d", groq: "#f59e0b", tierflow: "#d946ef" };
   return fb[kind] || "#64748b";
 }
 
@@ -65,12 +65,13 @@ function groupMeta(g) {
     case "gptgemini": return { cls: "gptgemini", name: "GptGemini (Key)", checkin: false };
     case "glmflash": return { cls: "glmflash", name: "GLM-Flash (Key)", checkin: false };
     case "groq": return { cls: "groq", name: "Groq (Key)", checkin: false };
+    case "tierflow": return { cls: "tierflow", name: "Tierflow (Key)", checkin: false };
     default: return { cls: "wb", name: "WorkBuddy", checkin: false };
   }
 }
 
 // NO_CHECKIN_GROUPS 无签到活动的渠道：无网页签到体系渠道 + key 型白嫖渠道。
-const NO_CHECKIN_GROUPS = ["codebuddy", "wbintl", "zcode", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq"];
+const NO_CHECKIN_GROUPS = ["codebuddy", "wbintl", "zcode", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow"];
 
 // ---------- 全局状态 ----------
 let state = null;
@@ -219,7 +220,7 @@ const MODE_SECTIONS = [
   { key: "bridge", name: "桥接账号", desc: "转发到本地 zcode-proxy 实例，网关不直接持有凭证" },
   { key: "direct", name: "直连账号", desc: "官方 API Key 直连，非反代，独立管理" },
 ];
-const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq"];
+const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow"];
 const GROUP_KEY_LS = "zg_acct_groups";
 let acctSearchQ = "";
 let acctFilterKey = "all";
@@ -400,8 +401,8 @@ const ADD_CHANNELS = [
   { ch: "workbuddy", name: "WorkBuddy",        hint: "浏览器登录" },
   { ch: "traework",  name: "TraeWork",         hint: "浏览器登录" },
   { ch: "qoder",     name: "Qoder",            hint: "浏览器登录" },
-  { ch: "codebuddy", name: "CodeBuddy (国际)", hint: "粘贴 Token" },
-  { ch: "wbintl",    name: "WorkBuddy (国际)", hint: "粘贴 Token" },
+  { ch: "codebuddy", name: "CodeBuddy (国际)", hint: "浏览器登录" },
+  { ch: "wbintl",    name: "WorkBuddy (国际)", hint: "浏览器登录" },
   { ch: "zcode",     name: "ZCode (Z.AI)",     hint: "浏览器登录 · 桥接" },
   { ch: "autoclaw",  name: "AutoClaw",         hint: "手机验证码" },
   { ch: "atria",     name: "Atria (官方 Key)", hint: "粘贴 atr_ Key" },
@@ -449,6 +450,7 @@ const feeThemes = {
   gptgemini: ["#db2777", "#f472b6"],
   glmflash:  ["#65a30d", "#a3e635"],
   groq:      ["#f59e0b", "#fbbf24"],
+  tierflow:  ["#d946ef", "#e879f9"],
   workbuddy: ["#2563eb", "#3b82f6"],
 };
 
@@ -882,7 +884,6 @@ function promptLogin(channel) {
   pendingChannel = channel;
   const name = groupMeta(channel).name;
   if (channel === "autoclaw") { openAutoclawDialog(); return; }
-  if (channel === "wbintl" || channel === "codebuddy") { openWbtDialog(channel); return; }
   if (channel === "atria") { openAtriaDialog(); return; }
   const row = $("zcodeProviderRow");
   if (channel === "zcode") {
@@ -893,9 +894,13 @@ function promptLogin(channel) {
     row.classList.add("hidden");
   }
   $("lcTitle").textContent = "添加 " + name + " 账号";
-  $("lcMsg").textContent = groupMeta(channel).checkin
-    ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。（${name} 渠道无签到活动，仅 API 转发）`
-    : `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。`;
+  if (channel === "wbintl" || channel === "codebuddy") {
+    $("lcMsg").textContent = `点击「登录${name}」将打开浏览器窗口，请按指示登录 workbuddy.ai 账号（国际版 WorkBuddy / CodeBuddy 同源共用账号），完成后关闭浏览器窗口即可。`;
+  } else {
+    $("lcMsg").textContent = groupMeta(channel).checkin
+      ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。（${name} 渠道无签到活动，仅 API 转发）`
+      : `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。`;
+  }
   $("btnLoginConfirm").textContent = "登录" + name;
   $("loginConfirmOverlay").classList.remove("hidden");
 }
@@ -910,10 +915,15 @@ async function startLogin(channel) {
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = "添加 " + groupMeta(channel).name + " 账号";
-    $("loginMsg").textContent = "请在浏览器新窗口中完成登录…";
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
-    window.open(url, "_blank", "noopener,noreferrer");
+    if (channel === "zcode") {
+      // zcode-proxy CLI 已自行拉起浏览器打开授权页，面板不再重复打开（否则同页开两次）
+      $("loginMsg").textContent = "浏览器已自动打开授权页，完成授权后返回即可（若未打开请点「复制链接」手动打开）";
+    } else {
+      $("loginMsg").textContent = "请在浏览器新窗口中完成登录…";
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
     startLoginPoll();
   } catch (e) {
     toast(e.message);

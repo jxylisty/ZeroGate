@@ -1,0 +1,13 @@
+# 行尾约定（详见 AGENTS.md 第 4 节第 12 条）
+# Windows 批处理：cmd.exe 要求 CRLF，LF 会导致读行错位 → 强制签出为 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 其余脚本 / 源码统一 LF
+*.sh   text eol=lf
+*.go   text eol=lf
+
+# 注意：本文件只能管「行尾」，管不了「编码」。
+# .bat 必须是 GBK(936)（cmd.exe 按本机代码页 936 解析）—— 靠 AGENTS.md 约定
+# + cmd/zerogate/scripts_test.go 的 TestBatConventions 断言，git 无法自动转换。

@@ -207,6 +207,11 @@ func Save(c *Config, path string) error {
 	if dir := filepath.Dir(path); dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
+	// 覆盖前留一份 .bak：配置里的端口 / API key / 模型重定向（ModelRedirects）写错
+	// 会直接让网关不可用，有备份才能一键回滚，避免"改错就完蛋"。
+	if old, rerr := os.ReadFile(path); rerr == nil {
+		_ = os.WriteFile(path+".bak", old, 0o600)
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err

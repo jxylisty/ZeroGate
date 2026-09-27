@@ -444,7 +444,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	if k == "" {
 		k = provider.WorkBuddy
 	}
-	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder && k != provider.ZCode && k != provider.WBIntl {
+	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder && k != provider.ZCode &&
+		k != provider.WBIntl && k != provider.CodeBuddy {
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
 	if k == provider.ZCode {
@@ -476,6 +477,14 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		authURL, err = logintrae.Start(a.loginClient, a.loginStateFP)
 	case provider.Qoder:
 		authURL, err = loginqoder.Start(a.loginClient, a.loginStateFP)
+	case provider.CodeBuddy, provider.WBIntl:
+		// 国际版 WorkBuddy / CodeBuddy 同源共用账号，统一走 workbuddy.ai 的 OAuth 设备流
+		authURL, err = login.StartIntl(a.loginClient, a.loginStateFP)
+		if err == nil {
+			if resolved, rerr := login.ResolveAuthURLIntl(a.loginClient, authURL); rerr == nil && resolved != "" {
+				authURL = resolved
+			}
+		}
 	default:
 		authURL, err = login.Start(a.loginClient, a.loginStateFP)
 		if err == nil {
@@ -670,14 +679,14 @@ func (a *App) pollLogin(ctx context.Context) {
 			}
 			continue
 		}
-		if a.loginKind == provider.WBIntl {
+		if a.loginKind == provider.WBIntl || a.loginKind == provider.CodeBuddy {
 			r, err := login.PollIntl(a.loginClient, a.loginStateFP)
 			if err == nil {
-				a.completeWbintlLogin(r)
+				a.completeWbintlLogin(a.loginKind, r)
 				return
 			}
 			if !errors.Is(err, login.ErrPending) {
-				log.Printf("wbintl login poll failed: %v", err)
+				log.Printf("%s login poll failed: %v", a.loginKind, err)
 			}
 			continue
 		}
@@ -739,26 +748,38 @@ func (a *App) completeTraeLogin(r logintrae.Result) {
 	})
 }
 
-// completeWbintlLogin 国际版登录成功：落盘 wbintl-<uid>.json + 重载账号池。
-func (a *App) completeWbintlLogin(r login.Result) {
-	log.Printf("wbintl 登录成功 uid=%s nickname=%s domain=%s", r.UID, r.Nickname, r.Domain)
+// completeWbintlLogin 国际版登录成功：落盘 <kind>-<uid>.json + 重载账号池。
+// kind 为 wbintl（www.workbuddy.ai）或 codebuddy（www.codebuddy.ai）；二者同源共用账号。
+func (a *App) completeWbintlLogin(kind provider.Kind, r login.Result) {
+	domain := "www.workbuddy.ai"
+	if kind == provider.CodeBuddy {
+		domain = "www.codebuddy.ai"
+	} else if d := strings.TrimSpace(r.Domain); d != "" {
+		// wbintl：上游返回的 domain 优先（形如 workbuddy.ai），补 www. 前缀；
+		// codebuddy 固定用自身域名，避免与 codebuddy.ai base 不一致
+		if !strings.HasPrefix(d, "www.") {
+			d = "www." + d
+		}
+		domain = d
+	}
+	log.Printf("%s 登录成功 uid=%s nickname=%s domain=%s", kind, r.UID, r.Nickname, domain)
 	au := &auth.Auth{
-		Kind:         "wbintl",
+		Kind:         string(kind),
 		AccessToken:  r.AccessToken,
 		RefreshToken: r.RefreshToken,
-		Domain:       "www.workbuddy.ai",
+		Domain:       domain,
 		UID:          r.UID,
 		Nickname:     r.Nickname,
 	}
 	if r.ExpiresIn > 0 {
 		au.ExpiresAt = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).Unix()
 	}
-	au.FilePath = filepath.Join(a.cfg.AuthDir, fmt.Sprintf("wbintl-%s.json", r.UID))
+	au.FilePath = filepath.Join(a.cfg.AuthDir, fmt.Sprintf("%s-%s.json", kind, r.UID))
 	if err := au.SaveAtomic(); err != nil {
-		log.Printf("wbintl 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		log.Printf("%s 登录保存凭证失败 uid=%s err=%v", kind, r.UID, err)
 		return
 	}
-	log.Printf("wbintl 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(au.FilePath))
+	log.Printf("%s 登录凭证已保存 uid=%s file=%s", kind, r.UID, filepath.Base(au.FilePath))
 	a.reloadAccounts()
 	a.finishLogin()
 }
@@ -903,13 +924,22 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
+	if rt := a.runtime(provider.Tierflow); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadTierflowDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload tierflow accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
 }
 
 // kindNoCheckin 无签到活动的渠道：无网页签到体系渠道 + OpenAI 兼容 key 型渠道。
 func kindNoCheckin(k provider.Kind) bool {
 	switch k {
 	case provider.CodeBuddy, provider.WBIntl, provider.ZCode, provider.Atria,
-		provider.Copilot, provider.Doubao, provider.GptGemini, provider.GlmFlash, provider.Groq:
+		provider.Copilot, provider.Doubao, provider.GptGemini, provider.GlmFlash, provider.Groq,
+		provider.Tierflow:
 		return true
 	}
 	return false
@@ -1617,7 +1647,7 @@ func (a *App) GetState() State {
 }
 
 // channelDefaultMode 渠道缺省接入方式：zcode 与本机白嫖三件套（copilot/doubao/gptgemini）
-// 走本地桥接，atria 与 OpenAI 兼容 key 渠道（glmflash/groq）为 API Key 直连，
+// 走本地桥接，atria 与 OpenAI 兼容 key 渠道（glmflash/groq/tierflow）为 API Key 直连，
 // 其余渠道均为网关持有凭证的反代。auth 文件里账号级 account.mode 可覆盖（见 auth.Parse）。
 var channelDefaultMode = map[string]string{
 	"zcode":     "bridge",
@@ -1627,6 +1657,7 @@ var channelDefaultMode = map[string]string{
 	"atria":     "direct",
 	"glmflash":  "direct",
 	"groq":      "direct",
+	"tierflow":  "direct",
 }
 
 func defaultChannelMode(kind string) string {

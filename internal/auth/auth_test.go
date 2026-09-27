@@ -158,3 +158,42 @@ func TestParseBOM(t *testing.T) {
 		t.Fatalf("unexpected auth: %+v", a)
 	}
 }
+
+func TestLoadTierflowDir(t *testing.T) {
+	dir := t.TempDir()
+	// 嵌套形（带 uid）与扁平形（无 uid，靠文件名兜底）各一，验证多账号互不覆盖。
+	f1 := `{"auth":{"accessToken":"sk-1","apiHost":"https://tierflow.cn/v1"},"account":{"uid":"tierflow-1","mode":"direct","nickname":"#1"}}`
+	f2 := `{"apiKey":"sk-2"}`
+	os.WriteFile(filepath.Join(dir, "tierflow-1.json"), []byte(f1), 0o600)
+	os.WriteFile(filepath.Join(dir, "tierflow-2.json"), []byte(f2), 0o600)
+
+	list, err := LoadTierflowDir(dir)
+	if err != nil {
+		t.Fatalf("load tierflow: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want 2 accounts, got %d", len(list))
+	}
+	seen := map[string]bool{}
+	for _, a := range list {
+		if a.Kind != "tierflow" {
+			t.Errorf("want kind tierflow, got %s", a.Kind)
+		}
+		if a.Mode != "direct" {
+			t.Errorf("want mode direct, got %s", a.Mode)
+		}
+		if a.AccessToken == "" || a.UID == "" || a.FilePath == "" {
+			t.Errorf("incomplete auth: %+v", a)
+		}
+		seen[a.UID] = true
+	}
+	if !seen["tierflow-1"] || !seen["tierflow-2"] || len(seen) != 2 {
+		t.Errorf("uids not distinct: %+v", seen)
+	}
+
+	// 缺文件不报错、不暴露渠道。
+	empty, err := LoadTierflowDir(t.TempDir())
+	if err != nil || empty != nil {
+		t.Errorf("missing dir: want (nil,nil), got (%v,%v)", empty, err)
+	}
+}

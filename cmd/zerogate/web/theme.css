@@ -38,6 +38,12 @@
   --ch-zcode: #6366f1;
   --ch-autoclaw: #0d9488;
   --ch-atria: #0284c7;
+  --ch-copilot: #475569;
+  --ch-doubao: #dc2626;
+  --ch-gptgemini: #db2777;
+  --ch-glmflash: #65a30d;
+  --ch-groq: #f59e0b;
+  --ch-tierflow: #d946ef;
 
   /* 形状与阴影 */
   --radius: 12px;
@@ -251,6 +257,12 @@ code, pre, kbd { font-family: var(--mono); }
 .badge.zc { background: var(--ch-zcode); }
 .badge.ac { background: var(--ch-autoclaw); }
 .badge.atria { background: var(--ch-atria); }
+.badge.copilot { background: var(--ch-copilot); }
+.badge.doubao { background: var(--ch-doubao); }
+.badge.gptgemini { background: var(--ch-gptgemini); }
+.badge.glmflash { background: var(--ch-glmflash); }
+.badge.groq { background: var(--ch-groq); }
+.badge.tierflow { background: var(--ch-tierflow); }
 
 /* ---------- 状态药丸 ---------- */
 .status-pill {

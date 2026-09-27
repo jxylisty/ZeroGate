@@ -122,6 +122,16 @@ func Start(client *http.Client, statePath string) (string, error) {
 // （copilot.tencent.com/login → 301 加斜杠 → www.codebuddy.cn/login/...），
 // 浏览器可直接打开最终地址，跳过中间跳转。
 func ResolveAuthURL(client *http.Client, rawURL string) (string, error) {
+	return resolveAuthURL(client, rawURL, commonHeaders)
+}
+
+// ResolveAuthURLIntl 同 ResolveAuthURL，但使用国际版请求头（workbuddy.ai）。
+func ResolveAuthURLIntl(client *http.Client, rawURL string) (string, error) {
+	return resolveAuthURL(client, rawURL, intlHeaders)
+}
+
+// resolveAuthURL 手动跟随重定向链，headers 决定用哪套 UA/Origin/Referer。
+func resolveAuthURL(client *http.Client, rawURL string, headers func(*http.Request)) (string, error) {
 	noFollow := &http.Client{
 		Timeout:   client.Timeout,
 		Jar:       client.Jar,
@@ -136,7 +146,7 @@ func ResolveAuthURL(client *http.Client, rawURL string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		commonHeaders(req)
+		headers(req)
 		resp, err := noFollow.Do(req)
 		if err != nil {
 			return "", err

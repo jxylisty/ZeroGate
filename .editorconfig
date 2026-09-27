@@ -1,0 +1,24 @@
+# 仅作用于 src-true（root=true 阻断向上继承，避免影响 research/ 等其它集成目录）
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+# Windows 批处理：cmd.exe（本机代码页 936）要求 CRLF。
+# 编码必须是 GBK/ANSI —— EditorConfig 规范无法指定 GBK，故此处 charset=unset
+# （交给编辑器默认值），由 AGENTS.md 第 4 节第 12 条 + TestBatConventions 保证。
+[*.{bat,cmd}]
+end_of_line = crlf
+charset = unset
+
+[*.go]
+indent_style = tab
+
+[*.{js,css,html,json,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

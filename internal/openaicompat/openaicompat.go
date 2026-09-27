@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"zerogate/internal/auth"
@@ -24,6 +25,10 @@ type Client struct {
 	// ChatPath 聊天端点路径，缺省 /v1/chat/completions。
 	// 云端渠道路径各异：智谱 /api/paas/v4/chat/completions、Groq /openai/v1/chat/completions。
 	ChatPath string
+	// PerAccountKey 标记该渠道支持「按号取 key」（云端多账号，如 tierflow/groq）。
+	// 本地无鉴权桥（copilot/doubao/gptgemini，New 构造）为 false：它们的 auth
+	// 文件 accessToken 是占位符，绝不能当作真实 Bearer 发给上游（会 401）。
+	PerAccountKey bool
 }
 
 // chatEndpoint 返回聊天端点完整 URL。
@@ -32,6 +37,20 @@ func (c *Client) chatEndpoint() string {
 		return c.BaseURL + c.ChatPath
 	}
 	return c.BaseURL + "/v1/chat/completions"
+}
+
+// keyFor 返回本次请求应使用的 Bearer Key。仅当渠道声明支持按号取 key
+// （PerAccountKey，由 NewWithKey 置位）且账号带了非空 token 时才用按号的；
+// 否则一律用 client 固化的 c.ApiKey——本地无鉴权桥用 New 构造，
+// c.ApiKey 为空、按号 token 为占位符，必须走这条回退，否则会把占位符
+// 当真实 Bearer 发出去导致 401。
+func (c *Client) keyFor(a *auth.Auth) string {
+	if c.PerAccountKey && a != nil {
+		if t := strings.TrimSpace(a.AccessToken); t != "" {
+			return t
+		}
+	}
+	return c.ApiKey
 }
 
 // ChatStream POST <chatEndpoint>(stream=true)。
@@ -57,7 +76,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		return nil, 0, nil, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.ApiKey)
+	req.Header.Set("Authorization", "Bearer "+c.keyFor(a))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -100,7 +119,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.ApiKey)
+	req.Header.Set("Authorization", "Bearer "+c.keyFor(a))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -200,8 +219,10 @@ func New(baseURL string) *Client {
 }
 
 // NewWithKey 创建带 Bearer 鉴权的 OpenAI 兼容客户端（云端免费层渠道）。
+// 置 PerAccountKey=true：运行时优先用「按号传入的 auth.AccessToken」，
+// 以支持一个渠道挂多个 key 轮换（apiKey 仅作账号 token 缺失时的兜底）。
 func NewWithKey(baseURL, apiKey, chatPath string) *Client {
-	return &Client{BaseURL: baseURL, ApiKey: apiKey, ChatPath: chatPath}
+	return &Client{BaseURL: baseURL, ApiKey: apiKey, ChatPath: chatPath, PerAccountKey: true}
 }
 
 // StaticModels 白嫖渠道静态模型列表（占位，实际由 FetchModels 动态获取）。

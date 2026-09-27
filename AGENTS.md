@@ -93,6 +93,12 @@ ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder /
     - 启动提示已从 `platform.Notify`（Windows 上是阻塞的 MessageBoxW）改为写日志，避免"弹窗不点确认、托盘一直不出来"。
     - **崩溃现场兜底**：main 开头 `windows.SetStdHandle(STD_ERROR_HANDLE, ...)` + `os.Stderr` 重定向到 `data/crash-stderr.log`（实测能抓到 goroutine panic 堆栈）；调度器 goroutine 全部套 recover。
     - **`/api/quit` 已删除**（2026-09-23）：孤儿路由，任何本地进程 POST 一下就无声杀网关。需要远程退出时须显式恢复并加鉴权。
+12. **脚本文件约定：`.bat` 必须 CRLF 行尾 + GBK(936) 编码（2026-09-27 踩坑）**：
+    本机 ACP/OEMCP = 936，cmd.exe 按「当前控制台代码页」逐行解析批处理。若 `.bat` 被存成 **UTF-8 或 LF 行尾**，cmd 会把中文/行读错位，产生看似随机的 `'xxx' 不是内部或外部命令` / `此时不应有 &` —— 典型现象是"昨天还好、今天莫名报错"，极耗排查时间。
+    - 涉及文件：`src-true/restart.bat`、根目录 `启动.bat`、`启动全部服务.bat`。
+    - **改动这些脚本后必须回读校验**（CRLF + 非 UTF-8）；`go test ./cmd/zerogate/` 的 `TestBatConventions` 会直接拦截违规文件。
+    - 编辑器 / `Set-Content` / PowerShell 默认保存为 UTF-8+LF，**勿直接保存**。`.gitattributes` 只兜底行尾、`.editorconfig` 无法指定 GBK，**编码只能靠约定 + 断言**。
+    - Agent 在 PowerShell 里调用这些 `.bat` 时需先 `chcp 936`：否则子进程 cmd 会沿用被宿主设为 65001 的控制台代码页，导致 GBK 脚本再次被读错。
 
 ---
 

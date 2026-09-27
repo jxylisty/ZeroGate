@@ -27,6 +27,7 @@ const (
 	GptGemini Kind = "gptgemini"  // 本机白嫖服务 127.0.0.1:8317（OpenAI 兼容）
 	GlmFlash  Kind = "glmflash"   // 智谱开放平台 Flash 家族（永久免费层，OpenAI 兼容）
 	Groq      Kind = "groq"       // Groq 免费层（Llama/Qwen 推理云，OpenAI 兼容）
+	Tierflow  Kind = "tierflow"   // tierflow.cn 免费聚合（OpenAI 兼容，Bearer Key）
 )
 
 func (k Kind) String() string { return string(k) }

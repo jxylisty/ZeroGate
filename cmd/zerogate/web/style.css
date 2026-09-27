@@ -184,6 +184,12 @@
 .fees .ch-header.cb td { color: var(--ch-codebuddy); }
 .fees .ch-header.wbi td { color: var(--ch-wbintl); }
 .fees .ch-header.zc td { color: var(--ch-zcode); }
+.fees .ch-header.copilot td { color: var(--ch-copilot); }
+.fees .ch-header.doubao td { color: var(--ch-doubao); }
+.fees .ch-header.gptgemini td { color: var(--ch-gptgemini); }
+.fees .ch-header.glmflash td { color: var(--ch-glmflash); }
+.fees .ch-header.groq td { color: var(--ch-groq); }
+.fees .ch-header.tierflow td { color: var(--ch-tierflow); }
 .fees .note { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 
 .fees-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-top: 10px; }

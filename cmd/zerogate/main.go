@@ -133,6 +133,18 @@ func main() {
 		}
 	}
 
+	// tierflowModels tierflow.cn 免费聚合渠道模型目录（2026-09-27 实测 /v1/models）。
+	tierflowModels := func() []provider.ModelInfo {
+		return []provider.ModelInfo{
+			{ID: "tierflow", Name: "Tierflow"},
+			{ID: "tierflow_pro", Name: "Tierflow Pro"},
+			{ID: "GLM-5.3-Flash", Name: "GLM-5.3-Flash"},
+			{ID: "GLM-5.3-FlashX", Name: "GLM-5.3-FlashX"},
+			{ID: "Qwen3.8-Flash", Name: "Qwen3.8-Flash"},
+			{ID: "TierSense", Name: "TierSense"},
+		}
+	}
+
 	type channelSpec struct {
 		kind         provider.Kind
 		name         string // 调度器/通知用的渠道名
@@ -247,7 +259,9 @@ func main() {
 			kind: provider.Copilot, name: "copilot", stateFile: "state-copilot.json",
 			load: func() ([]*auth.Auth, error) { return auth.LoadCopilotDir(cfg.AuthDir) },
 			newUpstream: func() provider.Upstream {
-				return openaicompat.New("http://127.0.0.1:4141")
+				// 本地桥也校验 Bearer（实测 401 无 key / 200 有 key），key 存在
+				// auths/copilot.json 的 accessToken，按号注入；chatPath 留空走默认 /v1/chat/completions。
+				return openaicompat.NewWithKey("http://127.0.0.1:4141", "", "")
 			},
 			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
 		},
@@ -255,7 +269,7 @@ func main() {
 			kind: provider.Doubao, name: "doubao", stateFile: "state-doubao.json",
 			load: func() ([]*auth.Auth, error) { return auth.LoadDoubaoDir(cfg.AuthDir) },
 			newUpstream: func() provider.Upstream {
-				return openaicompat.New("http://127.0.0.1:7868")
+				return openaicompat.NewWithKey("http://127.0.0.1:7868", "", "")
 			},
 			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
 		},
@@ -263,7 +277,7 @@ func main() {
 			kind: provider.GptGemini, name: "gptgemini", stateFile: "state-gptgemini.json",
 			load: func() ([]*auth.Auth, error) { return auth.LoadGptGeminiDir(cfg.AuthDir) },
 			newUpstream: func() provider.Upstream {
-				return openaicompat.New("http://127.0.0.1:8317")
+				return openaicompat.NewWithKey("http://127.0.0.1:8317", "", "")
 			},
 			checkin:      false, staticModels: openaicompat.StaticModels, runScheduler: false,
 		},
@@ -289,6 +303,15 @@ func main() {
 			return openaicompat.NewWithKey("https://api.groq.com/openai/v1", "", "/chat/completions")
 			},
 			checkin:      false, staticModels: groqModels, runScheduler: false,
+		},
+		{
+			kind: provider.Tierflow, name: "tierflow", stateFile: "state-tierflow.json",
+			load: func() ([]*auth.Auth, error) { return auth.LoadTierflowDir(cfg.AuthDir) },
+			newUpstream: func() provider.Upstream {
+				// tierflow.cn 免费聚合：BaseURL 已含 /v1，鉴权 Bearer；key 由按号机制提供（留空）
+				return openaicompat.NewWithKey("https://tierflow.cn/v1", "", "/chat/completions")
+			},
+			checkin:      false, staticModels: tierflowModels, runScheduler: false,
 		},
 	}
 
