@@ -832,11 +832,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				track.finish()
 				// 上游中途断流（超时/连接重置）：下游只看到连接关闭会当成"正常结束"，
 				// 必须补一个 SSE error 事件让客户端知道是失败而非模型说完了。
+				// 事件体必须是 OpenAI 标准 error 对象结构（error 为对象而非裸字符串），
+				// 否则严格校验的客户端（zod invalid_union）会直接判定响应非法。
 				if streamErr != nil {
 					log.Printf("stream aborted platform=%s uid=%s elapsed=%dms err=%v",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
-					if payload, jerr := json.Marshal(map[string]string{
-						"error": "上游连接中断：" + streamErr.Error(),
+					msg := "上游连接中断：" + streamErr.Error()
+					if payload, jerr := json.Marshal(map[string]any{
+						"error": map[string]any{
+							"message": msg,
+							"type":    "upstream_error",
+							"code":    "stream_aborted",
+						},
 					}); jerr == nil {
 						if _, werr := io.WriteString(w, "data: "+string(payload)+"\n\n"); werr == nil {
 							if fl, ok := w.(http.Flusher); ok {
