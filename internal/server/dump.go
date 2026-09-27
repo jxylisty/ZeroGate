@@ -17,16 +17,21 @@ import (
 // unapproved channel"）时，把网关实际转发出去的请求体落盘，便于与成功请求
 // 逐字段对比，定位是哪个字段/结构触发了上游的渠道校验。
 //
+// 默认只抓 4xx/5xx；如需连成功请求一起抓（为了和失败请求对拍请求体形态差异，
+// 例如排查 Trae vs ZCode 提示词不同导致的 11128），额外设 ZG_DUMP_ALL=1。
+//
 // 安全：dump 内容不含 Authorization 等凭证；请求体中的 API Key 字段会被掩码。
 // 落盘位置：$ZG_DUMP_DIR（默认 ./data/dumps），文件名含 UTC 时间戳与结果码。
 var (
 	dumpOnce sync.Once
 	dumpOn   bool
+	dumpAll  bool // ZG_DUMP_ALL=1 时连成功请求也抓（默认仅 4xx/5xx）
 	dumpDir  string
 )
 
 func dumpInit() {
 	dumpOn = os.Getenv("ZG_DUMP_BODY") == "1"
+	dumpAll = os.Getenv("ZG_DUMP_ALL") == "1"
 	dumpDir = os.Getenv("ZG_DUMP_DIR")
 	if dumpDir == "" {
 		dumpDir = filepath.Join("data", "dumps")
@@ -36,10 +41,14 @@ func dumpInit() {
 	}
 }
 
-// dumpRequestBody 把一次失败请求的上下文写入 dump 目录。
-// 仅在 ZG_DUMP_BODY=1 时生效，任何错误都静默（诊断不影响主链路）。
+// dumpRequestBody 把一次请求的上下文写入 dump 目录（由调用方在收到上游响应后调用）。
+// 仅在 ZG_DUMP_BODY=1 时生效；默认只落 4xx/5xx，仅当 ZG_DUMP_ALL=1 时才连 2xx 成功
+// 请求也落（用于成功 vs 失败请求体形态对拍）。任何错误都静默（诊断不影响主链路）。
 func dumpRequestBody(channel, model string, status int, respBody []byte, reqBody []byte) {
 	if !dumpOn {
+		return
+	}
+	if status < 300 && !dumpAll {
 		return
 	}
 	rec := map[string]any{

@@ -747,13 +747,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				continue
 			}
+			// 诊断（ZG_DUMP_BODY=1 时生效）：落盘实际转发给上游的请求体，
+			// 用于排查 11128 等"渠道校验不通过"类拒绝的具体触发字段。
+			// 默认只落 4xx/5xx；ZG_DUMP_ALL=1 时才连 2xx 成功请求也落，便于
+			// 拿成功 vs 失败两条请求体形态对拍（如 Trae vs ZCode 提示词差异）。
+			ensureDumpInit()
+			dumpRequestBody(rt.Kind.String(), targetModel, status, respBody, candBody)
 			if status >= 400 {
 				lastStatus = status
 				h.stickyClear(rt)
-				// 诊断（ZG_DUMP_BODY=1 时生效）：落盘实际转发给上游的请求体，
-				// 用于排查 11128 等"渠道校验不通过"类拒绝的具体触发字段。
-				ensureDumpInit()
-				dumpRequestBody(rt.Kind.String(), targetModel, status, respBody, candBody)
 				kind := rt.Upstream.Classify(status, string(respBody))
 				switch kind {
 				case provider.ErrHardCredit:

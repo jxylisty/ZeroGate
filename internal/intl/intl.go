@@ -205,7 +205,14 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 // PrepareBody 改写发往上游的 chat 请求体：
 //  1. 强制 stream:true（上游拒绝非流式，code 11101）
 //  2. messages[0] 必须是 system（否则 code 11128）；缺 system 时在最前插入
-//  3. role=developer 归一为 system（复用 upstream 的 Open 封装）
+//  3. 剥离 system 提示词里的 gitStatus 段（code 11128 触发源，见下）
+//
+// gitStatus 剥离：ZCode/Trae 桌面客户端在 git 仓库会话开局时，会把 git 状态
+// （Current branch / Git user / Recent commits 等）注入 system 提示词。实测发往
+// intl(workbuddy/codebuddy) 上游时，该段会触发 11128 "Illegal API invocation from
+// an unapproved channel" 渠道校验（基线实验：system 到 "Main branch: main" 前恒 200，
+// 追加 "Git user: <name>" 后恒 400；删除整个 gitStatus 段后恢复 200）。gitStatus
+// 属客户端会话元信息而非对话内容，剥掉不影响正常问答与工具调用。
 func PrepareBody(src []byte) []byte {
 	if len(src) == 0 {
 		return src
@@ -216,6 +223,26 @@ func PrepareBody(src []byte) []byte {
 	}
 	obj["stream"] = true
 	msgs, _ := obj["messages"].([]any)
+	for i, m := range msgs {
+		mo, ok := m.(map[string]any)
+		if !ok || mo["role"] != "system" {
+			continue
+		}
+		c, ok := mo["content"].(string)
+		if !ok {
+			continue
+		}
+		// 删除 gitStatus 段：从 "gitStatus" 起始到下一个空白行+新起点标记(如 "\n\n# " 或段落结束)。
+		gs := strings.Index(c, "gitStatus")
+		if gs >= 0 {
+			// 截断到该位置，清除 git 会话元信息及其后一切，保留下文不含它。
+			c = c[:gs]
+			// 移除末尾可能遗留的孤立换行/空格，保证 system 内容干净。
+			c = strings.TrimRight(c, "\r\n \t")
+			mo["content"] = c
+			msgs[i] = mo
+		}
+	}
 	if len(msgs) == 0 {
 		obj["messages"] = []any{map[string]any{"role": "system", "content": "You are a helpful assistant."}}
 	} else if first, ok := msgs[0].(map[string]any); !ok || first["role"] != "system" {

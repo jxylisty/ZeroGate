@@ -13,6 +13,7 @@ import (
 func resetDump() {
 	dumpOnce = sync.Once{}
 	dumpOn = false
+	dumpAll = false
 	dumpDir = ""
 }
 
@@ -113,5 +114,59 @@ func TestDumpWritesWhenEnabled(t *testing.T) {
 	}
 	if rec["channel"] != "workbuddy" || rec["status"].(float64) != 400 {
 		t.Fatalf("dump 元信息不符: %v", rec)
+	}
+}
+
+// ZG_DUMP_ALL=1 时成功(2xx)请求也应落盘，供成功/失败请求体对拍。
+func TestDumpAllCapturesSuccess(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("ZG_DUMP_BODY", "1")
+	os.Setenv("ZG_DUMP_ALL", "1")
+	os.Setenv("ZG_DUMP_DIR", dir)
+	defer func() {
+		os.Unsetenv("ZG_DUMP_BODY")
+		os.Unsetenv("ZG_DUMP_ALL")
+		os.Unsetenv("ZG_DUMP_DIR")
+	}()
+
+	dumpOnce = sync.Once{}
+	dumpInit()
+
+	dumpRequestBody("workbuddy", "glm-5.3-flash", 200,
+		[]byte(`{"id":"x","model":"glm-5.3-flash"}`),
+		[]byte(`{"model":"glm-5.3-flash","messages":[{"role":"system","content":"You are"}]}`))
+
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("ZG_DUMP_ALL=1 时应写入成功 dump, got %d", len(entries))
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	var rec map[string]any
+	_ = json.Unmarshal(raw, &rec)
+	if rec["status"].(float64) != 200 {
+		t.Fatalf("成功请求 dump 状态不符: %v", rec)
+	}
+}
+
+// ZG_DUMP_ALL 未开时成功请求不落盘（默认行为回归）。
+func TestDumpAllOffKeepsSuccessUnlogged(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("ZG_DUMP_BODY", "1")
+	os.Unsetenv("ZG_DUMP_ALL")
+	os.Setenv("ZG_DUMP_DIR", dir)
+	defer func() {
+		os.Unsetenv("ZG_DUMP_BODY")
+		os.Unsetenv("ZG_DUMP_DIR")
+	}()
+
+	dumpOnce = sync.Once{}
+	dumpInit()
+
+	dumpRequestBody("workbuddy", "glm-5.3-flash", 200,
+		[]byte(`{"id":"x"}`), []byte(`{"model":"m"}`))
+
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("未设 ZG_DUMP_ALL 时不应写成功 dump, got %d", len(entries))
 	}
 }
