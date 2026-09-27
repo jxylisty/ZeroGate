@@ -87,7 +87,7 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 		{"role": "system", "content": "保持简洁"},
 		{"role": "user", "content": "你好"},
 	}
-	raw, err := buildAgentBody(msgs, "dmodel", nil, false, "")
+	raw, err := buildAgentBody(msgs, "dmodel", nil, ChatOptions{})
 	if err != nil {
 		t.Fatalf("buildAgentBody: %v", err)
 	}
@@ -124,6 +124,55 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 	_ = json.Unmarshal(raw, &prompt)
 	if prompt.ChatContext.Text.Text != "你好" {
 		t.Errorf("prompt = %q, want 你好", prompt.ChatContext.Text.Text)
+	}
+}
+
+func TestBuildAgentBodySamplingParams(t *testing.T) {
+	// 采样/思考参数必须落在顶层 parameters；source=system 必须落在顶层 model_config。
+	temp := 0.0 // 零值也要透传，靠指针区分"未传"
+	topP := 0.9
+	maxTok := 4096
+	raw, err := buildAgentBody(
+		[]map[string]any{{"role": "user", "content": "hi"}},
+		"dmodel", nil,
+		ChatOptions{
+			ReasoningEffort: "high",
+			Temperature:     &temp,
+			TopP:            &topP,
+			MaxTokens:       &maxTok,
+		},
+	)
+	if err != nil {
+		t.Fatalf("buildAgentBody: %v", err)
+	}
+	var body struct {
+		ModelConfig map[string]any `json:"model_config"`
+		Parameters  map[string]any `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.ModelConfig["source"] != "system" {
+		t.Errorf("model_config.source = %v, want system", body.ModelConfig["source"])
+	}
+	if body.ModelConfig["is_reasoning"] != true {
+		t.Errorf("model_config.is_reasoning = %v, want true", body.ModelConfig["is_reasoning"])
+	}
+	p := body.Parameters
+	if p["temperature"] != 0.0 {
+		t.Errorf("parameters.temperature = %v, want 0", p["temperature"])
+	}
+	if p["top_p"] != 0.9 {
+		t.Errorf("parameters.top_p = %v, want 0.9", p["top_p"])
+	}
+	if p["max_tokens"] != 4096.0 {
+		t.Errorf("parameters.max_tokens = %v, want 4096", p["max_tokens"])
+	}
+	if p["enable_thinking"] != true {
+		t.Errorf("parameters.enable_thinking = %v, want true", p["enable_thinking"])
+	}
+	if p["reasoning_effort"] != "xhigh" {
+		t.Errorf("parameters.reasoning_effort = %v, want xhigh (high→xhigh)", p["reasoning_effort"])
 	}
 }
 

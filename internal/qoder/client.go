@@ -251,15 +251,17 @@ func parse10605(body []byte) (retryAfter int, ok bool) {
 // ChatStream 发 chat 请求并返回原始嵌套 SSE body 流（调用方负责 Close）。
 // 非 2xx 时 rc 为 nil、respBody 为上游响应体、err 为 nil；只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
-	// body 是 server 侧改写后的 OpenAI 请求；qoder 需要 messages/model/tools/reasoning_effort。
+	// body 是 server 侧改写后的 OpenAI 请求；qoder 需要 messages/model/tools
+	// 及采样/思考参数（透传到上游顶层 parameters）。
 	var reqOpenAI struct {
 		Model           string           `json:"model"`
 		Messages        []map[string]any `json:"messages"`
 		Tools           []any            `json:"tools"`
 		ReasoningEffort string           `json:"reasoning_effort"`
-		Thinking        *struct {
-			Type string `json:"type"`
-		} `json:"thinking"`
+		Temperature     *float64         `json:"temperature"`
+		TopP            *float64         `json:"top_p"`
+		MaxTokens       *int             `json:"max_tokens"`
+		Stop            any              `json:"stop"`
 	}
 	if err := json.Unmarshal(body, &reqOpenAI); err != nil {
 		return nil, 0, nil, fmt.Errorf("parse chat body: %w", err)
@@ -270,17 +272,15 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		modelKey = reqOpenAI.Model
 	}
 
-	// 思考开关：reasoning_effort 或 thinking:{type:"enabled"} → 启用推理
-	enableReasoning := false
-	reasoningEffort := ""
-	if reqOpenAI.ReasoningEffort != "" {
-		enableReasoning = true
-		reasoningEffort = reqOpenAI.ReasoningEffort
-	} else if reqOpenAI.Thinking != nil && reqOpenAI.Thinking.Type == "enabled" {
-		enableReasoning = true
+	opts := ChatOptions{
+		ReasoningEffort: reqOpenAI.ReasoningEffort,
+		Temperature:     reqOpenAI.Temperature,
+		TopP:            reqOpenAI.TopP,
+		MaxTokens:       reqOpenAI.MaxTokens,
+		Stop:            reqOpenAI.Stop,
 	}
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, enableReasoning, reasoningEffort)
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, opts)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}
