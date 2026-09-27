@@ -76,6 +76,7 @@ type Config struct {
 
 	// ModelRedirects 模型别名映射。
 	ModelRedirects map[string][]string
+	ModelMerge     map[string][]string // 跨渠道合并路由：同款自动优选到期最近/余额最低的账号
 
 	// RateLimit 本地小时窗限速器（可空 = 不限速），每 (渠道, 账号) 300 req/h。
 	RateLimit *limiter.Limiter
@@ -114,6 +115,7 @@ type Handler struct {
 	auditRec       *audit.Recorder
 	redirectsMu    sync.RWMutex
 	modelRedirects map[string][]string
+	modelMerge     map[string][]string
 }
 
 // SetTokenRecorder 注入 Token 用量回调（由 app 装配，统计反代请求实际消耗）。
@@ -141,6 +143,19 @@ func (h *Handler) GetModelRedirects() map[string][]string {
 	}
 	out := make(map[string][]string, len(h.modelRedirects))
 	for k, v := range h.modelRedirects {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+func (h *Handler) GetModelMerge() map[string][]string {
+	h.redirectsMu.RLock()
+	defer h.redirectsMu.RUnlock()
+	if h.modelMerge == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(h.modelMerge))
+	for k, v := range h.modelMerge {
 		out[k] = append([]string(nil), v...)
 	}
 	return out
@@ -179,6 +194,7 @@ func NewHandler(cfg Config) *Handler {
 		clientKeys:     cfg.ClientKeys,
 		auditRec:       cfg.AuditRec,
 		modelRedirects: cfg.ModelRedirects,
+		modelMerge:     cfg.ModelMerge,
 	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
@@ -505,7 +521,11 @@ func (h *Handler) modelList() []map[string]any {
 
 	// 首先暴露所有配置的别名模型（如 claude-3-5-sonnet、deepseek-chat 等）
 	redirects := h.GetModelRedirects()
-	aliasNames := make([]string, 0, len(redirects))
+	merges := h.GetModelMerge()
+	aliasNames := make([]string, 0, len(redirects)+len(merges))
+	for name := range merges {
+		aliasNames = append(aliasNames, name)
+	}
 	for name := range redirects {
 		aliasNames = append(aliasNames, name)
 	}
@@ -646,11 +666,27 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// 解析候选列表：命中别名则展开为候选链；否则为单项候选
 	redirects := h.GetModelRedirects()
+	merges := h.GetModelMerge()
 	var candidates []string
+	var isMerge bool
 	if list, ok := redirects[requestedModel]; ok && len(list) > 0 {
 		candidates = append([]string(nil), list...)
+	} else if list, ok := merges[requestedModel]; ok && len(list) > 0 {
+		candidates = append([]string(nil), list...)
+		isMerge = true
 	} else {
 		candidates = []string{requestedModel}
+	}
+	// 合并路由模式：提前跨候选找最优账号。找到直接执行一轮；否则回退到传统降级链
+	var mergeBestAcct *auth.Auth
+	var mergeBestRT *Runtime
+	var mergeBestTarget string
+	var mergeBestBody []byte
+	if isMerge {
+		mergeBestAcct, mergeBestRT, mergeBestTarget, mergeBestBody = h.pickBestAcross(candidates, body)
+		if mergeBestAcct == nil || mergeBestRT == nil {
+			isMerge = false
+		}
 	}
 
 	var lastErr error
@@ -696,7 +732,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rateLimited := 0 // 被本地限速跳过的账号数
 
 		for i := 0; i < h.cfg.MaxRotate; i++ {
-			acct := h.pickWithSticky(rt)
+			var acct *auth.Auth
+			if isMerge && mergeBestAcct != nil {
+				acct = mergeBestAcct
+				mergeBestAcct = nil
+				rt = mergeBestRT
+				targetModel = mergeBestTarget
+				candBody = mergeBestBody
+			} else {
+				acct = h.pickWithSticky(rt)
+			}
 			if acct == nil {
 				break
 			}
@@ -1002,6 +1047,50 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeOpenAIError(w, lastStatus, "no_healthy_account", msg)
+}
+
+// pickBestAcross 跨候选渠道选择最优账号：到期最近优先，余额最低次之。
+// 返回 (acct, rt, targetModel, candBody)；全枯竭返回 nil。
+func (h *Handler) pickBestAcross(candidates []string, requestBody []byte) (*auth.Auth, *Runtime, string, []byte) {
+	if len(candidates) == 0 {
+		return nil, nil, "", nil
+	}
+	var bestAcct *auth.Auth
+	var bestRT *Runtime
+	var bestTarget string
+	var bestBody []byte
+	var bestExpire int64
+	var bestCredits int64
+	for _, cand := range candidates {
+		rt, targetModel, err := h.runtimeForModel(cand)
+		if err != nil {
+			continue
+		}
+		acct := rt.Pool.Pick()
+		if acct == nil {
+			continue
+		}
+		candBody, err := rewriteModel(requestBody, targetModel)
+		if err != nil {
+			continue
+		}
+		st, ok := rt.Pool.Status(acct.UID)
+		if !ok || st.Disabled || st.Cooling {
+			continue
+		}
+		if bestAcct == nil {
+			bestAcct, bestRT, bestTarget, bestBody = acct, rt, targetModel, candBody
+			bestExpire, bestCredits = st.ExpireAt, st.Credits
+			continue
+		}
+		if bestExpire == 0 && st.ExpireAt > 0 ||
+			bestExpire > 0 && st.ExpireAt > 0 && st.ExpireAt < bestExpire ||
+			st.ExpireAt == bestExpire && st.Credits < bestCredits {
+			bestAcct, bestRT, bestTarget, bestBody = acct, rt, targetModel, candBody
+			bestExpire, bestCredits = st.ExpireAt, st.Credits
+		}
+	}
+	return bestAcct, bestRT, bestTarget, bestBody
 }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {

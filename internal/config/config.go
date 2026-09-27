@@ -117,6 +117,7 @@ type Config struct {
 	} `json:"rate_limit"`
 
 	ModelRedirects map[string][]string `json:"model_redirects,omitempty"` // 模型别名映射与容灾列表
+	ModelMerge     map[string][]string `json:"model_merge,omitempty"`     // 合并路由：跨渠道选到期最近/最低余额账号
 
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
@@ -146,6 +147,18 @@ func DefaultModelRedirects() map[string][]string {
 	}
 }
 
+// DefaultModelMerge 跨渠道合并路由：同款模型合并为一个虚拟名，自动优选到期最近的账号。
+func DefaultModelMerge() map[string][]string {
+	return map[string][]string{
+		"deepseek-v4-flash": {"traework/DeepSeek-V4-Flash-Official", "traework/DeepSeek-V4-Flash", "codebuddy/deepseek-v4.1-flash", "workbuddy/deepseek-v4.1-flash", "qoder/deepseek-v4-flash"},
+		"deepseek-v4-pro":   {"qoder/deepseek-v4-pro", "traework/DeepSeek-V4-Pro-Official", "traework/DeepSeek-V4-Pro"},
+		"glm-5.3":           {"traework/glm-5.3", "qoder/glm-5.3", "codebuddy/glm-5.3", "zcode/glm-5.3"},
+		"glm-5.3-flash":     {"qoder/glm-5.3-flash", "zcode/glm-5.3-flash", "autoclaw/glm-5.3-flash"},
+		"doubao-seed-pro":   {"traework/Doubao-Seed-2.1-Pro"},
+		"doubao-seed-turbo": {"traework/Doubao-Seed-2.1-Turbo"},
+	}
+}
+
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
@@ -155,6 +168,7 @@ func Default() *Config {
 		StateFile:      "./data/state.json",
 		Region:         "cn",
 		ModelRedirects: DefaultModelRedirects(),
+		ModelMerge:     DefaultModelMerge(),
 	}
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
@@ -193,6 +207,9 @@ func Load(path string) (*Config, error) {
 	}
 	if len(c.ModelRedirects) == 0 {
 		c.ModelRedirects = DefaultModelRedirects()
+	}
+	if len(c.ModelMerge) == 0 {
+		c.ModelMerge = DefaultModelMerge()
 	}
 	applyEnv(c)
 	if err := c.normalize(); err != nil {

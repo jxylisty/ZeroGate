@@ -398,6 +398,7 @@ func main() {
 		ClientKeys:     keyStore,
 		AuditRec:       auditRec,
 		ModelRedirects: cfg.ModelRedirects,
+		ModelMerge:     cfg.ModelMerge,
 	})
 	appInst.SetHandler(h)
 
