@@ -859,6 +859,37 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// 空流先验门控（2026-09-28 qoder 故障）：上游偶发返回 HTTP 200 + 空流
+			// （几百毫秒内 0 token EOF 结束，如 qoder 的 streamAsOpenAI 会忠实补上
+			// [DONE]，客户端拿到的是"合法的空回复"而非错误）。此处对流做一次带字节
+			// 上限的窥探：流结束且从未出现任何 SSE data: 行 → 判定空流，按上游错误
+			// 处理（stickyClear + NoteError），轮换下一账号重试。窥探时机在写任何
+			// 响应头之前，重试对客户端完全无感；窥探到的字节经 peekReader 原样续传，
+			// 正常流首包零额外等待。
+			var prc io.ReadCloser = rc
+			if peek.Stream {
+				empty, head, perr := sseStreamLooksEmpty(rc)
+				if perr != nil {
+					lastErr = fmt.Errorf("%s(%s) 流读取失败: %w", rt.Kind, acct.UID, perr)
+					lastStatus = http.StatusBadGateway
+					_ = rc.Close()
+					h.stickyClear(rt)
+					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					continue
+				}
+				if empty {
+					lastErr = fmt.Errorf("%s(%s) 上游返回空流（200 但无任何 data 帧）", rt.Kind, acct.UID)
+					lastStatus = http.StatusBadGateway
+					_ = rc.Close()
+					log.Printf("empty stream platform=%s uid=%s elapsed=%dms — rotate to next account",
+						rt.Kind, acct.UID, time.Since(startTime).Milliseconds())
+					h.stickyClear(rt)
+					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					continue
+				}
+				prc = &peekedStream{ReadCloser: rc, head: head}
+			}
+
 			// 请求成功！
 			candSuccess = true
 			defer rc.Close()
@@ -871,7 +902,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			kind, uid := rt.Kind.String(), acct.UID
 
 			if peek.Stream {
-				track := &tokenTrackingReader{r: rc}
+				track := &tokenTrackingReader{r: prc}
 				// 客户端带 think:true 且渠道支持时透传思考字段（reasoning_content），
 				// 否则维持剥离（ZCode 等客户端会把思考当正文渲染）
 				var streamErr error
@@ -907,10 +938,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				if pr, crk, crd, cwr, ok := track.ScanResult(); ok {
 					p, c, cr, cw = pr, crk, crd, cwr
 				}
-				// 流以 200 干净结束却零 token 且总时长超过 1 分钟：上游实际没吐任何
-				// 内容（典型：桥接实例签发卡死挂满自身 120s 超时）。按一次上游错误
-				// 计账触发熔断，防止路由持续把流量打进"假成功"的账号；审计记 502。
-				degraded := p == 0 && c == 0 && time.Since(startTime) >= time.Minute
+				// 上游自报了 usage 却 prompt/completion 全 0：无论流时长，都是没吐
+				// 任何内容的"假成功"（快空流兜底 + 桥接实例卡死挂满超时的长流）。
+				// 按一次上游错误计账触发熔断，防止路由持续把流量打进假成功账号。
+				degraded := track.has && p == 0 && c == 0
 				if degraded {
 					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 					log.Printf("zero-token long stream platform=%s uid=%s elapsed=%dms — counted as upstream error",
@@ -1299,6 +1330,63 @@ func asInt(v any) (int64, bool) {
 		return iv, err == nil
 	default:
 		return 0, false
+	}
+}
+
+// peekedStream 把窥探阶段读走的字节先吐给下游，之后透传底层 reader。
+type peekedStream struct {
+	io.ReadCloser
+	head []byte
+	off  int
+}
+
+func (p *peekedStream) Read(b []byte) (int, error) {
+	if p.off < len(p.head) {
+		n := copy(b, p.head[p.off:])
+		p.off += n
+		return n, nil
+	}
+	return p.ReadCloser.Read(b)
+}
+
+const maxPeekBytes = 1 << 20
+
+// sseStreamLooksEmpty 窥探一个刚拿到手的 200 流，判断它是否为"空流"：
+// 流结束（EOF/错误）且从未出现任何 SSE data: 行 → 空流。
+// 窥探在出现首个 data 帧或读满 maxPeekBytes 时立即停止，正常流只付首包
+// 的等待时间；窥探到的字节经 head 返回，由 peekedStream 注回转发链路。
+func sseStreamLooksEmpty(rc io.ReadCloser) (empty bool, head []byte, err error) {
+	chunk := make([]byte, 4096)
+	var buf []byte
+	var tail []byte // 前一次读的末尾 ≤4 字节：保证跨 chunk 边界的 data: 也能检出
+	for {
+		n, rerr := rc.Read(chunk)
+		if n > 0 {
+			buf = append(buf, chunk[:n]...)
+			search := chunk[:n]
+			if len(tail) > 0 {
+				search = make([]byte, 0, len(tail)+n)
+				search = append(search, tail...)
+				search = append(search, chunk[:n]...)
+			}
+			if bytes.Contains(search, []byte("data:")) {
+				return false, buf, nil
+			}
+			if len(buf) > maxPeekBytes {
+				// 迟迟不见 data 帧：交还上层如实转发，不在窥探阶段下判断
+				return false, buf, nil
+			}
+			tail = append(tail, chunk[:n]...)
+			if len(tail) > 4 {
+				tail = tail[len(tail)-4:]
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return true, buf, nil
+			}
+			return false, buf, rerr
+		}
 	}
 }
 
