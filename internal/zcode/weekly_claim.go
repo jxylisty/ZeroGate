@@ -190,11 +190,20 @@ func claimCLI(credsDir string) (string, error) {
 	exe := "D:/wild-work/research/zcode-proxy/zcode-proxy.exe"
 	cmd := exec.Command(exe, "claim", "now")
 	platform.HideWindow(cmd)
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"ZCODE_CREDENTIALS_DIR="+credsDir,
 		"ZCODE_CLAIM_ENABLED=false",
 		"HTTPS_PROXY=", "HTTP_PROXY=", "ALL_PROXY=",
 	)
+	// 关键：把配置指向本实例自己的 config.yaml。CLI 默认读工作目录的
+	// config.yaml，若全部实例共用根配置，则 X-Device-Mid/appVersion 也是同一个；
+	// 活动网关按设备去重 —— 第一个号领到后，其余实例的 preview 会被判成
+	// 「无可领计划」而静默漏领（2026-09-29 实证：4 个号只有一个领到）。
+	// 实例目录没有 config.yaml 时退回原行为，避免 CLI 直接报 config not found。
+	if cfg := filepath.Join(filepath.Dir(credsDir), "config.yaml"); fileExists(cfg) {
+		env = append(env, "ZCODE_PROXY_CONFIG="+cfg)
+	}
+	cmd.Env = env
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -215,6 +224,12 @@ func claimCLI(credsDir string) (string, error) {
 		_ = cmd.Process.Kill()
 		return "", fmt.Errorf("claim 超时（90s）")
 	}
+}
+
+// fileExists 文件是否存在（claim 的实例配置探测）。
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
 }
 
 // BridgeKeyFromEnv 读取全局桥接 key（供 main 装配用）。
