@@ -2368,14 +2368,16 @@ function bridgeDot(st) {
 function bridgeCardHTML(st) {
   const stateTag = st.online
     ? `<span class="tag ok">在线</span>`
-    : st.running ? `<span class="tag warn">启动中</span>` : `<span class="tag neutral">未运行</span>`;
+    : st.running ? `<span class="tag warn" title="进程已拉起，端口/接口尚未就绪">已拉起</span>` : `<span class="tag neutral">未运行</span>`;
   const roTag = st.no_stop ? `<span class="tag neutral" title="外部/自启动托管，面板不提供停止">只读</span>` : "";
   // 自启标记：由 ZeroGate 启动时统一拉起（取代原注册表 Run 里的 .bat，不再弹 cmd 窗口）
   const autoTag = st.autostart
     ? `<span class="tag blue" title="ZeroGate 启动时自动拉起（隐藏窗口，无 cmd 弹窗）">随网关自启</span>` : "";
   const detail = esc(st.detail || st.error || "");
   const lastAct = st.last_action ? `<div class="br-last">最近操作：${esc(st.last_action)} · ${esc(st.last_action_at || "")}</div>` : "";
-  const startBtn = st.online ? "" :
+  // 已在运行（含进程在但接口未就绪）时不再给「启动」：避免与「停止」并列的
+  // 矛盾操作，也防止重复拉起第二个进程；要重启就先停止再启动。
+  const startBtn = (st.online || st.running) ? "" :
     `<button class="btn small primary" onclick="bridgeStart('${esc(st.id)}')">启动</button>`;
   const stopBtn = (!st.no_stop && st.running)
     ? `<button class="btn small danger" onclick="bridgeStop('${esc(st.id)}')">停止</button>`

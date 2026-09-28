@@ -231,21 +231,29 @@ func (m *Manager) probe(ins Instance) Status {
 			}
 		}
 	case "zcode":
-		body, err := m.httpGet(ins, "/quota", m.bridgeKey)
+		// 探活打桥自身的本地 /health（秒回、不依赖上游），而不是 /quota。
+		// /quota 要等上游计费接口，10s 超时后会把「已启动的桥」误判成离线，
+		// 面板徽章于是从「在线」翻转成「启动中」——即用户反馈的怪现象（2026-09-28）。
+		body, err := m.httpGet(ins, "/health", m.bridgeKey)
 		if err != nil {
-			st.Detail = probeFailReason(err)
+			// 健康端点没应答但端口已监听：桥正在起（监听早于路由就绪），
+			// 按在线给出反馈，避免「明明起来了却显示未运行/启动中」。
+			if portAccept(ins.Port) {
+				st.Online = true
+				st.Detail = "端口已就绪，健康接口预热中"
+			} else {
+				st.Detail = probeFailReason(err)
+			}
 			return st
 		}
-		var q struct {
-			Balances []struct {
-				Currency string `json:"currency"`
-				Total    string `json:"total"`
-			} `json:"balances"`
+		var h struct {
+			Status   string `json:"status"`
+			Provider string `json:"provider"`
 		}
-		if json.Unmarshal(body, &q) == nil {
+		if json.Unmarshal(body, &h) == nil && h.Status == "ok" {
 			st.Online = true
-			if len(q.Balances) > 0 {
-				st.Detail = fmt.Sprintf("在线 · %s %s", q.Balances[0].Currency, q.Balances[0].Total)
+			if h.Provider != "" {
+				st.Detail = "在线 · " + h.Provider
 			} else {
 				st.Detail = "在线"
 			}
