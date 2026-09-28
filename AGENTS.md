@@ -26,6 +26,29 @@
 
 ---
 
+## ⚠️ 0B. 提交与还原点约定（多会话协作，2026-09-29 新增）
+
+> 背景：本项目由**多个 AI 会话并行**修改。未提交的改动等于没有还原点——
+> 出了问题时无法回滚，也分不清哪次会话改了什么。因此本仓库**默认提交**。
+
+1. **默认直接提交，不必等用户开口**：完成一项修复/改动、且自测通过
+   （Go 改动跑 `go build ./...`；涉及 daemon 跑 `restart.bat` 并实测接口）后，
+   agent 应**立即 commit**，不要攒着或只报告「未提交」。
+2. **一次改动一个 commit**：不要把互不相关的修复塞进同一个 commit；
+   文档/配置随对应代码一起提交。
+3. **提交信息**：conventional commit 前缀 + 中文，例如
+   `fix(bridge): zcode 桥探活改打本地 /health，修复在线徽章误判离线`；
+   正文写清「为什么改」和实证依据（复现现象、验证结果）。
+4. **提交前必查**（红线）：`git status --short` + `git diff --stat`，确认
+   **没有**凭证（`auths/`、`instances/`、`config.json*`）、**没有**大体积二进制
+   （`*.exe` 备份等）混入。这些应由 `.gitignore` 覆盖；一旦发现未忽略，
+   **先修 `.gitignore` 再提交**，不要把文件加进去。
+5. **只提交，不 push**：推送到 remote `zero`（`github.com/jxylisty/ZeroGate`）
+   仅在用户明确要求时执行。
+6. **提交后回报**：给出 commit hash + 一句话改动摘要，并说明是否已重启 daemon。
+
+---
+
 ## 1. 项目定位与架构
 
 ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder / CodeBuddy / WBIntl / ZCode / AutoClaw / Atria 多个渠道的账号聚合成一个统一的 OpenAI 兼容 API。
