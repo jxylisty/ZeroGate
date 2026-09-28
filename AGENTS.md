@@ -1,6 +1,7 @@
 # ZeroGate 项目指南（AGENTS.md）
 
-> 本文件面向接手本仓库的 AI Agent 与开发者。**先读顶部「目录与入口真相」，再动代码。**
+> 本文件面向接手本仓库的 AI Agent 与开发者。**动手前先读 0A/0B/0C 三条红线**：
+> 目录与入口真相（0A）、提交与还原点约定（0B）、**不得随意重启/关闭 daemon（0C）**。
 
 ---
 
@@ -14,7 +15,7 @@
 | 常驻程序 | `src-true\daemon.exe` | 监听 `127.0.0.1:7863`，OpenAI 兼容端点 + 管理 API + Web UI |
 | 构建与启动 | `src-true\restart.bat` | 杀 7863 → `go build -ldflags "-H windowsgui" -o daemon.exe ./cmd/zerogate` → 启动（唯一入口链；**必须带 `-H windowsgui`**，否则双击/自启弹黑框） |
 | 运行时数据 | `src-true\auths\`、`src-true\data\`、`src-true\config.json` | 单份；main.go 开头固定工作目录，从任何路径启动都指向这里 |
-| 根目录 (`D:\ZeroGate`) | 仅有 `启动.bat`（调用 restart.bat）+ 独立资产 | **不是**代码或数据存放地 |
+| 工作区根目录 | `d:\wild-work\` | 仅有 `启动.bat`（调用 `src-true\restart.bat`）+ 独立资产；**不是**代码或数据存放地（根目录无 git，多仓库容器，见根 `AGENTS.md`/`OWNERS.md`） |
 
 ### 禁止事项（防重蹈覆辙）
 
@@ -23,6 +24,7 @@
 3. 根目录与 daemon 无关的独立资产勿动：`.env`、`captcha_node\`、`research\`、`tools\` 等。
 4. `auths/` 含真实凭证（已 gitignore），**绝不入库、绝不打日志、绝不回显到前端**。
 5. API 端口 7863、API Key 见 `config.json`；修改端口须同步 `restart.bat` 中的 `_PORT`。
+6. **不得随意重启/关闭 daemon** —— 会掐断在途反代会话（可能把 agent 自己杀掉），详见 **0C**。
 
 ---
 
@@ -32,8 +34,9 @@
 > 出了问题时无法回滚，也分不清哪次会话改了什么。因此本仓库**默认提交**。
 
 1. **默认直接提交，不必等用户开口**：完成一项修复/改动、且自测通过
-   （Go 改动跑 `go build ./...`；涉及 daemon 跑 `restart.bat` 并实测接口）后，
-   agent 应**立即 commit**，不要攒着或只报告「未提交」。
+   （Go 改动跑 `go build ./...` + 相关单测）后，agent 应**立即 commit**，
+   不要攒着或只报告「未提交」。**需要重启 daemon 才能验证的改动，不要自己重启**
+   —— 先按 0C 征得用户同意（重启会掐断在途反代会话，可能把 agent 自己杀掉）。
 2. **一次改动一个 commit**：不要把互不相关的修复塞进同一个 commit；
    文档/配置随对应代码一起提交。
 3. **提交信息**：conventional commit 前缀 + 中文，例如
@@ -45,7 +48,28 @@
    **先修 `.gitignore` 再提交**，不要把文件加进去。
 5. **只提交，不 push**：推送到 remote `zero`（`github.com/jxylisty/ZeroGate`）
    仅在用户明确要求时执行。
-6. **提交后回报**：给出 commit hash + 一句话改动摘要，并说明是否已重启 daemon。
+6. **提交后回报**：给出 commit hash + 一句话改动摘要，并说明**是否要重启才生效**
+   （默认不擅自重启 —— 见 0C）。
+
+---
+
+## ⚠️ 0C. 不得随意重启 / 关闭 daemon（2026-09-29 用户明确要求）
+
+> **本网关自己的模型流量也走它自己反代。** 重启或关闭 daemon 会掐断所有在途
+> 反代会话 —— 包括**当前这个 AI 会话正在用的模型连接**。关掉就可能把自己杀死，
+> 会话直接断、排查上下文全丢。这是最贵的一种失误：它不可回滚。
+
+1. **默认不重启**：改完先 `go build ./...` + 相关单测自测。**只有必须重启才能验证**
+   的改动，才在动手前问用户「现在可以重启 daemon 吗」，得到同意再重启。
+2. **禁止拿杀进程「试试看」**：`taskkill daemon.exe` / `Stop-Process` / 反复跑
+   `restart.bat` 都不得作为试探手段。`/api/quit` 已删除（详见 4.11），**不要恢复**。
+3. **重启是有损操作**：会清空粘性路由与渠道熔断状态、打断面板正在看的请求、
+   并让 `internal/bridge` 拉起的桥实例短暂不可用（zcode 4 实例会掉线重连）。
+4. **哪些改动要重启才生效**：`internal/**`、`cmd/**`、以及 `cmd/zerogate/web/**`
+   （Web UI 经 `go:embed` 打进 exe，改 `app.js`/`style.css` 同样必须重启）。
+   只有 `docs/**`、`AGENTS.md`、`research/**` 不需要。
+5. **确需重启时**：只走 `restart.bat`（唯一入口链，必须带 `-H windowsgui`）；
+   重启后立刻核对 `GET /healthz` 与 `GET /api/bridges`（4 个 zcode 实例应显示在线）。
 
 ---
 
@@ -76,10 +100,10 @@ ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder /
 - `POST /v1/chat/completions`、`GET /v1/models`：标准 OpenAI 兼容接口（`Authorization: Bearer <api_key>`）。
 - `GET /status`：全量账号状态矩阵（渠道、UID、额度、冷却状态、签到记录）。
 - `GET /api/token_usage`、`GET /healthz`：Token 用量审计与健康检查。
-  - `/api/token_usage` **匿名可读**（管理面板和用量大屏都不带 Bearer key，别再挂 withAuth——2026-09-19 修过一次 401 导致大屏恒为 0）。
-  - 用量记录器落盘 `data/usage-tokens.csv`，列：`day,kind,uid,prompt,completion,cache_read,cache_write[,model]`（model 为 2026-09-19 新增的末列，旧行无此列时 `/api/token_usage` 的 `models` 里记作 `"<渠道> (历史)"`）。
-  - **CSV 加载器必须逐行容错**（`FieldsPerRecord = -1` + 跳坏行，usage.go load/loadTokens）：Go 的 `csv.ReadAll()` 默认要求全文件列数一致，2026-09-19 给 tokens.csv 加 model 列后新旧混存曾把全部历史清零一次（用户报告"关机重启数据全丢"实为加载失败）；以后再给这两个 CSV 加列不需要改加载器。
-  - 面板"白嫖节省"按 `app.js` 的 `MODEL_PRICES`（各模型官方 API 单价，2026-09 检索）× 按模型用量折算；接了新模型记得在表里补一条价格。
+  - `/api/token_usage` **匿名可读** —— 别再给它挂 withAuth（2026-09-19 曾 401 导致用量大屏恒为 0）。
+  - 落盘 `data/usage-tokens.csv`，列 `day,kind,uid,prompt,completion,cache_read,cache_write[,model]`。
+  - **CSV 加载器必须逐行容错**（`FieldsPerRecord = -1` + 跳坏行）：Go 的 `csv.ReadAll()` 默认要求全文件列数一致，加列后新旧混存会让整表加载失败、历史看起来「全丢」（2026-09-19 踩过）。以后再给这两个 CSV 加列无需改加载器。
+  - 面板「白嫖节省」按 `app.js` 的 `MODEL_PRICES`（官方单价，2026-09 检索）× 用量折算；接新模型记得补价格。
 
 ---
 
@@ -109,11 +133,10 @@ ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder /
     - **渠道级熔断优先于账号级轮换**：整池健康数为 0 时 `Handler` 自动置位 60s 熔断，期间不转发上游（`breakerOpen/Trip/Reset` + `Pool.HealthyCount`）。
     - 失败返回用 **429/503 + 明确文案**，不要用会被客户端误读为"稍后能好"的 502（客户端会自动重试形成风暴）。
     - **审计必须覆盖失败路径并带 `Channel`**，否则事后查不出是谁在打哪个渠道。
-11. **托盘图标显示**：
-    - **托盘不承载进程生命（2026-09-23 修复见教训 08）**：`systray.Run` 返回 ≠ 退出进程。main 里是监督循环：托盘消息循环意外结束（外部发 WM_CLOSE/WM_QUIT、Explorer 异常等）→ 记日志 → 3 秒后重建托盘，网关服务不受影响。唯一退出路径 = 托盘菜单「退出」（AskYesNo 后 os.Exit）或 fatal()。**别再让 main() 在 systray.Run 后直接结束。**
-    - `platform.PromoteTrayIcon()` 启动时把图标从 Win11 折叠区提升到常驻区（写 `HKCU\Control Panel\NotifyIconSettings`）。
-    - systray 菜单图标必须用 ICO（`systray.miniICO`）——Windows `LoadImage(IMAGE_ICON)` 不认 PNG，喂 PNG 会静默失败。
-    - 启动提示已从 `platform.Notify`（Windows 上是阻塞的 MessageBoxW）改为写日志，避免"弹窗不点确认、托盘一直不出来"。
+11. **托盘与进程生命解耦（2026-09-23，详见 lessons/08）**：
+    - **`systray.Run` 返回 ≠ 退出进程**：main 是监督循环，托盘消息循环意外结束（外部 WM_CLOSE/WM_QUIT、Explorer 异常等）→ 记日志 → 3 秒后重建托盘，网关服务不受影响。唯一退出路径 = 托盘菜单「退出」（AskYesNo 后 os.Exit）或 `fatal()`。**别再让 main() 在 systray.Run 后直接结束。**
+    - 菜单图标必须用 ICO（`systray.miniICO`）——Windows `LoadImage(IMAGE_ICON)` 不认 PNG，喂 PNG 静默失败；`platform.PromoteTrayIcon()` 把图标从 Win11 折叠区提到常驻区。
+    - 启动提示用写日志，**不要用 `platform.Notify`**（Windows 上是阻塞的 MessageBoxW，不点确认托盘就一直不出来）。
     - **崩溃现场兜底**：main 开头 `windows.SetStdHandle(STD_ERROR_HANDLE, ...)` + `os.Stderr` 重定向到 `data/crash-stderr.log`（实测能抓到 goroutine panic 堆栈）；调度器 goroutine 全部套 recover。
     - **`/api/quit` 已删除**（2026-09-23）：孤儿路由，任何本地进程 POST 一下就无声杀网关。需要远程退出时须显式恢复并加鉴权。
 12. **脚本文件约定：`.bat` 必须 CRLF 行尾 + GBK(936) 编码（2026-09-27 踩坑）**：
@@ -127,28 +150,43 @@ ZeroGate 是多渠道 AI 账号聚合网关：将 WorkBuddy / TraeWork / Qoder /
 
 ## 5. 现役账号与实例映射速查
 
-| 显示名称 | UID | 接入方式 / 端口 | 备注 / 主要额度 |
+| 显示名称 | 实例目录 · UID | 接入方式 / 端口（上游域） | 备注 / 主要额度 |
 |---|---|---|---|
-| **主号bigmodel** | `zcode-big` | 桥接 `http://127.0.0.1:18083` | 智谱 300M Weekend Build |
-| **副卡gmail** | `zcode-fuka` | 桥接 `http://127.0.0.1:18084` | 智谱 300M Weekend Build + 每日 |
-| **副卡bigmodel** | `zcode-cn` | 桥接 `http://127.0.0.1:18085` | 智谱 每日额度 |
-| **主号gmail** | `zcode-fuka2` | 桥接 `http://127.0.0.1:18086` | 智谱 备用/自用实例 |
+| **主号bigmodel** | `acc-big` · `zcode-big` | 桥接 `http://127.0.0.1:18083`（bigmodel） | 智谱 300M Weekend Build |
+| **副卡gmail** | `acc-fuka` · `zcode-fuka` | 桥接 `http://127.0.0.1:18084`（zai） | 智谱 300M Weekend Build + 每日 |
+| **副卡bigmodel** | `acc-cn` · `zcode-cn` | 桥接 `http://127.0.0.1:18085`（bigmodel） | 智谱 每日额度 |
+| **主号gmail** | `acc-fuka2` · `zcode-fuka2` | 桥接 `http://127.0.0.1:18086`（zai） | 智谱 备用/自用实例 |
 | **其他平台** | 各自 UID | 直连官方云端 API | TraeWork / Qoder / WorkBuddy / CodeBuddy / Atria |
 
 > ⚠️ 注：历史 `18080` 端口已废弃关停，默认桥接兜底端口为 `18083`。
+> 实例目录 = `research/zcode-proxy/instances/<名字>`（`creds/` 存加密凭证 + `config.yaml` 存该实例的 `deviceMid`/`appVersion`/`provider`）。
+
+### zcode 桥运维要点（2026-09-29 实证）
+
+- **探活打本地 `/health`，不要打 `/quota`**：`/quota` 要等上游计费接口（易 10s 超时），会把已启动的桥误判成离线，面板徽章于是从「在线」翻转成「启动中」。`internal/bridge` 已改用 `/health`。
+- **手动领取必须把 `ZCODE_PROXY_CONFIG` 指向实例自己的 `config.yaml`**：否则所有实例共用根 config 的同一个 `X-Device-Mid`，活动网关按设备去重 → 第一个号领到后其余实例全被静默判成 `no_claim`（漏领）。`internal/zcode/weekly_claim.go` 已修。
+
+  ```
+  $env:ZCODE_PROXY_CONFIG="instances/<名字>/config.yaml"
+  $env:ZCODE_CREDENTIALS_DIR="instances/<名字>/creds"
+  zcode-proxy.exe claim list      # 仅预览；claim now 才实际领取
+  ```
+
+- 桥实例本身**不要随手动重启**：4 个实例由 `internal/bridge` 统一托管（`Autostart`），重启实例请走面板「本地桥」Tab 的启动/停止。
 
 ---
 
 ## 6. 经验教训与故障复盘（Docs / Lessons）
 
-深入的逆向过程、协议分析与历史排查复盘已统一归档至 **`docs/lessons/`**：
+深入的逆向过程、协议分析与历史排查复盘统一归档在 **`docs/lessons/`**（下方链接为相对本仓库的路径）：
 
-- 📘 [`docs/lessons/01-zcode-waf-and-claim.md`](file:///d:/ZeroGate/src-true/docs/lessons/01-zcode-waf-and-claim.md)：ZCode 阿里 WAF 3012 风控机制、Start-Plan 区分与 Weekend Claim 领取破解。
-- 📘 [`docs/lessons/02-wbintl-oauth.md`](file:///d:/ZeroGate/src-true/docs/lessons/02-wbintl-oauth.md)：WorkBuddy 国际版（WBIntl）网页授权与 OAuth 协议细节。
-- 📘 [`docs/lessons/03-bom-and-bridge-port-postmortem.md`](file:///d:/ZeroGate/src-true/docs/lessons/03-bom-and-bridge-port-postmortem.md)：2026-09-19 Windows BOM 破坏凭证解析、空壳占位符调度与 18080 废弃端口级联冷却故障全流程复盘。
-- 📘 [`docs/lessons/04-zcode-bridge-stall-and-routing-hardening.md`](file:///d:/ZeroGate/src-true/docs/lessons/04-zcode-bridge-stall-and-routing-hardening.md)：2026-09-19 晚 ZCode 桥接签发卡死 → 120 秒"假成功"（200/0 token）复盘；零 token 长流熔断、zcode 渠道到期升序轮转、账号停用需代理层+网关层一致等加固与铁律。
-- 📘 [`docs/lessons/05-qoder-nested-sse-usage.md`](file:///d:/ZeroGate/src-true/docs/lessons/05-qoder-nested-sse-usage.md)：2026-09-19 Qoder 流式 token 计 0 根因（嵌套 SSE 转义 usage 漏抓）与修复；上游 `billable:false` 才是"积分不变"真相。
-- 📘 [`docs/lessons/06-autoclaw-contract-inversion-and-vip-wall.md`](docs/lessons/06-autoclaw-contract-inversion-and-vip-wall.md)：2026-09-21 AutoClaw 上游契约反转（`X-Harness-Type` 从必需变 400、系统 banner 变必需，daemon 全请求超时根因）+ 高峰期免费通道 810000 VIP 墙 vs 积分通道畅通实测 + GLM_proxy 开源项目评估。**已修复**：proxyHeaders 去 harness 头 + ChatStream 注入 banner + 810000 短路秒回提示（回归通过）。
-- 📘 [`docs/lessons/07-autoclaw-promotion-dual-auth-and-login-grant.md`](docs/lessons/07-autoclaw-promotion-dual-auth-and-login-grant.md)：2026-09-22 AutoClaw 登录礼（Token Rush 2 亿/3 亿）领取契约——promotion-reward 必须 `authorization` + `X-Authorization` 双鉴权头（app.asar 逆向 + 实测）；"登录即领"语义、3 天滚动过期机制、观察哨落盘位置。**已修复**：双头 + 日志 uid + 非 200 记录。
-- 📘 [`docs/lessons/08-tray-exit-black-box-postmortem.md`](docs/lessons/08-tray-exit-black-box-postmortem.md)：2026-09-23 三连复盘——黑框三条链路（本地构建漏 `-H windowsgui` / 探测 tasklist·schtasks 不隐藏 / Console 子进程）；托盘不显示三因（restart.bat 写死 `--no-tray` + 阻塞式 MessageBox + Win11 折叠区）；"打开网页关掉网关自退"= 托盘消息循环意外结束 → main 走完 → 进程静默退出。**已修复**：GUI 子系统 + `platform.HideWindow` 全收紧 + `PromoteTrayIcon` + 托盘监督循环（进程生命与托盘解耦）+ stderr 崩溃捕获 + 删孤儿 `/api/quit` + 开机编排收编（备份 `data/autostart-backup/`）。
-- 📘 [`docs/ZCode-完整指南.md`](docs/ZCode-完整指南.md)：ZCode 渠道交接总纲（账号映射终版、billing/preview/claim 完整身份头清单、领取时间窗、12 条坑清单、实例/daemon 速查命令）。
+- [`01-zcode-waf-and-claim.md`](docs/lessons/01-zcode-waf-and-claim.md)：ZCode 阿里 WAF 3012 风控机制、Start-Plan 区分与 Weekend Claim 领取破解。
+- [`02-wbintl-oauth.md`](docs/lessons/02-wbintl-oauth.md)：WorkBuddy 国际版（WBIntl）网页授权与 OAuth 协议细节。
+- [`03-bom-and-bridge-port-postmortem.md`](docs/lessons/03-bom-and-bridge-port-postmortem.md)：2026-09-19 Windows BOM 破坏凭证解析 + 空壳占位符调度 + 18080 废弃端口级联冷却。
+- [`04-zcode-bridge-stall-and-routing-hardening.md`](docs/lessons/04-zcode-bridge-stall-and-routing-hardening.md)：2026-09-19 ZCode 桥接签发卡死 → 120 秒「假成功」（200/0 token）；零 token 长流熔断、到期升序轮转等加固（见 4.10）。
+- [`05-qoder-nested-sse-usage.md`](docs/lessons/05-qoder-nested-sse-usage.md)：2026-09-19 Qoder 流式 token 计 0 根因（嵌套 SSE 转义 usage 漏抓）与修复。
+- [`06-autoclaw-contract-inversion-and-vip-wall.md`](docs/lessons/06-autoclaw-contract-inversion-and-vip-wall.md)：2026-09-21 AutoClaw 上游契约反转（`X-Harness-Type` 变 400、系统 banner 变必需）导致 daemon 全请求超时 + 高峰免费通道 810000 VIP 墙。
+- [`07-autoclaw-promotion-dual-auth-and-login-grant.md`](docs/lessons/07-autoclaw-promotion-dual-auth-and-login-grant.md)：2026-09-22 AutoClaw 登录礼领取契约（promotion-reward 需 `authorization` + `X-Authorization` 双头；3 天滚动过期）。
+- [`08-tray-exit-black-box-postmortem.md`](docs/lessons/08-tray-exit-black-box-postmortem.md)：2026-09-23 黑框三条链路 + 托盘不显示三因 + 「关掉网页网关自退」根因（托盘消息循环结束 → main 走完 → 静默退出）。
+- [`09-autoclaw-ban-retry-storm.md`](docs/lessons/09-autoclaw-ban-retry-storm.md)：2026-09-23 AutoClaw 封号事故 —— 不可恢复错误长时间重试被上游判定为恶意请求（铁律见 4.10）。
+- [`ZCode-完整指南.md`](docs/ZCode-完整指南.md)：ZCode 渠道交接总纲（账号映射、billing/preview/claim 身份头清单、领取时间窗、坑清单、实例速查命令）。
