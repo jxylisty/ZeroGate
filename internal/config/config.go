@@ -150,7 +150,7 @@ func DefaultModelRedirects() map[string][]string {
 // DefaultModelMerge 跨渠道合并路由：同款模型合并为一个虚拟名，自动优选到期最近的账号。
 func DefaultModelMerge() map[string][]string {
 	return map[string][]string{
-		"deepseek-v4-flash": {"traework/DeepSeek-V4-Flash-Official", "traework/DeepSeek-V4-Flash", "codebuddy/deepseek-v4.1-flash", "workbuddy/deepseek-v4.1-flash", "qoder/deepseek-v4-flash"},
+		"deepseek-v4-flash": {"traework/DeepSeek-V4-Flash-Official", "traework/DeepSeek-V4-Flash", "codebuddy/deepseek-v4.1-flash", "qoder/deepseek-flash"},
 		"deepseek-v4-pro":   {"qoder/deepseek-v4-pro", "traework/DeepSeek-V4-Pro-Official", "traework/DeepSeek-V4-Pro"},
 		"glm-5.3":           {"traework/glm-5.3", "qoder/glm-5.3", "codebuddy/glm-5.3", "zcode/glm-5.3"},
 		"glm-5.3-flash":     {"qoder/glm-5.3-flash", "zcode/glm-5.3-flash", "autoclaw/glm-5.3-flash"},
