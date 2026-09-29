@@ -150,12 +150,32 @@ func DefaultModelRedirects() map[string][]string {
 // DefaultModelMerge 跨渠道合并路由：同款模型合并为一个虚拟名，自动优选到期最近的账号。
 func DefaultModelMerge() map[string][]string {
 	return map[string][]string{
-		"deepseek-v4-flash": {"traework/DeepSeek-V4-Flash-Official", "traework/DeepSeek-V4-Flash", "codebuddy/deepseek-v4.1-flash", "qoder/deepseek-flash"},
-		"deepseek-v4-pro":   {"qoder/deepseek-v4-pro", "traework/DeepSeek-V4-Pro-Official", "traework/DeepSeek-V4-Pro"},
-		"glm-5.3":           {"traework/glm-5.3", "qoder/glm-5.3", "codebuddy/glm-5.3", "zcode/glm-5.3"},
-		"glm-5.3-flash":     {"qoder/glm-5.3-flash", "zcode/glm-5.3-flash", "autoclaw/glm-5.3-flash"},
+		// ── DeepSeek 系 ──
+		"deepseek-v4-flash": {"traework/DeepSeek-V4-Flash-Official", "traework/DeepSeek-V4-Flash", "traework/deepseek-v4.1-flash", "codebuddy/deepseek-v4.1-flash", "qoder/deepseek-flash"},
+		"deepseek-v4-pro":   {"qoder/deepseek-v4-pro", "traework/DeepSeek-V4-Pro-Official", "traework/DeepSeek-V4-Pro", "workbuddy/deepseek-v4-pro"},
+		// ── GLM 系 ──
+		"glm-5.3":           {"traework/glm-5.3", "qoder/glm-5.3", "codebuddy/glm-5.3", "workbuddy/glm-5.3", "glmflash/glm-5.3", "zcode/glm-5.3"},
+		"glm-5.3-flash":     {"qoder/glm-5.3-flash", "workbuddy/glm-5.3-flash", "glmflash/glm-5.3-flash", "zcode/glm-5.3-flash", "tierflow/GLM-5.3-Flash"},
+		// ── Doubao 系 ──
 		"doubao-seed-pro":   {"traework/Doubao-Seed-2.1-Pro"},
 		"doubao-seed-turbo": {"traework/Doubao-Seed-2.1-Turbo"},
+		"doubao-seed-code":  {"traework/Doubao-Seed-2.0-Code", "traework/seed-code-pro-0430"},
+		// ── Kimi 系 ──
+		"kimi-k3":           {"traework/kimi-k3", "qoder/kimi-k3", "codebuddy/kimi-k3", "workbuddy/kimi-k3-1"},
+		"kimi-k2.7":         {"traework/kimi-k2.7-code", "workbuddy/kimi-k2.7", "workbuddy/kimi-k2.8-preview", "qoder/kimi-k2.8-preview"},
+		// ── Qwen 系 ──
+		"qwen3.8-max":       {"traework/qwen3.8-max", "qoder/qwen3.8-max"},
+		"qwen3.8-flash":     {"qoder/qwen3.8-flash", "tierflow/Qwen3.8-Flash"},
+		// ── GPT 系（本机白嫖 + codebuddy）──
+		"gpt-5.6":           {"gptgemini/gpt-5.6-terra", "gptgemini/gpt-5.6-luna", "codebuddy/gpt-5.6-sol", "codebuddy/gpt-5.6-terra", "codebuddy/gpt-5.6-luna"},
+		"gpt-5.5":           {"gptgemini/gpt-5.5", "codebuddy/gpt-5.5"},
+		// ── Gemini 系 ──
+		"gemini-3.1-pro":    {"gptgemini/gemini-3.1-pro"},
+		"gemini-3-flash":    {"gptgemini/gemini-3-flash", "gptgemini/gemini-3.1-flash-lite", "codebuddy/gemini-3.5-flash"},
+		// ── Grok 系 ──
+		"grok-4.7":          {"gptgemini/grok-4.7", "gptgemini/grok-4.6"},
+		// ── 其他 ──
+		"minimax-m3":        {"traework/minimax-m3", "workbuddy/minimax-m3"},
 	}
 }
 
