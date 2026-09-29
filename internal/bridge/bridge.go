@@ -122,6 +122,8 @@ func NewManager(cfg Config) *Manager {
 				desc: "ZCode 桥实例 acc-cn（每日额度）"},
 			{ID: "acc-fuka2", Name: "主号gmail", Port: 18086, Kind: "zcode", Group: "bridge",
 				desc: "ZCode 桥实例 acc-fuka2（备用/自用）"},
+			{ID: "acc-logn0200", Name: "副卡zai", Port: 18087, Kind: "zcode", Group: "bridge",
+				desc: "ZCode 桥实例 acc-logn0200（副卡 z.ai，第 5 号）"},
 			// ── 应用服务 ──
 			{ID: "chatui", Name: "ChatUI 对话台", Port: 7870, Kind: "chatui", Group: "apps", Autostart: true,
 				desc: "本地聚合对话台（tools/chatui，7870；自带记忆/技能/定时任务）"},
