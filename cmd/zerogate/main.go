@@ -104,6 +104,10 @@ func main() {
 	if err != nil {
 		fatal("解析签到时间失败：%v", err)
 	}
+	growthMinutes, err := config.ParseClockTimes(cfg.Schedule.GrowthTimes)
+	if err != nil {
+		fatal("解析成长中心时间失败：%v", err)
+	}
 	upTimeout := time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 
 	// firstAuth 取 Load*Dir 结果的首个账号（供构造 upstream 时读 key）。
@@ -342,7 +346,12 @@ func main() {
 		if sp.checkin {
 			minutes = checkinMinutes
 		}
-		sch := scheduler.New(scheduler.Config{Pool: p, Upstream: up, Name: sp.name, CheckinMinutes: minutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+		// 成长中心目前仅 WorkBuddy 实现；其余渠道注入空表避免到点空转。
+		var growthMin []int
+		if sp.kind == provider.WorkBuddy {
+			growthMin = growthMinutes
+		}
+		sch := scheduler.New(scheduler.Config{Pool: p, Upstream: up, Name: sp.name, CheckinMinutes: minutes, GrowthMinutes: growthMin, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 		rts = append(rts, &channelRuntime{spec: sp, auths: auths, pool: p, up: up, sch: sch})
 		loadedParts = append(loadedParts, fmt.Sprintf("%s=%d", sp.name, len(auths)))
 	}

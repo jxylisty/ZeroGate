@@ -200,7 +200,10 @@ func growthDisplay(v any) string {
 // growth200 判断 2xx。
 func growthOK(status int) bool { return status >= 200 && status <= 201 }
 
-// GrowthTravelSimple 旅行：status 到达 → claim 领奖 → config 取目的地 → depart 出发。
+// GrowthTravelSimple 旅行：status 判定 → claim 领奖 → config 取目的地 → depart 出发。
+// 真实契约（2026-09 实测）：status.data.state ∈ idle/traveling（无 arrived 字段）；
+// claim 体 {record_id}；depart 体 {location_id}（取 config.data.locations[].id）。
+// 无 Buddy（travel 前置任务未完成）时服务端拒绝出发，按跳过提示。
 // 返回 (msg, authErr)；跳过以 "skip: " 前缀的 msg 表示，由包装器转为 error 上抛。
 func (c *Client) GrowthTravelSimple(a *auth.Auth) (string, bool) {
 	url := c.growthURL(a, "buddy/travel/status")
@@ -215,16 +218,73 @@ func (c *Client) GrowthTravelSimple(a *auth.Auth) (string, bool) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return "travel/status 响应解析失败", false
 	}
-	arrived := growthTruthy(growthDig(body, "arrived", "is_arrived", "has_arrived"))
-	recordID := growthDig(body, "record_id", "recordId")
-	if !arrived {
-		dest := growthSOf(growthDig(body, "destination", "name", "target"))
-		if dest != "" {
-			return "skip: 旅行在途（" + dest + "）", false
+	state := growthStr(growthDig(body, "state"))
+	if state == "" {
+		// 兼容旧字段（参考实现语义），实测新接口恒有 state
+		if growthTruthy(growthDig(body, "arrived", "is_arrived", "has_arrived")) {
+			state = "arrived"
+		} else {
+			state = "traveling"
 		}
-		return "skip: 旅行在途", false
 	}
-	// 领奖（失败不阻塞出发）
+	recordID := growthDig(body, "record_id", "recordId")
+
+	if state == "idle" {
+		// 未出发：查目的地配置并出发（config 失败不阻塞 depart）
+		destName := ""
+		departBody := map[string]any{}
+		if _, r2 := c.growthGet(c.growthURL(a, "buddy/travel/config"), a); len(r2) > 0 {
+			var b2 map[string]any
+			if err := json.Unmarshal(r2, &b2); err == nil {
+				if locs, ok := growthDig(b2, "locations").([]any); ok && len(locs) > 0 {
+					if loc, ok := locs[0].(map[string]any); ok {
+						departBody["location_id"] = growthIOf(loc["id"])
+						destName = growthStr(loc["name"])
+					}
+				}
+			}
+		}
+		st3, raw3 := c.growthPost(c.growthURL(a, "buddy/travel/depart"), a, departBody)
+		if st3 == http.StatusUnauthorized {
+			return "登录态失效（401）", true
+		}
+		if growthOK(st3) {
+			destTxt := ""
+			if destName != "" {
+				destTxt = "（" + destName + "）"
+			}
+			return "已出发" + destTxt, false
+		}
+		// 服务端业务错误（code≠0）：无 Buddy / 地点不可用 / 次数上限等
+		var b3 map[string]any
+		_ = json.Unmarshal(raw3, &b3)
+		msg := growthStr(growthDig(b3, "msg", "message"))
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", st3)
+		}
+		if strings.Contains(msg, "buddy") {
+			return "skip: 尚无 Buddy（先完成「领取一只 Buddy」任务）", false
+		}
+		if strings.Contains(msg, "limit") {
+			return "skip: 今日旅行次数已用完", false
+		}
+		return "skip: 出发失败（" + msg + "）", false
+	}
+
+	// traveling：查到达时间，未到则跳过；已到（arrive_at ≤ now）则领奖
+	arriveAt := growthIOf(growthDig(body, "arrive_at", "arriveAt"))
+	now := time.Now().Unix()
+	if arriveAt > 0 && now < arriveAt {
+		// location 是对象 {id,code,name,...}，取 name 显示
+		dest := growthSOf(growthDig(body, "location", "name"))
+		if dest == "" {
+			if loc, ok := growthDig(body, "location").(map[string]any); ok {
+				dest = growthSOf(loc["name"])
+			}
+		}
+		return "skip: 旅行在途（" + dest + "，" + fmt.Sprintf("%d小时后到达", (arriveAt-now+3599)/3600) + "）", false
+	}
+	// 领奖（失败不阻塞后续）
 	claimBody := map[string]any{}
 	if recordID != nil {
 		claimBody["record_id"] = recordID
@@ -237,32 +297,42 @@ func (c *Client) GrowthTravelSimple(a *auth.Auth) (string, bool) {
 	if growthOK(st1) {
 		var b1 map[string]any
 		if err := json.Unmarshal(raw1, &b1); err == nil {
-			if rw := growthDig(b1, "reward", "credits", "points", "amount", "value"); rw != nil {
+			if rw := growthDig(b1, "reward_credit", "reward", "credits", "points", "amount"); rw != nil {
 				claimTxt = " +" + growthDisplay(rw)
 			}
 		}
 	} else {
-		claimTxt = fmt.Sprintf(" claim 失败（HTTP %d）", st1)
+		var b1 map[string]any
+		_ = json.Unmarshal(raw1, &b1)
+		msg := growthStr(growthDig(b1, "msg", "message"))
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", st1)
+		}
+		claimTxt = " claim 失败（" + msg + "）"
 	}
-	// 查目的地（失败不阻塞出发）：出发体用原始值，展示用文本
-	var destVal any
+	// 领奖后再出发（新契约：claim 后回到 idle 才能再次 depart）
+	destName := ""
+	departBody := map[string]any{}
 	if _, r2 := c.growthGet(c.growthURL(a, "buddy/travel/config"), a); len(r2) > 0 {
 		var b2 map[string]any
 		if err := json.Unmarshal(r2, &b2); err == nil {
-			destVal = growthDig(b2, "destination", "name", "target")
+			if locs, ok := growthDig(b2, "locations").([]any); ok && len(locs) > 0 {
+				if loc, ok := locs[0].(map[string]any); ok {
+					departBody["location_id"] = growthIOf(loc["id"])
+					destName = growthStr(loc["name"])
+				}
+			}
 		}
 	}
-	departBody := map[string]any{}
-	destTxt := ""
-	if destVal != nil {
-		departBody["destination"] = destVal
-		destTxt = "（" + growthDisplay(destVal) + "）"
-	}
 	st3, _ := c.growthPost(c.growthURL(a, "buddy/travel/depart"), a, departBody)
+	destTxt := ""
+	if destName != "" {
+		destTxt = "（" + destName + "）"
+	}
 	if growthOK(st3) {
 		return "领奖" + claimTxt + "，已出发" + destTxt, false
 	}
-	return fmt.Sprintf("领奖%s；depart 失败（HTTP %d）", claimTxt, st3), false
+	return fmt.Sprintf("领奖%s； depart 未成（HTTP %d）", claimTxt, st3), false
 }
 
 // GrowthTravel 成长中心接口：每日旅行（默认不指定目的地）。
@@ -363,6 +433,11 @@ func (c *Client) GrowthTasks(a *auth.Auth) (string, bool) {
 }
 
 // GrowthTasksDetailed 详细版任务领奖，返回完整结果对象。
+// 真实契约（2026-09 实测，对齐官方前端 JS）：
+//   accept：POST tasks/accept，体 {"task_codes":[...]}（数组批量），响应 data.results[] 逐任务
+//           {task_code,status,message}（业务失败时 HTTP 仍 200，如前置任务未完成）；
+//   claim ：POST tasks/{code}/claim，独立领奖端点（任务 completed 后调用）；
+//   auto/beginner 类型前端只跳转不 accept（依赖真实产品使用），API 无法代做。
 func (c *Client) GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult {
 	var result GrowthTasksResult
 
@@ -387,120 +462,156 @@ func (c *Client) GrowthTasksDetailed(a *auth.Auth) GrowthTasksResult {
 		result.Message = "tasks 无可领任务"
 		return result
 	}
-	var claimed, skipped int
-	var rewards []provider.TaskReward
-	var totalCredits int64
-
+	// 任务清单归一化（真实字段名实测：task_code/title/task_type/accept_status/reward_credit）。
+	type taskInfo struct {
+		code, name, typ, acceptStatus string
+	}
+	var infos []taskInfo
 	for _, t := range list {
 		obj, ok := t.(map[string]any)
 		if !ok {
 			continue
 		}
-
-		hasReward := growthTruthy(obj["has_reward"]) || growthTruthy(growthDig(obj, "hasReward"))
-		if !hasReward {
-			skipped++
+		code := growthStr(growthDig(obj, "task_code", "taskCode", "code"))
+		if code == "" {
+			log.Printf("[GrowthTasks] 跳过无 task_code 的任务")
 			continue
 		}
+		infos = append(infos, taskInfo{
+			code:         code,
+			name:         growthStr(growthDig(obj, "title", "name", "task_name")),
+			typ:          growthStr(growthDig(obj, "task_type", "taskType")),
+			acceptStatus: growthStr(growthDig(obj, "accept_status", "acceptStatus")),
+		})
+	}
 
-		acceptStatus := growthStr(growthDig(obj, "accept_status"))
-		if acceptStatus == "" {
-			acceptStatus = growthStr(growthDig(obj, "acceptStatus"))
-		}
-
-		taskName := growthStr(growthDig(obj, "name", "title"))
-		if taskName == "" {
-			taskName = growthStr(growthDig(obj, "task_name"))
-		}
-
-		code := growthStr(growthDig(obj, "task_code"))
-		if code == "" {
-			code = growthStr(growthDig(obj, "taskCode"))
-		}
-		if code == "" {
-			code = growthStr(growthDig(obj, "code"))
-		}
-
-		switch acceptStatus {
-		case "1", "2", "claimed", "accepted", "已领取", "true", "True", "completed", "已完成":
-			skipped++
+	// 第一轮：single 类型且未接受的 → 批量 accept（新契约体 {"task_codes":[...]}）。
+	// auto/beginner 类型前端只做页面跳转（依赖真实产品使用），API 无法代做，不尝试。
+	var codes []string
+	nameOf := map[string]string{}
+	for _, ti := range infos {
+		nameOf[ti.code] = ti.name
+		if ti.typ == "auto" || ti.typ == "beginner" {
 			continue
 		}
-
-		if code == "" {
-			skipped++
-			log.Printf("[GrowthTasks] 跳过无 task_code 的任务：%s", taskName)
-			continue
+		if ti.acceptStatus == "not_accepted" || ti.acceptStatus == "" {
+			codes = append(codes, ti.code)
 		}
-
-		acceptBody := map[string]any{
-			"task_code": code,
-		}
-
-		st, rawResp := c.growthPost(c.growthURL(a, "tasks/accept"), a, acceptBody)
+	}
+	var rewards []provider.TaskReward
+	var totalCredits int64
+	var acceptErrs []string
+	if len(codes) > 0 {
+		st, rawResp := c.growthPost(c.growthURL(a, "tasks/accept"), a, map[string]any{"task_codes": codes})
 		if st == http.StatusUnauthorized {
-			result.Message = fmt.Sprintf("登录态失效（401，已领 %d 项）", claimed)
+			result.Message = "登录态失效（401）"
 			result.AuthErr = true
 			return result
 		}
-
 		if growthOK(st) {
-			claimed++
-			var reward provider.TaskReward
-			reward.Name = taskName
-
-			// 关键：accept 响应必须先反序列化再 dig，否则永远挖不到奖励字段。
 			var bResp map[string]any
 			_ = json.Unmarshal(rawResp, &bResp)
-			if rw := growthDig(bResp, "reward", "credits", "points", "amount", "value"); rw != nil {
-				switch v := rw.(type) {
-				case float64:
-					reward.Credits = int64(v)
-				case json.Number:
-					f, _ := v.Int64()
-					reward.Credits = f
-				case map[string]any:
-					if cVal := growthDig(v, "credits", "points", "amount"); cVal != nil {
-						switch n := cVal.(type) {
-						case float64:
-							reward.Credits = int64(n)
-						case json.Number:
-							f, _ := n.Int64()
-							reward.Credits = f
-						}
+			okN := 0
+			if results, ok := growthDig(bResp, "results").([]any); ok {
+				for _, r := range results {
+					ro, _ := r.(map[string]any)
+					if ro == nil {
+						continue
 					}
-					if cn := growthStr(growthDig(v, "coupon_name", "couponName")); cn != "" {
-						reward.CouponName = cn
+					rc := growthStr(growthDig(ro, "task_code", "taskCode"))
+					rst := growthStr(growthDig(ro, "status"))
+					// 实测：成功时 status 为 "accepted" 等值且 message 为空；失败时恒为 "error" + message。
+					if rst != "error" {
+						okN++
+						log.Printf("[GrowthTasks] 接受成功：%s（status=%s）", nameOf[rc], rst)
+						continue
 					}
+					msg := growthStr(growthDig(ro, "message", "msg"))
+					if msg == "" {
+						msg = "未知原因"
+					}
+					acceptErrs = append(acceptErrs, msg)
+					log.Printf("[GrowthTasks] 接受失败 [%s]: %s", rc, msg)
 				}
 			}
-
-			totalCredits += reward.Credits
-			rewards = append(rewards, reward)
-
-			if reward.Credits > 0 {
-				log.Printf("[GrowthTasks] 领取成功：%s (+%d credits)", taskName, reward.Credits)
-			} else if reward.CouponName != "" {
-				log.Printf("[GrowthTasks] 领取成功：%s 优惠券：%s", taskName, reward.CouponName)
-			} else {
-				log.Printf("[GrowthTasks] 领取成功：%s", taskName)
-			}
+			log.Printf("[GrowthTasks] 批量接受：成功 %d，失败 %d", okN, len(acceptErrs))
 		} else {
-			log.Printf("[GrowthTasks] 接受任务失败 [%s]: HTTP %d", code, st)
-			skipped++
+			acceptErrs = append(acceptErrs, fmt.Sprintf("HTTP %d", st))
 		}
 	}
 
-	if claimed == 0 {
-		if skipped == len(list) {
-			result.Message = "无可领奖励（全部已领取或无奖励）"
+	// 第二轮：重拉任务，completed 且未领取的 → 逐个 claim（新契约独立领奖端点）。
+	// auto 类型任务也可经真实使用完成后在此领取。
+	if status2, raw2 := c.growthGet(c.growthURL(a, "tasks"), a); status2 == http.StatusUnauthorized {
+		result.Message = "登录态失效（401）"
+		result.AuthErr = true
+		return result
+	} else if status2 >= 200 && status2 < 300 {
+		var b2 map[string]any
+		if err := json.Unmarshal(raw2, &b2); err == nil {
+			if l2, ok := growthDig(b2, "tasks", "list", "records").([]any); ok {
+				for _, t := range l2 {
+					obj, ok := t.(map[string]any)
+					if !ok {
+						continue
+					}
+					if growthStr(growthDig(obj, "accept_status", "acceptStatus")) != "completed" {
+						continue
+					}
+					code := growthStr(growthDig(obj, "task_code", "taskCode", "code"))
+					name := growthStr(growthDig(obj, "title", "name", "task_name"))
+					st3, raw3 := c.growthPost(c.growthURL(a, "tasks/"+code+"/claim"), a, nil)
+					if st3 == http.StatusUnauthorized {
+						result.Message = fmt.Sprintf("登录态失效（401，已领 %d 项）", len(rewards))
+						result.AuthErr = true
+						return result
+					}
+					if !growthOK(st3) {
+						var b3 map[string]any
+						_ = json.Unmarshal(raw3, &b3)
+						log.Printf("[GrowthTasks] 领取失败 [%s]: HTTP %d %s", code, st3, growthStr(growthDig(b3, "msg", "message")))
+						continue
+					}
+					var b3 map[string]any
+					_ = json.Unmarshal(raw3, &b3)
+					credits := growthIOf(growthDig(b3, "reward_credit", "credits", "credit", "points", "amount"))
+					if credits <= 0 {
+						credits = growthIOf(growthDig(obj, "reward_credit", "rewardCredit"))
+					}
+					var reward provider.TaskReward
+					reward.Name = name
+					reward.Credits = credits
+					if cn := growthStr(growthDig(b3, "coupon_name", "couponName")); cn != "" {
+						reward.CouponName = cn
+					}
+					totalCredits += credits
+					rewards = append(rewards, reward)
+					log.Printf("[GrowthTasks] 领取成功：%s (+%d credits)", name, credits)
+				}
+			}
+		}
+	}
+
+	if len(rewards) == 0 {
+		if len(acceptErrs) > 0 {
+			seen := map[string]bool{}
+			first := ""
+			for _, m := range acceptErrs {
+				if !seen[m] {
+					seen[m] = true
+					if first == "" {
+						first = m
+					}
+				}
+			}
+			result.Message = fmt.Sprintf("未领到（%d 项被拦截，如：%s）", len(acceptErrs), first)
 		} else {
-			result.Message = fmt.Sprintf("无可领奖励（已跳过 %d 项）", skipped)
+			result.Message = "无可领奖励（无已完成任务）"
 		}
 		return result
 	}
 
-	result.Message = fmt.Sprintf("领取 %d 项任务奖励 (+%d credits)", claimed, totalCredits)
+	result.Message = fmt.Sprintf("领取 %d 项任务奖励 (+%d credits)", len(rewards), totalCredits)
 	result.TotalCredits = totalCredits
 	result.Rewards = rewards
 	
