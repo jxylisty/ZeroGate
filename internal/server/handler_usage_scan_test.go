@@ -23,6 +23,20 @@ func TestTrackerQoderNestedEnvelope(t *testing.T) {
 	if !ok || p != 22 || c != 6 {
 		t.Fatalf("qoder envelope: got p=%d c=%d ok=%v（转义内层 usage 未被提取）", p, c, ok)
 	}
+	if tr.UsageRaw() == "" {
+		t.Fatalf("qoder envelope: usage 原文未留底")
+	}
+}
+
+func TestTrackerQoderNestedCacheHit(t *testing.T) {
+	tr := &tokenTrackingReader{}
+	// cached_tokens 只在嵌套的 prompt_tokens_details 里且非零，顶层无缓存键
+	line := []byte(`data: {"body":"{\"choices\":[],\"usage\":{\"completion_tokens\":6,\"prompt_tokens\":5000,\"prompt_tokens_details\":{\"cached_tokens\":4800},\"total_tokens\":5006}}"}`)
+	tr.parseLine(line)
+	p, c, cr, _, ok := tr.ScanResult()
+	if !ok || p != 5000 || c != 6 || cr != 4800 {
+		t.Fatalf("qoder nested cache: got p=%d c=%d cr=%d ok=%v（嵌套 cached_tokens 未提取）", p, c, cr, ok)
+	}
 }
 
 func TestTrackerSoloNativeUsage(t *testing.T) {

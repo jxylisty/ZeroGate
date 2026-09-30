@@ -106,8 +106,9 @@ let detailTimer = null;
 let detailCache = {};
 
 // 积分套餐到期文本：0/空 = 长期有效，否则月-日（悬浮 title 已有完整时间则省略）
+// 兜底：旧 state 持久化过上游"永不到期"哨兵值（9999-12-31），也按长期处理
 function resourceExpireText(expireAt) {
-  if (!expireAt || expireAt <= 0) return "长期有效";
+  if (!expireAt || expireAt <= 0 || expireAt >= 4102444800) return "长期有效";
   const t = new Date(expireAt * 1000);
   const md = (t.getMonth() + 1) + "-" + String(t.getDate()).padStart(2, "0");
   const days = Math.ceil((expireAt * 1000 - Date.now()) / 86400e3);
@@ -190,7 +191,9 @@ function renderTopbar() {
 }
 
 function formatExpire(expireAt) {
-  if (!expireAt || expireAt <= 0) {
+  // 兜底：旧 state 持久化过上游"永不到期"哨兵值（9999-12-31 = 253402214400），
+  // 不拦会显示成"2912169 天后到期"；超过 2100 年一律按长期有效
+  if (!expireAt || expireAt <= 0 || expireAt >= 4102444800) {
     return { text: "长期有效", cls: "expire-perm", full: "长期有效" };
   }
   const now = Math.floor(Date.now() / 1000);
@@ -1526,9 +1529,8 @@ async function resetRedirects() {
 function fmtTokens(n) {
   if (n == null || isNaN(n)) return "0";
   n = Number(n);
-  if (n >= 1e9) return (n / 1e9).toFixed(2).replace(/\.00$/, "") + " B";
-  if (n >= 1e6) return (n / 1e6).toFixed(2).replace(/\.00$/, "") + " M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + " k";
+  if (n >= 1e8) return (n / 1e8).toFixed(2).replace(/\.00$/, "") + " 亿";
+  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, "") + " 万";
   return n.toLocaleString();
 }
 
@@ -1585,16 +1587,18 @@ async function loadTokenAnalytics() {
 // ---------------------------------------------------------------------------
 const USD_CNY = 7.2;
 const MODEL_PRICES = [
-  { re: "glm-5-3-flash",       in: 0.15, cache: 0.03,  out: 0.50 },  // Z.AI GLM-5.3-Flash
-  { re: "glm-5-3-flashx",      in: 0.30, cache: 0.06,  out: 1.00 },  // 估计档（介于 Flash 与标准之间）
-  { re: "glm-5-3",             in: 1.40, cache: 0.26,  out: 4.40 },  // Z.AI GLM-5.3（5.2 同价）
-  { re: "glm-5-2",             in: 1.40, cache: 0.26,  out: 4.40 },
+  { re: "glm-5-3-flash",       in: 0.11, cache: 0.032, out: 0.39 },  // bigmodel.cn GLM-5.3-Flash 刊例 ¥0.8/¥2.8
+  { re: "glm-5-3-flashx",      in: 0.21, cache: 0.06,  out: 0.69 },  // 估计档（介于 Flash 与标准之间）
+  { re: "glm-5-3",             in: 0.97, cache: 0.18,  out: 3.06 },  // bigmodel.cn GLM-5.3 刊例 ¥7/¥22
+  { re: "glm-5-2",             in: 0.97, cache: 0.18,  out: 3.06 },
   { re: "glm-4",               in: 0.60, cache: 0.11,  out: 2.20 },  // GLM-4.6 档
+  { re: "zai",                 in: 0.11, cache: 0.032, out: 0.39 },  // zai_auto/zai-auto 系渠道按 GLM-Flash 国内档
+  { re: "hy3-preview",         in: 0.167, cache: 0.056, out: 0.556 }, // 腾讯混元 Hy3 preview（WorkBuddy auto 默认，TokenHub ¥1.2/¥4）
   { re: "doubao-seed-2-1-pro",   in: 0.83, cache: 0.17, out: 4.17 }, // 火山 ¥6 / 缓存¥1.2 / ¥30
   { re: "doubao-seed-2-1-turbo", in: 0.42, cache: 0.08, out: 2.08 }, // 火山 ¥3 / 缓存¥0.6 / ¥15
   { re: "doubao",                in: 0.42, cache: 0.08, out: 2.08 }, // 豆包其余型号按 Turbo 档估
-  { re: "deepseek-v4-pro",     in: 1.32, cache: 0.044, out: 3.96 },  // DeepSeek 官方峰时
-  { re: "deepseek",            in: 0.30, cache: 0.006, out: 1.20 },  // DeepSeek V4.1-Flash 峰时（含 deepseek-chat）
+  { re: "deepseek-v4-pro",     in: 0.66, cache: 0.022, out: 1.98 },  // DeepSeek 官方谷时（峰时 1.32/3.96）
+  { re: "deepseek",            in: 0.15, cache: 0.003, out: 0.60 },  // V4.1-Flash 谷时（峰时 0.30/1.20）
   { re: "gpt-5-6-sol",         in: 4.00, cache: 1.00,  out: 20.00 }, // OpenAI GPT-5.6 Sol（降价后）
   { re: "gpt-5-6-terra",       in: 2.50, cache: 0.25,  out: 15.00 },
   { re: "gpt-5-6-luna",        in: 1.00, cache: 0.10,  out: 5.00 },  // 输出价为发布档估计
@@ -1612,20 +1616,34 @@ const MODEL_PRICES = [
   { re: "gemini",              in: 0.60, cache: 0.06,  out: 3.00 },  // Flash-Lite 档
   // 渠道主力模型档：历史 CSV 行没记模型名，后端以 "<渠道> (历史)" 记账，
   // 按该渠道实际跑的主力模型档估算（必须排在上面型号条目之后，避免抢匹配 "渠道/模型" 前缀）。
-  { re: "zcode",                in: 0.15, cache: 0.03,  out: 0.50 },
-  { re: "atria",                in: 0.15, cache: 0.03,  out: 0.50 },
-  { re: "autoclaw",             in: 0.15, cache: 0.03,  out: 0.50 },
+  { re: "zcode",                in: 0.11, cache: 0.032, out: 0.39 },
+  { re: "atria",                in: 0.11, cache: 0.032, out: 0.39 },
+  { re: "autoclaw",             in: 0.11, cache: 0.032, out: 0.39 },
   { re: "traework",             in: 0.42, cache: 0.08,  out: 2.08 },
-  { re: "workbuddy",            in: 0.30, cache: 0.006, out: 1.20 },
+  { re: "workbuddy",            in: 0.15, cache: 0.003, out: 0.60 },
   { re: "wbintl",               in: 1.40, cache: 0.26,  out: 4.40 },
-  { re: "codebuddy",            in: 4.00, cache: 1.00,  out: 20.00 },
+  { re: "codebuddy",            in: 0.833, cache: 0.042, out: 2.50 }, // CodeBuddy(国际) 后端混元 Hy4（TokenHub ¥6/缓存¥0.3/¥18）
   { re: "qoder",                in: 0.14, cache: 0.03,  out: 0.42 },
 ];
 // 未收录且无渠道前缀的模型：按中档模型估计
 const FALLBACK_PRICE = { re: "", in: 1.00, cache: 0.10, out: 4.00 };
 
+// 价格表可经 web/pricing.json 单独维护：存在则覆盖内置表（无需改逻辑代码），
+// 加载前先用内置表兜底；pricing.json 未随 embed 打包时静默忽略。
+fetch("./pricing.json")
+  .then((r) => (r.ok ? r.json() : Promise.reject(new Error("no pricing.json"))))
+  .then((rows) => {
+    if (Array.isArray(rows) && rows.length) {
+      MODEL_PRICES.length = 0;
+      MODEL_PRICES.push(...rows);
+    }
+  })
+  .catch(() => {});
+
 function modelPrice(model) {
-  const n = String(model || "").toLowerCase().replace(/\./g, "-");
+  let n = String(model || "").toLowerCase().replace(/\./g, "-");
+  if (n === "auto") n = "hy3-preview"; // WorkBuddy auto 路由不暴露底层模型，按默认混元 Hy3 记
+  n = n.replace(/_/g, "-");            // zai_auto 等下划线归一连字符
   for (const p of MODEL_PRICES) {
     if (n.includes(p.re)) return p;
   }
@@ -1635,9 +1653,15 @@ function modelPrice(model) {
 // 按 输入/输出/缓存命中 用量折算官方 API 美元成本（单价 USD/1M）。
 // GLM/DeepSeek/OpenAI 的 prompt_tokens 通常【包含】缓存命中部分，而 Anthropic 两者分开：
 // 统一按 "缓存命中 ≤ 输入 则从输入中扣除" 归一，避免缓存被按输入价重复计费。
+// 白嫖估值从低：上游不回传缓存字段（如 codebuddy/workbuddy/qoder）≠ 无缓存——
+// 同模型正常回传的渠道实测命中率 96~98%。命中率 < 30% 视为上报不完整（部分响应
+// 才带缓存字段），统一按 90% 折算补齐，让估值落在真实开销的保守下沿而非最坏上限。
+const EST_CACHE_HIT = 0.9;
+const EST_CACHE_MIN_RATE = 0.3;
 function priceUSD(model, prompt, completion, cacheRead) {
   const p = modelPrice(model);
-  const cache = Math.max(0, Math.min(cacheRead, prompt));
+  let cache = Math.max(0, Math.min(cacheRead, prompt));
+  if (prompt > 0 && cache / prompt < EST_CACHE_MIN_RATE) cache = prompt * EST_CACHE_HIT;
   const plainInput = prompt - cache;
   return (plainInput * p.in + completion * p.out + cache * p.cache) / 1e6;
 }
@@ -2379,7 +2403,9 @@ function bridgeCardHTML(st) {
   // 矛盾操作，也防止重复拉起第二个进程；要重启就先停止再启动。
   const startBtn = (st.online || st.running) ? "" :
     `<button class="btn small primary" onclick="bridgeStart('${esc(st.id)}')">启动</button>`;
-  const stopBtn = (!st.no_stop && st.running)
+  // 可停止 = 非外部托管，且（本面板拉起在跑，或端口型服务在线——后者即使 daemon
+  // 重启丢了句柄，后端也能按监听端口定位 PID 兜底杀掉）。
+  const stopBtn = (!st.no_stop && (st.running || (st.online && st.port)))
     ? `<button class="btn small danger" onclick="bridgeStop('${esc(st.id)}')">停止</button>`
     : "";
   return `

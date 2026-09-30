@@ -416,13 +416,17 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 }
 
 // normalizeExpireMs 归一化上游到期时间戳：≥1e12 视为毫秒（qoder 实测该形态）除 1000 → Unix 秒；
-// 其余数值原样返回；0 及未识别返回 0（=长期）。
+// 0 及未识别返回 0（=长期）。上游用"永不到期"哨兵值（实测 9999-12-31 = 253402214400s，
+// 面板曾显示成"2912169 天后到期"），超过 2100 年的一律归 0（=长期有效）。
 func normalizeExpireMs(ts int64) int64 {
 	if ts <= 0 {
 		return 0
 	}
 	if ts >= 1e12 {
-		return ts / 1000
+		ts /= 1000
+	}
+	if ts >= 4102444800 { // 2100-01-01 UTC
+		return 0
 	}
 	return ts
 }

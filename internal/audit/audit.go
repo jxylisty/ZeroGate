@@ -20,31 +20,32 @@ import (
 // Entry 单次请求审计条目。
 type Entry struct {
 	ID               string `json:"id"`
-	Time             string `json:"time"`              // RFC3339
-	Client           string `json:"client"`            // 客户端名称（如 Cursor、Default）
-	KeySnippet       string `json:"key_snippet"`       // 掩码密钥（如 sk-zg-...1234）
-	ModelReq         string `json:"model_req"`         // 客户端请求模型名
-	ModelTarget      string `json:"model_target"`      // 上游实际使用的模型名
-	Channel          string `json:"channel"`           // 命中渠道
-	UID              string `json:"uid"`               // 命中账号 UID
-	PromptTokens     int64  `json:"prompt_tokens"`     // 输入 Token
-	CompletionTokens int64  `json:"completion_tokens"` // 输出 Token
-	CacheTokens      int64  `json:"cache_tokens"`      // 缓存命中 Token
-	TotalTokens      int64  `json:"total_tokens"`      // 总 Token
-	DurationMs       int64  `json:"duration_ms"`       // 耗时毫秒
-	Status           int    `json:"status"`            // HTTP 状态码
-	Error            string `json:"error,omitempty"`   // 错误信息摘要
-	Stream           bool   `json:"stream"`            // 是否流式
+	Time             string `json:"time"`                // RFC3339
+	Client           string `json:"client"`              // 客户端名称（如 Cursor、Default）
+	KeySnippet       string `json:"key_snippet"`         // 掩码密钥（如 sk-zg-...1234）
+	ModelReq         string `json:"model_req"`           // 客户端请求模型名
+	ModelTarget      string `json:"model_target"`        // 上游实际使用的模型名
+	Channel          string `json:"channel"`             // 命中渠道
+	UID              string `json:"uid"`                 // 命中账号 UID
+	PromptTokens     int64  `json:"prompt_tokens"`       // 输入 Token
+	CompletionTokens int64  `json:"completion_tokens"`   // 输出 Token
+	CacheTokens      int64  `json:"cache_tokens"`        // 缓存命中 Token
+	TotalTokens      int64  `json:"total_tokens"`        // 总 Token
+	DurationMs       int64  `json:"duration_ms"`         // 耗时毫秒
+	Status           int    `json:"status"`              // HTTP 状态码
+	Error            string `json:"error,omitempty"`     // 错误信息摘要
+	Stream           bool   `json:"stream"`              // 是否流式
+	UsageRaw         string `json:"usage_raw,omitempty"` // 流式上游 usage 原文（缓存字段取证用）
 }
 
 // Recorder 审计流水记录器。
 type Recorder struct {
-	mu      sync.RWMutex
-	fp      string
-	maxMem  int
-	entries []Entry
-	in      chan Entry
-	closed  chan struct{}
+	mu         sync.RWMutex
+	fp         string
+	maxMem     int
+	entries    []Entry
+	in         chan Entry
+	closed     chan struct{}
 	writerDone chan struct{}
 
 	dailyFP    string             // audit_daily.json：按日聚合，统计接口的事实源
@@ -308,8 +309,6 @@ func (r *Recorder) recordDailyLocked(e *Entry) {
 	agg.absorb(e)
 	r.dailyDirty = true
 }
-
-
 
 // loadDaily 启动时恢复历史日聚合。
 func (r *Recorder) loadDaily() {

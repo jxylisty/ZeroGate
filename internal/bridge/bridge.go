@@ -759,7 +759,16 @@ func (m *Manager) Stop(ctx context.Context, id string) (Status, error) {
 	delete(m.handles, ins.ID)
 	m.mu.Unlock()
 	if cmd == nil || cmd.Process == nil {
-		m.note(ins.ID, "停止：非本面板拉起，无句柄")
+		// daemon 重启后句柄丢失但常驻桥仍在跑：端口型实例按监听端口定位 PID 兜底，
+		// 否则这类「在线但无句柄」的服务在面板上既无启动（防重复拉起）也无停止按钮。
+		if ins.Port > 0 {
+			if pid := pidListeningOnPort(ins.Port); pid > 0 {
+				return m.killByPID(ins, pid)
+			}
+			m.note(ins.ID, "停止：端口无监听进程")
+			return m.probe(ins), fmt.Errorf("%s 端口 %d 上没有监听的进程，可能已自行退出", ins.Name, ins.Port)
+		}
+		m.note(ins.ID, "停止：未找到本面板拉起的进程")
 		return m.probe(ins), fmt.Errorf("%s 不是本面板启动的（外部拉起），为避免误伤请用对应脚本 / 任务管理器处理", ins.Name)
 	}
 	_ = cmd.Process.Kill()
@@ -772,6 +781,46 @@ func (m *Manager) Stop(ctx context.Context, id string) (Status, error) {
 	m.note(ins.ID, "已停止")
 	log.Printf("bridge: %s 已停止 (pid=%d)", ins.ID, cmd.Process.Pid)
 	return m.probe(ins), nil
+}
+
+// killByPID 按 PID 终止进程并等待退出（句柄兜底路径共用）。
+func (m *Manager) killByPID(ins Instance, pid int) (Status, error) {
+	p, err := os.FindProcess(pid)
+	if err == nil {
+		_ = p.Kill()
+		done := make(chan struct{})
+		go func() { _, _ = p.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	m.note(ins.ID, fmt.Sprintf("已停止 (pid=%d，按端口定位)", pid))
+	log.Printf("bridge: %s 已停止 (pid=%d)", ins.ID, pid)
+	return m.probe(ins), nil
+}
+
+// pidListeningOnPort 查询监听指定端口的进程 PID（netstat -ano，0 = 未找到）。
+// 仅匹配 LISTENING 行，避免误杀恰好连着该端口的客户端进程。
+func pidListeningOnPort(port int) int {
+	out, err := hiddenOutput("netstat", "-ano", "-p", "tcp")
+	if err != nil {
+		return 0
+	}
+	suffix := ":" + strconv.Itoa(port)
+	for _, line := range strings.Split(decodeGBK(out), "\n") {
+		f := strings.Fields(strings.TrimSpace(line))
+		if len(f) < 5 || !strings.EqualFold(f[3], "LISTENING") {
+			continue
+		}
+		if !strings.HasSuffix(f[1], suffix) {
+			continue
+		}
+		if pid, err := strconv.Atoi(f[4]); err == nil && pid > 0 {
+			return pid
+		}
+	}
+	return 0
 }
 
 func (m *Manager) note(id, msg string) {
