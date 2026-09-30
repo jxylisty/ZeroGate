@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,11 +30,11 @@ import (
 
 // Instance 一个可托管的本地服务。
 type Instance struct {
-	ID     string `json:"id"`     // doubao | acc-big | chatui ...
-	Name   string `json:"name"`   // 显示名
-	Port   int    `json:"port"`   // 探测端口（0 = 进程探测）
-	Kind   string `json:"kind"`   // doubao|zcode|app|mailcode|chatui|tunnel|cpa|copilot|autoclaw
-	Group  string `json:"group"`  // bridge|apps|auto|external
+	ID     string `json:"id"`      // doubao | acc-big | chatui ...
+	Name   string `json:"name"`    // 显示名
+	Port   int    `json:"port"`    // 探测端口（0 = 进程探测）
+	Kind   string `json:"kind"`    // doubao|zcode|app|mailcode|chatui|tunnel|cpa|copilot|autoclaw
+	Group  string `json:"group"`   // bridge|apps|auto|external
 	NoStop bool   `json:"no_stop"` // true = 不允许从面板停止（外部托管应用）
 
 	// Autostart 开机自启：daemon 启动时由本编排器统一拉起（隐藏窗口）。
@@ -61,20 +62,21 @@ var GroupNames = []struct {
 
 // Manager 桥进程编排器。
 type Manager struct {
-	instances   []Instance
-	zcodeDir    string // D:/wild-work/research/zcode-proxy
-	doubaoDir   string // D:/wild-work/research/doubao2api
-	doubaoKey   string // /stats 鉴权 Bearer
-	bridgeKey   string // zcode /quota 鉴权 Bearer
-	cpaKey      string // CLIProxyAPI /v1/models 鉴权 Bearer
-	copilotKey  string // copilot2api /v1/models 鉴权 Bearer
-	httpClient  *http.Client
-	stopCh      chan struct{}
-	once        sync.Once
-	mu          sync.Mutex
-	handles     map[string]*exec.Cmd
-	lastAction  map[string]string
-	lastActionT map[string]time.Time
+	staticInstances []Instance // 静态清单（doubao/apps/auto/external）；zcode 实例动态扫描
+	authDir         string     // ZeroGate auths 目录（读 zcode 账号昵称）
+	zcodeDir        string     // D:/wild-work/research/zcode-proxy
+	doubaoDir       string     // D:/wild-work/research/doubao2api
+	doubaoKey       string     // /stats 鉴权 Bearer
+	bridgeKey       string     // zcode /quota 鉴权 Bearer
+	cpaKey          string     // CLIProxyAPI /v1/models 鉴权 Bearer
+	copilotKey      string     // copilot2api /v1/models 鉴权 Bearer
+	httpClient      *http.Client
+	stopCh          chan struct{}
+	once            sync.Once
+	mu              sync.Mutex
+	handles         map[string]*exec.Cmd
+	lastAction      map[string]string
+	lastActionT     map[string]time.Time
 }
 
 // Config 构建参数。
@@ -110,20 +112,12 @@ func NewManager(cfg Config) *Manager {
 		pk = "sk-7199d8a2-72e9-4785-9904-a45aac9594dc"
 	}
 	m := &Manager{
-		instances: []Instance{
+		staticInstances: []Instance{
 			// ── 模型桥 ──
 			{ID: "doubao", Name: "豆包桥 (doubao2api)", Port: 7868, Kind: "doubao", Group: "bridge", Autostart: true,
 				desc: "豆包视觉 API 桥（research/doubao2api，7868）"},
-			{ID: "acc-big", Name: "主号bigmodel", Port: 18083, Kind: "zcode", Group: "bridge",
-				desc: "ZCode 桥实例 acc-big（300M Weekend Build）"},
-			{ID: "acc-fuka", Name: "副卡gmail", Port: 18084, Kind: "zcode", Group: "bridge",
-				desc: "ZCode 桥实例 acc-fuka（300M + 每日）"},
-			{ID: "acc-cn", Name: "副卡bigmodel", Port: 18085, Kind: "zcode", Group: "bridge",
-				desc: "ZCode 桥实例 acc-cn（每日额度）"},
-			{ID: "acc-fuka2", Name: "主号gmail", Port: 18086, Kind: "zcode", Group: "bridge",
-				desc: "ZCode 桥实例 acc-fuka2（备用/自用）"},
-			{ID: "acc-logn0200", Name: "副卡zai", Port: 18087, Kind: "zcode", Group: "bridge",
-				desc: "ZCode 桥实例 acc-logn0200（副卡 z.ai，第 5 号）"},
+			// zcode 实例（acc-*）由 zcodeInstances() 扫描 zcode-proxy/instances/ 动态生成：
+			// 新增账号只需建目录 + auths，面板刷新即可见，无需改代码重编译。
 			// ── 应用服务 ──
 			{ID: "chatui", Name: "ChatUI 对话台", Port: 7870, Kind: "chatui", Group: "apps", Autostart: true,
 				desc: "本地聚合对话台（tools/chatui，7870；自带记忆/技能/定时任务）"},
@@ -142,6 +136,7 @@ func NewManager(cfg Config) *Manager {
 			{ID: "autoclaw", Name: "AutoClaw 客户端", Port: 18789, Kind: "autoclaw", Group: "external", NoStop: true,
 				desc: "官方桌面客户端 D:\\autoclaw\\AutoClaw.exe（登录态/本地网关 18789 托管在此，由用户自行启停）"},
 		},
+		authDir:     resolveWorkspacePath("auths"),
 		zcodeDir:    zd,
 		doubaoDir:   dd,
 		doubaoKey:   dk,
@@ -158,8 +153,98 @@ func NewManager(cfg Config) *Manager {
 	return m
 }
 
-// Instances 托管实例清单。
-func (m *Manager) Instances() []Instance { return m.instances }
+// Instances 托管实例清单（静态清单 + 动态扫描的 zcode 实例）。
+func (m *Manager) Instances() []Instance { return m.allInstances() }
+
+// allInstances 组装完整清单：把动态扫描出的 zcode 实例插到 doubao 之后（模型桥组内）。
+// 每次调用重新扫描，因此新增/删除账号目录后无需重启 daemon 即可在面板生效。
+func (m *Manager) allInstances() []Instance {
+	zc := m.zcodeInstances()
+	out := make([]Instance, 0, len(m.staticInstances)+len(zc))
+	inserted := false
+	for _, ins := range m.staticInstances {
+		out = append(out, ins)
+		if !inserted && ins.ID == "doubao" {
+			out = append(out, zc...)
+			inserted = true
+		}
+	}
+	if !inserted {
+		out = append(zc, out...)
+	}
+	return out
+}
+
+// zcodeInstances 扫描 zcode-proxy/instances/acc-* 目录生成 zcode 桥实例。
+// 只认同时具备 config.yaml（含 server.port）与 creds/ 的目录，避免把登录残骸当实例。
+func (m *Manager) zcodeInstances() []Instance {
+	base := filepath.Join(m.zcodeDir, "instances")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	out := make([]Instance, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "acc-") {
+			continue
+		}
+		id := e.Name()
+		dir := filepath.Join(base, id)
+		if _, err := os.Stat(filepath.Join(dir, "creds")); err != nil {
+			continue
+		}
+		port := yamlServerPort(filepath.Join(dir, "config.yaml"))
+		if port <= 0 {
+			continue
+		}
+		out = append(out, Instance{
+			ID:    id,
+			Name:  m.zcodeDisplayName(id),
+			Port:  port,
+			Kind:  "zcode",
+			Group: "bridge",
+			desc:  "ZCode 桥实例 " + id,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	return out
+}
+
+// zcodeDisplayName 取账号昵称：auths/zcode-<后缀>.json 的 nickname，缺失时回落实例 ID。
+func (m *Manager) zcodeDisplayName(instanceID string) string {
+	suffix := strings.TrimPrefix(instanceID, "acc-")
+	raw, err := os.ReadFile(filepath.Join(m.authDir, "zcode-"+suffix+".json"))
+	if err != nil {
+		return instanceID
+	}
+	var rec struct {
+		Nickname string `json:"nickname"`
+	}
+	if json.Unmarshal(raw, &rec) != nil || strings.TrimSpace(rec.Nickname) == "" {
+		return instanceID
+	}
+	return rec.Nickname
+}
+
+// yamlServerPort 从实例 config.yaml 里取 server.port（格式固定，按行取首个 port: 数字）。
+func yamlServerPort(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "port:") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(t, "port:"))
+		v = strings.Trim(v, `"'`)
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return 0
+}
 
 // Close 停止后台协程（不杀桥进程：桥是常驻服务，随 daemon 退出而退出反而不对）。
 func (m *Manager) Close() { m.once.Do(func() { close(m.stopCh) }) }
@@ -177,8 +262,9 @@ type Status struct {
 
 // ProbeAll 探测全部实例。
 func (m *Manager) ProbeAll() []Status {
-	out := make([]Status, 0, len(m.instances))
-	for _, ins := range m.instances {
+	insts := m.allInstances()
+	out := make([]Status, 0, len(insts))
+	for _, ins := range insts {
 		out = append(out, m.probe(ins))
 	}
 	return out
@@ -194,7 +280,7 @@ func (m *Manager) ProbeOne(id string) (Status, error) {
 }
 
 func (m *Manager) find(id string) (Instance, error) {
-	for _, ins := range m.instances {
+	for _, ins := range m.allInstances() {
 		if ins.ID == id {
 			return ins, nil
 		}
@@ -613,8 +699,9 @@ func (m *Manager) Start(ctx context.Context, id string) (Status, error) {
 
 // StartAll 一键全启（串行，跳过已在线；探针为计划任务自动跳过）。
 func (m *Manager) StartAll(ctx context.Context) []Status {
-	out := make([]Status, 0, len(m.instances))
-	for _, ins := range m.instances {
+	insts := m.allInstances()
+	out := make([]Status, 0, len(insts))
+	for _, ins := range insts {
 		st, err := m.Start(ctx, ins.ID)
 		if err != nil {
 			s := Status{Instance: ins, Error: err.Error(), LastAct: "启动失败", LastActT: time.Now().Format("01-02 15:04:05")}
@@ -638,7 +725,7 @@ func (m *Manager) StartAll(ctx context.Context) []Status {
 func (m *Manager) StartAutostart(ctx context.Context) {
 	go func() {
 		started, skipped := 0, 0
-		for _, ins := range m.instances {
+		for _, ins := range m.allInstances() {
 			if !ins.Autostart {
 				continue
 			}
@@ -785,4 +872,3 @@ func decodeGBK(raw []byte) string {
 	}
 	return string(decoded)
 }
-
