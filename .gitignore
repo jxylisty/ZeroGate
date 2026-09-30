@@ -10,9 +10,13 @@ config.json
 config.json.*
 *.log
 
-# 本机批处理入口：TRAE 客户端会把该路径按 UTF-8+LF 重存，cmd（码页 936）解析会错位，
-# 故移出 git 跟踪、只保留磁盘文件。仓库内规范版本见历史 blob：git show <commit>:restart.bat
+# 本机批处理入口：TRAE 客户端会把"入过库的路径"按 UTF-8+LF 重存（中文变 U+FFFD），
+# cmd（码页 936）解析会错位。故两者都移出 git 跟踪、只留磁盘文件：
+#   restart.bat      单行纯 ASCII 委派（无中文、零换行 -> 被重存也字节不变，天然免疫）
+#   restart-gate.bat 真正脚本（GBK+CRLF，改由上面那行 call 起来）
+# 规范版本见历史 blob：git show 7890673^:restart.bat
 /restart.bat
+/restart-gate.bat
 
 # 临时文件
 temp/

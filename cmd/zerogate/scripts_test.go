@@ -20,8 +20,9 @@ func TestBatConventions(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []string{
-		filepath.Join(root, "restart.bat"),
-		filepath.Join(root, "..", "启动.bat"),       // 根目录入口，不在 git 仓库内
+		filepath.Join(root, "restart-gate.bat"), // 真正脚本：restart.bat 只是单行 ASCII 委派
+		filepath.Join(root, "restart.bat"),      // 委派行（无中文/无换行，被重存也字节不变）
+		filepath.Join(root, "..", "启动.bat"),     // 根目录入口，不在 git 仓库内
 		filepath.Join(root, "..", "启动全部服务.bat"), // 同上
 	}
 	for _, f := range files {
