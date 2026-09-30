@@ -693,6 +693,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	var lastStatus int = http.StatusServiceUnavailable
 	var lastCandKind provider.Kind
 	totalRateLimited := 0
+	streamRetried := false // 零 token 上游断流重试标记：整请求上限 1 次，防重试风暴
 
 	for _, cand := range candidates {
 		rt, targetModel, rerr := h.runtimeForModel(cand)
@@ -913,14 +914,24 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if peek.Stream {
 				track := &tokenTrackingReader{r: prc}
 				// 客户端带 think:true 且渠道支持时透传思考字段（reasoning_content），
-				// 否则维持剥离（ZCode 等客户端会把思考当正文渲染）
+				// 否则维持剥离（ZCode 等客户端会把思考当正文渲染）。
+				// 用 recordingWriter 包装下游：记录"是否已向客户端写出字节"，
+				// 零 token 断流重试只允许发生在客户端尚未收到任何数据时。
+				rw := newRecordingWriter(w)
 				var streamErr error
 				if tp, ok := rt.Upstream.(provider.ThinkPassthrough); ok && peek.Think {
-					streamErr = tp.StreamWithThink(w, track, true)
+					streamErr = tp.StreamWithThink(rw, track, true)
 				} else {
-					streamErr = rt.Upstream.Stream(w, track)
+					streamErr = rt.Upstream.Stream(rw, track)
 				}
 				track.finish()
+				// 提前结算 token 统计与降级判定（断流分支同样需要）：
+				// 上游自报了 usage 却 prompt/completion 全 0 = 没吐任何内容的"假成功"。
+				var p, c, cr, cw int64
+				if pr, crk, crd, cwr, ok := track.ScanResult(); ok {
+					p, c, cr, cw = pr, crk, crd, cwr
+				}
+				degraded := track.has && p == 0 && c == 0
 				// 上游中途断流（超时/连接重置）：下游只看到连接关闭会当成"正常结束"，
 				// 必须补一个 SSE error 事件让客户端知道是失败而非模型说完了。
 				// 事件体必须是 OpenAI 标准 error 对象结构（error 为对象而非裸字符串），
@@ -928,6 +939,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				if streamErr != nil {
 					log.Printf("stream aborted platform=%s uid=%s elapsed=%dms err=%v",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
+					// 零 token 断流自动重试：仅限"连接瞬断"（EOF 类）且客户端未收到任何字节时
+					// 才换号重试；认证/风控类错误（401/403/405/10605/token 过期等）根本到不了
+					// 这里（响应头阶段就按 status>=400 处理了），即使到达也一律不重试，
+					// 避免重试风暴加深上游风控标记（AutoClaw 封号教训）。每请求上限 1 次。
+					if degraded && !streamRetried && !rw.wroteAny && isStreamEOF(streamErr) {
+						streamRetried = true
+						rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+						h.stickyClear(rt)
+						log.Printf("zero-token stream retry platform=%s uid=%s elapsed=%dms err=%v (retry #1)",
+							rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
+						continue
+					}
 					msg := "上游连接中断：" + streamErr.Error()
 					if payload, jerr := json.Marshal(map[string]any{
 						"error": map[string]any{
@@ -943,14 +966,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				var p, c, cr, cw int64
-				if pr, crk, crd, cwr, ok := track.ScanResult(); ok {
-					p, c, cr, cw = pr, crk, crd, cwr
-				}
 				// 上游自报了 usage 却 prompt/completion 全 0：无论流时长，都是没吐
 				// 任何内容的"假成功"（快空流兜底 + 桥接实例卡死挂满超时的长流）。
 				// 按一次上游错误计账触发熔断，防止路由持续把流量打进假成功账号。
-				degraded := track.has && p == 0 && c == 0
 				if degraded {
 					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 					log.Printf("zero-token long stream platform=%s uid=%s elapsed=%dms — counted as upstream error",
@@ -981,6 +999,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						DurationMs:       time.Since(startTime).Milliseconds(),
 						Status:           auditStatus,
 						Stream:           true,
+						UsageRaw:         track.UsageRaw(),
 					})
 				}
 				return
@@ -999,6 +1018,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var p, c, cr, cw int64
+			var usageRawSnippet string
 			if u, ok := resp["usage"].(map[string]any); ok {
 				p, _ = asInt(u["prompt_tokens"])
 				c, _ = asInt(u["completion_tokens"])
@@ -1013,6 +1033,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				if cr == 0 {
 					cr, _ = asInt(u["cached_tokens"])
+				}
+				// OpenAI 风格嵌套：cached_tokens 藏在 prompt_tokens_details 里（qoder 实测形态）
+				if cr == 0 {
+					if d, ok := u["prompt_tokens_details"].(map[string]any); ok {
+						cr, _ = asInt(d["cached_tokens"])
+					}
+				}
+				if raw, err := json.Marshal(u); err == nil && len(raw) <= 512 {
+					usageRawSnippet = string(raw)
 				}
 				cw, _ = asInt(u["prompt_cache_write_tokens"])
 				if cw == 0 {
@@ -1040,6 +1069,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					DurationMs:       time.Since(startTime).Milliseconds(),
 					Status:           http.StatusOK,
 					Stream:           false,
+					UsageRaw:         usageRawSnippet,
 				})
 			}
 			writeJSON(w, http.StatusOK, resp)
@@ -1200,6 +1230,7 @@ type tokenTrackingReader struct {
 	cacheRead  int64
 	cacheWrite int64
 	has        bool
+	usageRaw   string // 最后一次见到的 usage 原文（审计取证：上游到底报没报缓存）
 }
 
 func (t *tokenTrackingReader) Read(p []byte) (int, error) {
@@ -1227,6 +1258,9 @@ func (t *tokenTrackingReader) ScanResult() (prompt, completion, cacheRead, cache
 	return t.prompt, t.completion, t.cacheRead, t.cacheWrite, t.has
 }
 
+// UsageRaw 返回流中最后一次见到的 usage 原文，供审计取证（上游是否回传缓存字段）。
+func (t *tokenTrackingReader) UsageRaw() string { return t.usageRaw }
+
 func (t *tokenTrackingReader) scan(chunk []byte) {
 	t.pending = append(t.pending, chunk...)
 	for {
@@ -1247,6 +1281,7 @@ func (t *tokenTrackingReader) parseLine(line []byte) {
 	// 1. OpenAI 兼容：行内嵌 "usage":{...}（扁平结构：zcode/glm、trae 等）
 	if m := usageObjRe.FindSubmatch(line); m != nil {
 		t.has = true
+		t.usageRaw = string(m[0])
 		for _, kv := range usageNumRe.FindAllSubmatch(m[1], -1) {
 			v, _ := strconv.ParseInt(string(kv[2]), 10, 64)
 			t.applyField(string(kv[1]), v)
@@ -1271,6 +1306,9 @@ func (t *tokenTrackingReader) parseLine(line []byte) {
 		}
 		if u, ok := inner["usage"].(map[string]any); ok {
 			t.has = true
+			if raw, err := json.Marshal(u); err == nil {
+				t.usageRaw = string(raw)
+			}
 			t.applyUsageMap(u)
 		}
 		return
@@ -1278,6 +1316,9 @@ func (t *tokenTrackingReader) parseLine(line []byte) {
 	// 2b. SOLO 原生：{"prompt_tokens":..,"completion_tokens":..}（无 usage 键）
 	if p, ok := obj["prompt_tokens"].(float64); ok {
 		t.has = true
+		if raw, err := json.Marshal(obj); err == nil {
+			t.usageRaw = string(raw)
+		}
 		t.applyField("prompt_tokens", int64(p))
 		if c, ok := obj["completion_tokens"].(float64); ok {
 			t.applyField("completion_tokens", int64(c))
@@ -1327,6 +1368,12 @@ func (t *tokenTrackingReader) applyUsageMap(u map[string]any) {
 			t.applyField(k, v)
 		}
 	}
+	// OpenAI 风格嵌套：cached_tokens 藏在 prompt_tokens_details 里（qoder 实测形态）
+	if d, ok := u["prompt_tokens_details"].(map[string]any); ok {
+		if v, ok := asInt(d["cached_tokens"]); ok && v > t.cacheRead {
+			t.cacheRead = v
+		}
+	}
 }
 
 // asInt 把 JSON 反序列化的数字（float64 或 string）安全转成 int64。
@@ -1347,6 +1394,59 @@ type peekedStream struct {
 	io.ReadCloser
 	head []byte
 	off  int
+}
+
+// recordingWriter 包装 http.ResponseWriter，记录是否已向客户端写出任何字节。
+// 用于零 token 断流重试：只有客户端尚未收到数据（wroteAny=false）时才允许重试，
+// 否则 SSE 协议已被第一个 chunk 推进，重试会让客户端收到两条不连续流。
+// 实现 http.Flusher 转发，保证 qoder 等上游的 Flush 行为不丢。
+type recordingWriter struct {
+	http.ResponseWriter
+	flusher  http.Flusher
+	wroteAny bool
+}
+
+func newRecordingWriter(w http.ResponseWriter) *recordingWriter {
+	rw := &recordingWriter{ResponseWriter: w}
+	if fl, ok := w.(http.Flusher); ok {
+		rw.flusher = fl
+	}
+	return rw
+}
+
+func (rw *recordingWriter) WriteHeader(code int) {
+	rw.wroteAny = true
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *recordingWriter) Write(b []byte) (int, error) {
+	if len(b) > 0 {
+		rw.wroteAny = true
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+func (rw *recordingWriter) Flush() {
+	if rw.flusher != nil {
+		rw.flusher.Flush()
+	}
+}
+
+// isStreamEOF 判断上游断流是否属于"连接瞬断"（EOF 类）。
+// 只有这类错误允许零 token 自动重试；认证/风控类错误（401/403/405/10605
+// 等）即使意外到达这里也一律不匹配，绝不重试，避免加深上游风控标记。
+func isStreamEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "unexpected eof") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "closed")
 }
 
 func (p *peekedStream) Read(b []byte) (int, error) {
