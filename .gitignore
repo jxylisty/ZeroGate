@@ -10,6 +10,10 @@ config.json
 config.json.*
 *.log
 
+# 本机批处理入口：TRAE 客户端会把该路径按 UTF-8+LF 重存，cmd（码页 936）解析会错位，
+# 故移出 git 跟踪、只保留磁盘文件。仓库内规范版本见历史 blob：git show <commit>:restart.bat
+/restart.bat
+
 # 临时文件
 temp/
 
