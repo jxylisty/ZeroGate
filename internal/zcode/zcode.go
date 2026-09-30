@@ -1,15 +1,15 @@
 // Package zcode 智谱 ZCode (Z.AI) 上游客户端，实现 provider.Upstream。
 // 协议逆向自开源 zcode2api（github.com/liu5269/zcode2api）：
 //
-//	1. 聊天端点 https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages，
-//	   Anthropic Messages 协议（强制 stream，返回 Anthropic SSE）。
-//	2. 认证方式为 JWT 模式：Authorization: Bearer {JWT}（3 段点分），
-//	   无 refresh 机制，登录态失效由上游 401/403 触发禁用。
-//	3. JWT 模式必带 X-Aliyun-Captcha-Verify-Param（阿里云无痕验证），
-//	   用 captcha_node/solver.js（Node + jsdom，无浏览器）求解，缓存 45s。
-//	4. 模型名大小写敏感：GLM-5.2 / GLM-5-Turbo；对外只公开这两个。
-//	5. 额度：GET /api/v1/zcode-plan/billing/balance → data.balances[]，
-//	   字段 {show_name,total_units,used_units,remaining_units,expires_at}。
+//  1. 聊天端点 https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages，
+//     Anthropic Messages 协议（强制 stream，返回 Anthropic SSE）。
+//  2. 认证方式为 JWT 模式：Authorization: Bearer {JWT}（3 段点分），
+//     无 refresh 机制，登录态失效由上游 401/403 触发禁用。
+//  3. JWT 模式必带 X-Aliyun-Captcha-Verify-Param（阿里云无痕验证），
+//     用 captcha_node/solver.js（Node + jsdom，无浏览器）求解，缓存 45s。
+//  4. 模型名大小写敏感：GLM-5.2 / GLM-5-Turbo；对外只公开这两个。
+//  5. 额度：GET /api/v1/zcode-plan/billing/balance → data.balances[]，
+//     字段 {show_name,total_units,used_units,remaining_units,expires_at}。
 package zcode
 
 import (
@@ -351,7 +351,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 }
 
 // bridgeChatStream 桥接模式：转发到本地 zcode-proxy 的 OpenAI 端点
-//（/v1/chat/completions），支持标准 OpenAI 多工具调用与完整流式 SSE。
+// （/v1/chat/completions），支持标准 OpenAI 多工具调用与完整流式 SSE。
 // 目标实例：账号级 auth.BridgeURL 优先（每账号一个 zcode-proxy 实例），
 // 缺省回退全局 c.BridgeURL。
 func (c *Client) bridgeChatStream(a *auth.Auth, model string, rawBody []byte) (io.ReadCloser, int, []byte, error) {
@@ -503,24 +503,21 @@ func friendlyBridgeErr(err error) error {
 	msg := err.Error()
 	i := strings.Index(msg, "127.0.0.1:")
 	if i < 0 {
-		return err
+		return err // 不是本机地址（如自建桥指向远程）→ 原样返回
 	}
 	port := msg[i+len("127.0.0.1:"):]
 	if j := strings.IndexAny(port, "/\"' :"); j >= 0 {
 		port = port[:j]
 	}
-	name, ok := zcodeInstanceNames[port]
-	if !ok && !strings.HasPrefix(port, "1808") {
-		return err // 不是本地桥端口，原样返回
-	}
+	name := zcodeInstanceNames[port]
 	if name == "" {
 		name = "zcode 桥实例"
 	}
 	if strings.Contains(msg, "refused") || strings.Contains(msg, "connectex") {
-		return fmt.Errorf("zcode 桥实例未启动（%s，端口 %s）——账号本身没坏，打开面板「本地桥」页点启动即可恢复", name, port)
+		return provider.BridgeDown(fmt.Errorf("zcode 桥实例未启动（%s，端口 %s）——账号本身没坏，打开面板「本地桥」页点启动即可恢复", name, port))
 	}
 	if strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "Client.Timeout") {
-		return fmt.Errorf("zcode 桥实例无响应（%s，端口 %s）——可到面板「本地桥」页重启该实例（原始错误: %v）", name, port, err)
+		return provider.BridgeDown(fmt.Errorf("zcode 桥实例无响应（%s，端口 %s）——可到面板「本地桥」页重启该实例（原始错误: %v）", name, port, err))
 	}
 	return err
 }

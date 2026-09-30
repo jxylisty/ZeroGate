@@ -5,7 +5,10 @@ package provider
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"zerogate/internal/auth"
 )
@@ -17,17 +20,17 @@ const (
 	WorkBuddy Kind = "workbuddy"
 	TraeWork  Kind = "traework"
 	Qoder     Kind = "qoder"
-	CodeBuddy Kind = "codebuddy"  // 国际版 www.codebuddy.ai
-	WBIntl    Kind = "wbintl"     // WorkBuddy 国际版 www.workbuddy.ai（同后端，独立入口）
-	ZCode     Kind = "zcode"      // 智谱 ZCode (Z.AI) https://zcode.z.ai
-	AutoClaw  Kind = "autoclaw"   // AutoClaw（Z.ai 官方代理通道）
-	Atria     Kind = "atria"      // Atria Dawn Preview（上海人工智能实验室）https://api.atria-asi.ai
-	Copilot   Kind = "copilot"    // 本机白嫖服务 127.0.0.1:4141（OpenAI 兼容）
-	Doubao    Kind = "doubao"     // 本机白嫖服务 127.0.0.1:7868（OpenAI 兼容）
-	GptGemini Kind = "gptgemini"  // 本机白嫖服务 127.0.0.1:8317（OpenAI 兼容）
-	GlmFlash  Kind = "glmflash"   // 智谱开放平台 Flash 家族（永久免费层，OpenAI 兼容）
-	Groq      Kind = "groq"       // Groq 免费层（Llama/Qwen 推理云，OpenAI 兼容）
-	Tierflow  Kind = "tierflow"   // tierflow.cn 免费聚合（OpenAI 兼容，Bearer Key）
+	CodeBuddy Kind = "codebuddy" // 国际版 www.codebuddy.ai
+	WBIntl    Kind = "wbintl"    // WorkBuddy 国际版 www.workbuddy.ai（同后端，独立入口）
+	ZCode     Kind = "zcode"     // 智谱 ZCode (Z.AI) https://zcode.z.ai
+	AutoClaw  Kind = "autoclaw"  // AutoClaw（Z.ai 官方代理通道）
+	Atria     Kind = "atria"     // Atria Dawn Preview（上海人工智能实验室）https://api.atria-asi.ai
+	Copilot   Kind = "copilot"   // 本机白嫖服务 127.0.0.1:4141（OpenAI 兼容）
+	Doubao    Kind = "doubao"    // 本机白嫖服务 127.0.0.1:7868（OpenAI 兼容）
+	GptGemini Kind = "gptgemini" // 本机白嫖服务 127.0.0.1:8317（OpenAI 兼容）
+	GlmFlash  Kind = "glmflash"  // 智谱开放平台 Flash 家族（永久免费层，OpenAI 兼容）
+	Groq      Kind = "groq"      // Groq 免费层（Llama/Qwen 推理云，OpenAI 兼容）
+	Tierflow  Kind = "tierflow"  // tierflow.cn 免费聚合（OpenAI 兼容，Bearer Key）
 )
 
 func (k Kind) String() string { return string(k) }
@@ -44,6 +47,7 @@ const (
 	ErrServer                     // 5xx 上游故障
 	ErrClient                     // 其他 4xx / 业务错误
 	ErrBanned                     // 封禁（如 410004）→ 24h 长冷却，重复 3 次转禁用
+	ErrBridgeDown                 // 本地桥（127.0.0.1）连不上 → 非账号问题，短冷却不累计
 )
 
 func (k ErrKind) String() string {
@@ -60,6 +64,8 @@ func (k ErrKind) String() string {
 		return "server"
 	case ErrBanned:
 		return "banned"
+	case ErrBridgeDown:
+		return "bridge_down"
 	case ErrClient:
 		return "client"
 	default:
@@ -76,6 +82,36 @@ type Error struct {
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, e.Msg)
+}
+
+// BridgeDown 把「连不上本地桥」的 transport error 包装成可分类错误。
+//
+// 为什么必须区分：本地桥（zcode/copilot/doubao 等自建 127.0.0.1 服务）进程没在
+// 跑时，请求会以 connection refused 失败。若照旧计进账号 errCount，桥一挂就会在
+// 几秒内把整池账号各罚一次长冷却（2026-09-30 事故：5 个 zcode 号全被罚 10 分钟，
+// 余额 85M~98M 明明健康），随后渠道熔断 0/5 healthy 反复 trip。桥的死活与账号
+// 凭证/额度无关，故单列一类走短冷却。
+func BridgeDown(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &Error{Kind: ErrBridgeDown, Msg: err.Error()}
+}
+
+// IsLoopbackURL 判断上游地址是否指向本机（即自建本地桥，而非云端渠道）。
+// 用 url/IP 解析而非子串匹配，避免把 127.0.0.1.nip.io、localhost.example.com
+// 这类真实公网域名误判成本地桥。
+func IsLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ModelInfo 动态/静态模型信息。
@@ -147,11 +183,11 @@ func EarliestExpire(items []ResourceItem) int64 {
 
 // GrowthTasksResult 成长中心任务领取结果。
 type GrowthTasksResult struct {
-	Message      string        `json:"message"`
-	Rewards      []TaskReward  `json:"rewards"`
-	TotalCredits int64         `json:"total_credits"`
-	CouponCount  int           `json:"coupon_count"`
-	AuthErr      bool          `json:"auth_err,omitempty"`
+	Message      string       `json:"message"`
+	Rewards      []TaskReward `json:"rewards"`
+	TotalCredits int64        `json:"total_credits"`
+	CouponCount  int          `json:"coupon_count"`
+	AuthErr      bool         `json:"auth_err,omitempty"`
 }
 
 // TaskReward 任务奖励详情。

@@ -789,6 +789,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				lastErr = terr
 				lastStatus = http.StatusBadGateway
 				h.stickyClear(rt)
+				var ue *provider.Error
+				if errors.As(terr, &ue) && ue.Kind == provider.ErrBridgeDown {
+					// 连不上本地桥（桥进程没跑）：错在桥，不在账号。只给一次短冷却
+					// 让整池不可用时熔断能快速失败，绝不累计 errCount —— 否则桥一挂
+					// 就会把整池账号各罚一次长冷却（2026-09-30 zcode 5 号全冻 10 分钟）。
+					log.Printf("bridge down platform=%s uid=%s: %v", rt.Kind, acct.UID, terr)
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "本地桥不可达（非账号问题）")
+					continue
+				}
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				continue
 			}

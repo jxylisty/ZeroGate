@@ -81,6 +81,11 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		cancel()
+		// 本地桥（127.0.0.1，copilot/doubao/gptgemini）连不上属桥进程问题，
+		// 与账号凭证/额度无关 → 标记 BridgeDown，避免整池账号被误罚长冷却。
+		if provider.IsLoopbackURL(c.BaseURL) {
+			return nil, 0, nil, provider.BridgeDown(fmt.Errorf("do request: %w", err))
+		}
 		return nil, 0, nil, fmt.Errorf("do request: %w", err)
 	}
 	if resp.StatusCode >= 400 {
@@ -161,9 +166,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 }
 
 // DailyCheckin/GrowthTravel/GrowthLottery/GrowthTasksDetailed 不支持无操作。
-func (c *Client) DailyCheckin(a *auth.Auth) error                           { return nil }
-func (c *Client) GrowthTravel(a *auth.Auth) error                          { return nil }
-func (c *Client) GrowthLottery(a *auth.Auth) error                         { return nil }
+func (c *Client) DailyCheckin(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthTravel(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error { return nil }
 func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
 	return provider.GrowthTasksResult{}
 }
