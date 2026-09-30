@@ -292,9 +292,15 @@ func PrepareBody(src []byte) []byte {
 	return out
 }
 
+// streamIdleTimeout 流式响应的空闲超时：连续这么久读不到任何字节就断开。
+// 只兜"响应头已返回、之后彻底静默"的僵死场景（2026-10-01 00:32 zcode 请求
+// 因此挂满 7 分钟）；持续吐字的长时间思考不受影响。测试会临时改小。
+var streamIdleTimeout = 120 * time.Second
+
 // ChatStream 发 chat 请求并返回原始 Anthropic SSE body 流（调用方负责 Close）。
 // 直连模式内部处理验证码：首次请求前求解 verifyParam，遇 403+captcha 自动失效重求一次。
 // 桥接模式（BridgeURL 非空）转发到本地 zcode-proxy，验证码/指纹由其负责。
+// 两条路径返回的流都套了空闲超时（streamIdleTimeout）：桥实例僵死时不会无限等。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	var peek struct {
 		Model string `json:"model"`
@@ -345,7 +351,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 				a.UID, peek.Model, resp.StatusCode, kind, truncate(string(raw), 200))
 			return nil, resp.StatusCode, raw, nil
 		}
-		return resp.Body, resp.StatusCode, nil, nil
+		return provider.IdleTimeout(resp.Body, streamIdleTimeout), resp.StatusCode, nil, nil
 	}
 	return nil, 0, nil, fmt.Errorf("zcode captcha retry exhausted")
 }
@@ -390,7 +396,7 @@ func (c *Client) bridgeChatStream(a *auth.Auth, model string, rawBody []byte) (i
 			a.UID, model, resp.StatusCode, kind, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, resp.StatusCode, nil, nil
+	return provider.IdleTimeout(resp.Body, streamIdleTimeout), resp.StatusCode, nil, nil
 }
 
 // zcodeModels 静态模型目录（zcode2api AVAILABLE_MODELS；上下文/输出上限来自官方）。
