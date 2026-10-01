@@ -5,6 +5,7 @@ package zcode
 
 import (
 	"bufio"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"net"
@@ -304,8 +305,21 @@ func freePort(base int) (int, error) {
 	return 0, fmt.Errorf("端口 %d-%d 全部被占用", base, base+200)
 }
 
+// newDeviceMid 生成 v4 格式 UUID，作为实例唯一的设备指纹（X-Device-Mid）。
+// 上游计费/活动网关要求 UUID 格式的 X-Device-Mid：缺失时 preview/balance 一律
+// 返回 3001 parameter error（2026-10-01 排查实证），额度面板会整片打空。
+func newDeviceMid() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // writeInstanceFiles 写实例 config.yaml + start.sh。
 func writeInstanceFiles(accDir string, port int, provider, exePath string) error {
+	// identity.deviceMid 必须落盘：每个实例=一台"设备"，缺它则计费平面 3001。
 	cfg := fmt.Sprintf(`server:
   port: %d
   host: "127.0.0.1"
@@ -321,7 +335,10 @@ defaultModel: glm-5.3-flash
 models:
   - glm-5.3
   - glm-5.3-flash
-`, port, provider)
+
+identity:
+  deviceMid: "%s"
+`, port, provider, newDeviceMid())
 	if err := os.WriteFile(filepath.Join(accDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
 		return err
 	}
