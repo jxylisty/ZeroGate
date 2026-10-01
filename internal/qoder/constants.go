@@ -20,13 +20,22 @@ const (
 	// 绝不可用其结果判定签到状态（qoder2api 实测 2026-09）。
 	EpCampaigns     = "/sash/api/v1/me/campaigns"
 	EpCampaignClaim = "/sash/api/v1/me/campaigns/%s/claim"
-	EpPlan       = "/api/v2/user/plan"
-	EpUserInfo   = "/api/v1/userinfo"
-	EpDTRefresh  = "/api/v1/deviceToken/refresh"
-	EpModels     = "/algo/api/v2/model/list?Encode=1"
-	EpChat       = "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
+	EpPlan          = "/api/v2/user/plan"
+	EpUserInfo      = "/api/v1/userinfo"
+	EpDTRefresh     = "/api/v1/deviceToken/refresh"
+	EpModels        = "/algo/api/v2/model/list?Encode=1"
+	EpChat          = "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
 
 	clientUA = "Go-http-client/2.0"
+
+	// 活动平台（/sash/...）要求的桌面端标识。基线来自 qoder2api-hub v1.1.1：
+	// 缺 Cosy-Version 时服务端不报错、直接返回空活动列表。
+	// 注意 cosy-machinetoken 不在此列（client.go desktopHeaders 故意不发）：
+	// 派生假值会让上游把设备定向活动过滤掉。
+	DesktopClientType      = "10" // 桌面端；CLI=5 / QoderWork=6
+	DesktopClientVersion   = "0.4.3"
+	desktopMachineOS       = "x86_64_win32"
+	desktopMachineHostname = "DESKTOP-QODER"
 )
 
 // staticModelKeys 客户端模型名 → 上游 model key 静态兜底表。

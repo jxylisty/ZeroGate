@@ -31,12 +31,12 @@ func TestNormalizeModelName(t *testing.T) {
 
 func TestModelKeyStatic(t *testing.T) {
 	cases := map[string]string{
-		"deepseek-v4-pro":  "dmodel",
-		"glm-5.3":          "gmodel",
-		"glm-5.2":          "gm51model",
-		"qwen3.8-max":      "qmodel_38max",
-		"kimi-k2.7-code":   "kmodel",
-		"unknown-model":    "",
+		"deepseek-v4-pro": "dmodel",
+		"glm-5.3":         "gmodel",
+		"glm-5.2":         "gm51model",
+		"qwen3.8-max":     "qmodel_38max",
+		"kimi-k2.7-code":  "kmodel",
+		"unknown-model":   "",
 	}
 	for name, want := range cases {
 		if got := ModelKey(name); got != want {
@@ -227,6 +227,22 @@ func TestDailyCheckinClaimsWhenClaimable(t *testing.T) {
 		if got := r.Header.Get("user-agent"); got != "Qoder" {
 			t.Errorf("user-agent = %q", got)
 		}
+		// 桌面端请求头：缺 Cosy-Version 时上游静默返回空活动列表
+		// （qoder2api-hub v1.1.1 实测根因），故逐一断言不被回退掉。
+		if got := r.Header.Get("cosy-version"); got != DesktopClientVersion {
+			t.Errorf("cosy-version = %q", got)
+		}
+		for _, h := range []string{"cosy-machineid", "cosy-machinetype",
+			"cosy-machinecode", "cosy-machineos"} {
+			if got := r.Header.Get(h); got == "" {
+				t.Errorf("桌面端头 %s 缺失（上游会返回空活动列表）", h)
+			}
+		}
+		// 反向断言：cosy-machinetoken 必须不发。派生假值会被上游当成异设备，
+		// 把设备定向的 CLAIM_BEFIT 活动过滤掉（2026-10-01 头矩阵 A/B 实测）。
+		if got := r.Header.Get("cosy-machinetoken"); got != "" {
+			t.Errorf("cosy-machinetoken 不应发送（会过滤掉可领活动），got %q", got)
+		}
 		switch r.URL.Path {
 		case EpCampaigns:
 			getCalls.Add(1)
@@ -326,4 +342,3 @@ func TestDailyCheckinNoCampaign(t *testing.T) {
 		t.Fatalf("want 无可用签到活动, got %v", err)
 	}
 }
-

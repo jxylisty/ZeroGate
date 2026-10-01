@@ -4,8 +4,10 @@ package qoder
 
 import (
 	"bytes"
+	"crypto/md5"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -117,6 +119,38 @@ func billingHeaders(req *http.Request, dt string) {
 	req.Header.Set("Authorization", "Bearer "+dt)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+}
+
+// desktopHeaders 构造活动平台（/sash/...）出站头。
+//
+// 来源与实测修正（2026-10-01，本机头矩阵实测，4 个 qoder 账号）：
+//   - 基线：qoder2api-hub v1.1.1（issue #1）指出缺 Cosy-Version 时上游静默返回
+//     空活动列表，故必须带 cosy-clienttype=10 + cosy-version。
+//   - 修正：**必须省略 cosy-machinetoken**。参考仓库用官方 runtime-info.exe 取的是
+//     真设备 token；我们只能由 uid 派生假值，服务端比对不符 → 判定为异设备，
+//     把设备定向的 CLAIM_BENEFIT 活动静默过滤掉（表现为"无可用签到活动"）。
+//     A/B 实测：带上它 → campaigns 只剩 VIEW_DETAILS 推广；去掉它 → 恢复
+//     act-20260930-125（CLAIM_BEFIT/100 Credits/CLAIMABLE）并领取成功。
+//     其余 machine 系列头（id/type/code/os/hostname）经实测无副作用，保留以贴近桌面端。
+func desktopHeaders(req *http.Request, dt string, a *auth.Auth) {
+	billingHeaders(req, dt)
+	req.Header.Set("accept-language", "zh-CN")
+	req.Header.Set("user-agent", "Qoder")
+	req.Header.Set("cosy-clienttype", DesktopClientType) // 桌面端（CLI=5 / QoderWork=6）
+	req.Header.Set("cosy-version", DesktopClientVersion)
+	req.Header.Set("cosy-machineid", a.MachineID)
+	// 故意不设 cosy-machinetoken：派生假值会让上游过滤掉设备定向活动（见上）。
+	req.Header.Set("cosy-machinetype", a.MachineType)
+	req.Header.Set("cosy-machinecode", machineCode(a))
+	req.Header.Set("cosy-machineos", desktopMachineOS)
+	req.Header.Set("cosy-machinehostname", desktopMachineHostname)
+}
+
+// machineCode 由 uid 稳定派生（32 位十六进制 md5），与 qoder2api-hub
+// derive_id(uid, "machinecode") 同构。账号级稳定，避免随机值触发上游风控。
+func machineCode(a *auth.Auth) string {
+	sum := md5.Sum([]byte("machinecode:" + a.UID))
+	return hex.EncodeToString(sum[:])
 }
 
 func (c *Client) get(path, dt string) (*http.Response, error) {
@@ -432,20 +466,20 @@ func normalizeExpireMs(ts int64) int64 {
 }
 
 // DailyCheckin Qoder 每日签到（campaigns 活动流程，每日 100 Credits）。
-// 链路照抄 qoder2api（桌面端抓包还原）：GET campaigns 找 CLAIMABLE 的
-// CLAIM_BENEFIT 活动 → POST {id}/claim 空 body 领取。鉴权仅需 dt- Bearer +
-// cosy-clienttype: 10，无需 COSY 签名。claim 幂等：已领返回 replayed=true。
+// 链路照抄 qoder2api-hub v1.1.1（桌面端抓包还原）：GET campaigns 找 CLAIMABLE 的
+// CLAIM_BENEFIT 活动 → POST {id}/claim 空 body 领取。鉴权仅需 dt- Bearer，无需 COSY
+// 签名，但**必须带桌面端请求头**（见 desktopHeaders）——缺 Cosy-Version 时服务端静默
+// 返回空活动列表；同时**不可带 cosy-machinetoken**，否则设备定向活动被过滤。
+// claim 幂等：已领返回 replayed=true。
 // 已领取时返回"已签到"错误（scheduler isAlready 识别为成功状态）。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
 	dt := a.JWT()
 	if dt == "" {
 		return fmt.Errorf("no dt- available")
 	}
+	EnsureFingerprint(a)
 	headers := func(req *http.Request) {
-		billingHeaders(req, dt)
-		req.Header.Set("accept-language", "zh-CN")
-		req.Header.Set("user-agent", "Qoder")
-		req.Header.Set("cosy-clienttype", "10")
+		desktopHeaders(req, dt, a)
 	}
 
 	// Step 1: 查询活动列表
@@ -520,9 +554,10 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 		return c.classifyError(resp.StatusCode, string(raw))
 	}
 	var claim struct {
-		Status   string `json:"status"`
-		Replayed bool   `json:"replayed"`
-		Benefit  *struct {
+		Status      string `json:"status"`
+		Replayed    bool   `json:"replayed"`
+		FailureCode string `json:"failureCode"`
+		Benefit     *struct {
 			Kind   string `json:"kind"`
 			Amount int    `json:"amount"`
 		} `json:"benefit"`
@@ -541,8 +576,13 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 	case claim.Status == "CLAIMED" && claim.Replayed:
 		log.Printf("qoder checkin already(replayed) uid=%s", a.UID)
 		return fmt.Errorf("已签到")
+	case strings.EqualFold(claim.FailureCode, "SAME_PERSON_ALREADY_CLAIMED"):
+		// 上游按"人"去重（同机器指纹多号合并为一人），共享每轮一次额度。
+		// 参考 qoder2api-hub：第二个号返回 BLOCKED + 该 failureCode 且列表里隐藏活动。
+		log.Printf("qoder checkin blocked(same-person) uid=%s", a.UID)
+		return fmt.Errorf("已签到（同设备其他账号已领取本轮）")
 	default:
-		return fmt.Errorf("claim status=%s", claim.Status)
+		return fmt.Errorf("claim status=%s code=%s", claim.Status, claim.FailureCode)
 	}
 }
 
