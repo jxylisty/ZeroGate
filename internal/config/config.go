@@ -128,12 +128,7 @@ type Config struct {
 // DefaultModelRedirects 返回开箱即用的默认模型别名与备选链。
 func DefaultModelRedirects() map[string][]string {
 	return map[string][]string{
-		"claude-3-5-sonnet":             {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
-		"claude-3.5-sonnet":             {"traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"},
-		"claude-3-7-sonnet":             {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
-		"claude-3.7-sonnet":             {"wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"},
-		"claude-3-5-haiku":              {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
-		"claude-3.5-haiku":              {"wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"},
+		// claude 系别名已移除：wbintl 渠道下线、workbuddy 上游 11102 不再提供这些模型（2026-10 核实全渠道无可用 claude）
 		"deepseek-chat":                 {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
 		"deepseek-v3":                   {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},
 		"deepseek-reasoner":             {"codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"},

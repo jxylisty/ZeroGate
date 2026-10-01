@@ -519,15 +519,56 @@ func (h *Handler) modelList() []map[string]any {
 	out := []map[string]any{}
 	seen := map[string]bool{}
 
-	// 首先暴露所有配置的别名模型（如 claude-3-5-sonnet、deepseek-chat 等）
+	// 先收集各渠道的实际可用模型（动态拉取，失败回退静态表），供别名健康检查使用
+	liveByKind := map[provider.Kind]map[string]bool{}
+	for _, k := range h.runtimeKinds() {
+		rt := h.cfg.Runtimes[k]
+		if rt.Pool == nil || len(rt.Pool.List()) == 0 {
+			continue
+		}
+		infos := h.fetchRuntimeModels(rt)
+		if len(infos) == 0 {
+			infos = rt.StaticModels
+		}
+		set := make(map[string]bool, len(infos))
+		for _, mi := range infos {
+			set[mi.ID] = true
+		}
+		liveByKind[k] = set
+	}
+
+	// aliasAlive 别名至少要有一个候选真实存在于对应渠道的可用列表里才暴露；
+	// 整链失效的别名自动隐藏（配置保留，上游恢复后自动回来），避免"点开就 400"的僵尸条目。
+	aliasAlive := func(candidates []string) bool {
+		for _, cand := range candidates {
+			parts := strings.SplitN(cand, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			if set, ok := liveByKind[provider.Kind(parts[0])]; ok && set[parts[1]] {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 暴露所有配置的别名模型（merges + redirects），死链别名跳过
 	redirects := h.GetModelRedirects()
 	merges := h.GetModelMerge()
 	aliasNames := make([]string, 0, len(redirects)+len(merges))
-	for name := range merges {
-		aliasNames = append(aliasNames, name)
+	for name, list := range merges {
+		if aliasAlive(list) {
+			aliasNames = append(aliasNames, name)
+		} else {
+			log.Printf("model alias hidden (all candidates unavailable): %s", name)
+		}
 	}
-	for name := range redirects {
-		aliasNames = append(aliasNames, name)
+	for name, list := range redirects {
+		if aliasAlive(list) {
+			aliasNames = append(aliasNames, name)
+		} else {
+			log.Printf("model alias hidden (all candidates unavailable): %s", name)
+		}
 	}
 	sort.Strings(aliasNames)
 	for _, name := range aliasNames {
