@@ -196,7 +196,9 @@ func (p *Provision) Done(timeout time.Duration) (ok bool, err error) {
 	}
 	p.mu.Lock()
 	err = st.doneErr
-	p.cur = nil
+	if err != nil {
+		p.cur = nil
+	}
 	p.mu.Unlock()
 	if err != nil {
 		return false, err
@@ -204,34 +206,60 @@ func (p *Provision) Done(timeout time.Duration) (ok bool, err error) {
 	// 凭证文件出现才认为成功
 	credFile := filepath.Join(st.credsDir, "credentials.json")
 	if _, serr := os.Stat(credFile); serr != nil {
+		p.mu.Lock()
+		if p.cur == st {
+			p.cur = nil
+		}
+		p.mu.Unlock()
 		return false, fmt.Errorf("凭证文件未生成（%s）", credFile)
 	}
+	// 成功：保留 p.cur 供随后的 Finalize() 落库 —— 由 Finalize 负责清理。
+	// （曾在此处 p.cur = nil，导致 Finalize 恒返回"无进行中的 zcode 登录"、账号永远加不进去。）
 	return true, nil
 }
 
 // Finalize 生成 ZeroGate auths 占位账号并返回其文件路径。
+// 账号文件名/uid 沿用既有约定：实例 acc-logn0200 → auths/zcode-logn0200.json
+// （bridge.go 的 zcodeDisplayName 亦按 zcode-<实例名去 acc- 前缀>.json 反查昵称）。
 func (p *Provision) Finalize() (string, error) {
 	p.mu.Lock()
 	st := p.cur
-	p.mu.Unlock()
 	if st == nil {
+		p.mu.Unlock()
 		return "", fmt.Errorf("无进行中的 zcode 登录")
 	}
 	if st.finalized {
+		p.mu.Unlock()
 		return "", fmt.Errorf("账号已落库")
 	}
 	st.finalized = true
-	authFile := filepath.Join(p.authDir, fmt.Sprintf("zcode-%s.json", st.Name))
+	p.mu.Unlock()
+
+	suffix := strings.TrimPrefix(st.Name, "acc-")
+	uid := "zcode-" + suffix
+	authFile := filepath.Join(p.authDir, uid+".json")
 	content := fmt.Sprintf(`{
   "accessToken": "bridge.header.sig",
-  "uid": "zcode-%s",
+  "uid": "%s",
   "nickname": "ZCode-%s",
-  "bridgeUrl": "http://127.0.0.1:%d"
+  "bridgeUrl": "http://127.0.0.1:%d",
+  "mode": "bridge",
+  "enabled": true
 }
-`, st.Name, st.Name, st.Port)
+`, uid, suffix, st.Port)
 	if err := os.WriteFile(authFile, []byte(content), 0o644); err != nil {
+		p.mu.Lock()
+		if p.cur == st {
+			p.cur = nil
+		}
+		p.mu.Unlock()
 		return "", err
 	}
+	p.mu.Lock()
+	if p.cur == st {
+		p.cur = nil
+	}
+	p.mu.Unlock()
 	return authFile, nil
 }
 
