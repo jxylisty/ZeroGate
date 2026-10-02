@@ -173,6 +173,9 @@ func runWeeklyClaim(trigger string) ClaimReport {
 		instDir = "D:/wild-work/research/zcode-proxy/instances"
 	}
 	rep := ClaimReport{At: time.Now().Format("2006-01-02 15:04:05"), Trigger: trigger}
+	// 仅手动「立即领取」走浏览器载体页：自动窗口无人在场，弹标签页只会白等
+	// 90s/号再回退，不如直接用原 CLI 自解。
+	useBrowser := trigger == "manual"
 	dirs, err := os.ReadDir(instDir)
 	if err != nil {
 		log.Printf("zcode weekly claim: 实例目录不可读 %s: %v", instDir, err)
@@ -189,7 +192,7 @@ func runWeeklyClaim(trigger string) ClaimReport {
 			continue
 		}
 		credsDir := filepath.Join(instDir, d.Name(), "creds")
-		out, err := claimCLI(credsDir)
+		out, err := claimCLI(credsDir, useBrowser)
 		rec := ClaimRecord{Instance: d.Name(), Output: strings.TrimSpace(out), At: time.Now().Format("15:04:05")}
 		if err != nil {
 			rec.Output = strings.TrimSpace(rec.Output + " " + err.Error())
@@ -214,7 +217,7 @@ func runWeeklyClaim(trigger string) ClaimReport {
 }
 
 // claimCLI 以 CLI 单次模式执行 claim（输出含 Claimed/No claimable/error）。
-func claimCLI(credsDir string) (string, error) {
+func claimCLI(credsDir string, useBrowser bool) (string, error) {
 	exe := zcodeClaimExe
 	cmd := exec.Command(exe, "claim", "now")
 	platform.HideWindow(cmd)
@@ -233,7 +236,7 @@ func claimCLI(credsDir string) (string, error) {
 	}
 	// 载体页 mint：用用户真实浏览器产出 param 注入 CLI，绕开 happy-dom 假 DOM
 	// 被风控判风险的问题。mint 失败（超时/未配置）则回退 CLI 自解，不阻塞领取。
-	if base := CarrierBaseURL(); base != "" {
+	if base := CarrierBaseURL(); useBrowser && base != "" {
 		mintCtx, cancel := context.WithTimeout(context.Background(), captchaMintBudget)
 		cp, mintErr := MintCaptchaParam(mintCtx, base)
 		cancel()
