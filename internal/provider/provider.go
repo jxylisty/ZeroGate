@@ -48,6 +48,7 @@ const (
 	ErrClient                     // 其他 4xx / 业务错误
 	ErrBanned                     // 封禁（如 410004）→ 24h 长冷却，重复 3 次转禁用
 	ErrBridgeDown                 // 本地桥（127.0.0.1）连不上 → 非账号问题，短冷却不累计
+	ErrUpstreamDown               // 桥活着但上游域名/网络不可达（DNS 失败等）→ 非账号问题，短冷却不累计
 )
 
 func (k ErrKind) String() string {
@@ -66,6 +67,8 @@ func (k ErrKind) String() string {
 		return "banned"
 	case ErrBridgeDown:
 		return "bridge_down"
+	case ErrUpstreamDown:
+		return "upstream_down"
 	case ErrClient:
 		return "client"
 	default:

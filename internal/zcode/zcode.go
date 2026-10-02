@@ -114,7 +114,32 @@ const (
 	ErrNotFound    = provider.ErrNotFound
 	ErrServer      = provider.ErrServer
 	ErrClient      = provider.ErrClient
+	// ErrUpstreamDown：桥活着但桥的上游域名/网络不可达（本机 DNS 抖动等），
+	// 与账号凭证/额度无关，走短冷却不累计 errCount（同 ErrBridgeDown 规格）。
+	ErrUpstreamDown = provider.ErrUpstreamDown
 )
+
+// upstreamUnreachableMarkers 本地桥透传的「上游不可达」特征串（解析/连接层失败）。
+// 实测形态：HTTP 502 {"error":{"type":"upstream_unreachable",
+// "message":"getaddrinfo ENOTFOUND zcode.z.ai"}}。
+var upstreamUnreachableMarkers = []string{
+	"upstream_unreachable",
+	"getaddrinfo",
+	"enotfound",
+	"eai_again",
+	"no such host",
+	"dial tcp",
+}
+
+// looksUpstreamUnreachable 判断（已转小写的）响应体是否为上游域名/网络不可达。
+func looksUpstreamUnreachable(low string) bool {
+	for _, m := range upstreamUnreachableMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
 
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 // body 可能是 {code,msg} 或 {error:{...}}；出现 "captcha" 视为验证码失效
@@ -149,6 +174,13 @@ func Classify(status int, body string) provider.ErrKind {
 		return ErrSoftRate
 	}
 	if status >= 500 {
+		// 桥活着但上游解析/连接失败（本机 DNS 抖动等）：属网络瞬时故障，与账号
+		// 无关。若按 ErrServer 走 default 分支会累计 errCount，一次 DNS 抖动就能
+		// 把整池账号各罚 10 分钟（2026-10-02 事故：zcode 6 号全冻、熔断 0/6 healthy，
+		// 实际余额 73M~98M 均健康）。
+		if looksUpstreamUnreachable(low) {
+			return ErrUpstreamDown
+		}
 		return ErrServer
 	}
 	// 业务 code：1005/3009=rate_limit、1305=overloaded、3007=auth、3001=invalid

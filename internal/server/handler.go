@@ -865,6 +865,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					rt.Pool.Ban(acct.UID, "上游封禁（410004）")
 				case provider.ErrNotFound:
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
+				case provider.ErrUpstreamDown:
+					// 桥活着但上游域名/网络不可达（本机 DNS 抖动等）：错在网络不在账号。
+					// 同 ErrBridgeDown 规格 —— 只给一次短冷却让整池不可用时熔断能快速
+					// 失败，绝不累计 errCount（2026-10-02 事故：一次 DNS 抖动让 6 个 zcode
+					// 号各吃 3 次错误 → 整池长冷却 10 分钟 + 熔断，30s 网络抖动被放大成
+					// 10 分钟整渠道中断）。
+					log.Printf("upstream unreachable platform=%s uid=%s (body 见上游日志)",
+						rt.Kind, acct.UID)
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游不可达（非账号问题）")
 				default:
 					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				}
