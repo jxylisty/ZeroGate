@@ -233,6 +233,13 @@ func main() {
 			},
 			// ZCode 无签到活动；JWT 无刷新，keepalive 仅为空转
 			afterSync: func(p *pool.Pool) {
+				// 载体页基地址：面板/浏览器可访问的回环地址（Listen.Host 为空表示
+				// 全接口，等价 0.0.0.0，本地访问用 127.0.0.1）。
+				host := strings.TrimSpace(cfg.Listen.Host)
+				if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+					host = "127.0.0.1"
+				}
+				zcode.SetCarrierBaseURL(fmt.Sprintf("http://%s:%d", host, cfg.Listen.Port))
 				zcode.StartWeeklyClaim(context.Background(), zcode.BridgeKeyFromEnv())
 			},
 			staticModels: zcode.StaticModels, runScheduler: true,

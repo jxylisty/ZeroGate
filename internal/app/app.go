@@ -2104,6 +2104,31 @@ func (a *App) registerAPIRoutes(mux *http.ServeMux) {
 		go zcode.ClaimNow("manual")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "msg": "领取已启动，稍后刷新查看结果"})
 	})
+	// ZCode captcha 载体页：领取前用用户真实浏览器 mint param（daemon 经环境变量注入 CLI）。
+	// GET 直接渲染（打开页面的是浏览器，无管理凭证）；POST 回传受 csrfGuard 同源校验保护。
+	mux.HandleFunc("GET /api/zcode/carrier", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		contribute := "http://" + r.Host + "/api/zcode/carrier/contribute"
+		html, ok := zcode.CarrierPage(token, contribute)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(html))
+	})
+	mux.HandleFunc("POST /api/zcode/carrier/contribute", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		var req struct {
+			Param string `json:"param"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := zcode.DeliverCaptchaParam(token, req.Param); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`

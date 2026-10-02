@@ -47,6 +47,34 @@ var (
 	claimResultFile = "data/zcode-claim-result.json"
 )
 
+// zcodeClaimExe 领取 CLI。用独立文件名 zcode-proxy-claim.exe：常驻实例占用
+// zcode-proxy.exe（Windows 锁 exe），无法就地覆盖，故改指向带载体页支持的新件。
+const zcodeClaimExe = "D:/wild-work/research/zcode-proxy/zcode-proxy-claim.exe"
+
+// captchaMintBudget 载体页 mint 的总预算（略大于 MintCaptchaParam 内部 90s 等待，
+// 让更友好的超时文案先生效）。
+const captchaMintBudget = 95 * time.Second
+
+// carrierBase 载体页基地址（如 http://127.0.0.1:7863），由 main 按监听配置装配。
+var (
+	carrierBaseMu sync.Mutex
+	carrierBase   string
+)
+
+// SetCarrierBaseURL 设置载体页基地址（须在首次领取前调用）。
+func SetCarrierBaseURL(base string) {
+	carrierBaseMu.Lock()
+	carrierBase = strings.TrimRight(strings.TrimSpace(base), "/")
+	carrierBaseMu.Unlock()
+}
+
+// CarrierBaseURL 返回载体页基地址（空表示未配置，领取时跳过 mint）。
+func CarrierBaseURL() string {
+	carrierBaseMu.Lock()
+	defer carrierBaseMu.Unlock()
+	return carrierBase
+}
+
 // SetClaimResultFile 重设领取结果文件路径（须在首次领取前调用）。
 func SetClaimResultFile(fp string) {
 	claimResultMu.Lock()
@@ -187,7 +215,7 @@ func runWeeklyClaim(trigger string) ClaimReport {
 
 // claimCLI 以 CLI 单次模式执行 claim（输出含 Claimed/No claimable/error）。
 func claimCLI(credsDir string) (string, error) {
-	exe := "D:/wild-work/research/zcode-proxy/zcode-proxy.exe"
+	exe := zcodeClaimExe
 	cmd := exec.Command(exe, "claim", "now")
 	platform.HideWindow(cmd)
 	env := append(os.Environ(),
@@ -202,6 +230,22 @@ func claimCLI(credsDir string) (string, error) {
 	// 实例目录没有 config.yaml 时退回原行为，避免 CLI 直接报 config not found。
 	if cfg := filepath.Join(filepath.Dir(credsDir), "config.yaml"); fileExists(cfg) {
 		env = append(env, "ZCODE_PROXY_CONFIG="+cfg)
+	}
+	// 载体页 mint：用用户真实浏览器产出 param 注入 CLI，绕开 happy-dom 假 DOM
+	// 被风控判风险的问题。mint 失败（超时/未配置）则回退 CLI 自解，不阻塞领取。
+	if base := CarrierBaseURL(); base != "" {
+		mintCtx, cancel := context.WithTimeout(context.Background(), captchaMintBudget)
+		cp, mintErr := MintCaptchaParam(mintCtx, base)
+		cancel()
+		if mintErr == nil {
+			env = append(env, "ZCODE_CAPTCHA_PARAM="+cp.Param)
+			if cp.Region != "" {
+				env = append(env, "ZCODE_CAPTCHA_REGION="+cp.Region)
+			}
+		} else {
+			log.Printf("zcode claim %s: 载体页 mint 失败，回退 CLI 自解：%v",
+				filepath.Base(filepath.Dir(credsDir)), mintErr)
+		}
 	}
 	cmd.Env = env
 	var buf bytes.Buffer
