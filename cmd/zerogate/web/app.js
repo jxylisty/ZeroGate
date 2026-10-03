@@ -357,7 +357,10 @@ function acctCardHTML(a) {
   const exp = formatExpire(a.expire_at);
   const expireTag = `<span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>`;
   const nextPickTag = a.is_next
-    ? `<span class="tag next-pick" title="ZeroGate 账号池优先调度候选 #1（快到期/低余额优先策略）">${I.target} 优先调度</span>`
+    ? `<span class="tag next-pick" title="本渠道第一顺位：下一次请求将优先调用此账号（zcode 按桥接轮转顺序，其余渠道按快到期/低余额优先）">${I.target} 优先调度</span>`
+    : "";
+  const bridgeDownTag = a.bridge_down
+    ? `<span class="tag danger" title="该账号对应的本地桥进程未启动（bridgeUrl 端口连不上），请求打到它会直接失败；请到「本地桥」页启动该实例">${I.alert} 桥未启动</span>`
     : "";
 
   const disabledClass = a.disabled ? " disabled" : "";
@@ -379,6 +382,7 @@ function acctCardHTML(a) {
         <span class="badge ${group}">${groupName}</span>
         <span class="acct-name">${esc(a.nickname || shortUid(a.uid))}</span>
         ${nextPickTag}
+        ${bridgeDownTag}
       </div>
       <div class="acct-ops">
         ${checkinBtn}
@@ -2093,9 +2097,12 @@ function renderAcctProductivity(accounts) {
     const expireTag = `<span class="tag ${exp.cls}">${I.clock} ${esc(exp.text)}</span>`;
     const stateAcct = (state && state.accounts ? state.accounts : []).find(s => s.uid === a.uid && s.group === a.kind);
     const isNext = stateAcct && stateAcct.is_next;
-    const statusTag = isNext
-      ? `<span class="tag next-pick">${I.target} 优先调度 #1</span>`
-      : (stateAcct && stateAcct.disabled ? `<span class="tag danger">已停用</span>` : `<span class="tag neutral">就绪待命</span>`);
+    const bridgeDown = stateAcct && stateAcct.bridge_down;
+    const statusTag = bridgeDown
+      ? `<span class="tag danger" title="该账号本地桥未启动，请求打到它会失败">${I.alert} 桥未启动</span>`
+      : isNext
+        ? `<span class="tag next-pick">${I.target} 优先调度 #1</span>`
+        : (stateAcct && stateAcct.disabled ? `<span class="tag danger">已停用</span>` : `<span class="tag neutral">就绪待命</span>`);
 
     return `
       <tr>

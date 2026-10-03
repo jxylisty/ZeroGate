@@ -39,6 +39,10 @@ type Runtime struct {
 	models   []provider.ModelInfo
 	fetched  time.Time
 	lastFail time.Time
+
+	// bridgeRR 桥接渠道（zcode）轮转计数。放在 Runtime 而非 Handler，
+	// 这样面板（internal/app）也能只读地预览「下一个会被调度的账号」。
+	bridgeRR atomic.Uint64
 }
 
 // Config handler 依赖。
@@ -99,9 +103,6 @@ type Handler struct {
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
-
-	rrMu     sync.Mutex                // 保护 bridgeRR
-	bridgeRR map[string]*atomic.Uint64 // 桥接渠道轮转计数（runtimeKind → 计数器）
 
 	// breakerMu 保护 breaker：渠道级熔断（runtimeKind → 熔断到期时间）。
 	// 整池不可用（全部封禁/冷却/停用）时置位，期间直接快速失败、不再转发上游 ——
@@ -248,10 +249,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.Serv
 // stickyKey 粘性路由 key（按渠道独立）
 func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 
-// pickBridgeRotation 桥接渠道（zcode）不走长粘性：按「到期时间升序」轮转 healthy 账号。
-// 集中单账号会把并发顶到 start-plan 每账号 5 并发上限（表现为并发时断流），
-// 轮转让并发分摊到多账号、各账号额度同步消耗；同到期时间的按 UID 稳定排序。
-func (h *Handler) pickBridgeRotation(rt *Runtime) *auth.Auth {
+// PickNextPreview 只读地返回某渠道「下一个会被调度」的账号（不推进任何计数），
+// 供面板显示「第一顺位」。zcode 走桥接轮转预览（与真实转发同源），其余走 Pool.Pick()。
+func (h *Handler) PickNextPreview(kind provider.Kind) *auth.Auth {
+	rt := h.cfg.Runtimes[kind]
+	if rt == nil || rt.Pool == nil {
+		return nil
+	}
+	if kind == provider.ZCode {
+		return rt.PickBridgeRotationNext()
+	}
+	return rt.Pool.Pick()
+}
+
+// bridgeRotationCandidates 返回桥接渠道（zcode）按「到期时间升序、UID 升序」排好的
+// healthy 候选。抽出来供 pickBridgeRotation（推进轮转）与 PickBridgeRotationNext
+// （面板只读预览）共用，保证「面板显示的下一顺位」与「真实转发顺序」同源。
+func (rt *Runtime) bridgeRotationCandidates() []*auth.Auth {
 	auths := rt.Pool.Auths()
 	if len(auths) == 0 {
 		return nil
@@ -269,7 +283,7 @@ func (h *Handler) pickBridgeRotation(rt *Runtime) *auth.Auth {
 		list = append(list, cand{a: a, exp: st.ExpireAt})
 	}
 	if len(list) == 0 {
-		return rt.Pool.Pick()
+		return nil
 	}
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].exp != list[j].exp {
@@ -277,18 +291,36 @@ func (h *Handler) pickBridgeRotation(rt *Runtime) *auth.Auth {
 		}
 		return list[i].a.UID < list[j].a.UID
 	})
-	h.rrMu.Lock()
-	if h.bridgeRR == nil {
-		h.bridgeRR = make(map[string]*atomic.Uint64)
+	out := make([]*auth.Auth, 0, len(list))
+	for _, c := range list {
+		out = append(out, c.a)
 	}
-	ctr, ok := h.bridgeRR[string(rt.Kind)]
-	if !ok {
-		ctr = &atomic.Uint64{}
-		h.bridgeRR[string(rt.Kind)] = ctr
+	return out
+}
+
+// pickBridgeRotation 桥接渠道（zcode）不走长粘性：按「到期时间升序」轮转 healthy 账号。
+// 集中单账号会把并发顶到 start-plan 每账号 5 并发上限（表现为并发时断流），
+// 轮转让并发分摊到多账号、各账号额度同步消耗；同到期时间的按 UID 稳定排序。
+// 无 healthy 候选时回退 Pool.Pick()（可能返回 nil，由调用方处理）。
+func (rt *Runtime) pickBridgeRotation() *auth.Auth {
+	list := rt.bridgeRotationCandidates()
+	if len(list) == 0 {
+		return rt.Pool.Pick()
 	}
-	n := ctr.Add(1)
-	h.rrMu.Unlock()
-	return list[int(n-1)%len(list)].a
+	n := rt.bridgeRR.Add(1)
+	return list[int(n-1)%len(list)]
+}
+
+// PickBridgeRotationNext 只读地返回「下一次转发」将被轮转到的账号（不推进计数）。
+// 面板用它算「优先调度 #1」——与 pickBridgeRotation 的实际顺序一致，
+// 修正原先用 Pool.Pick()（快到期+低余额）导致标记与实际调度不符的问题。
+// 无 healthy 候选时返回 nil。
+func (rt *Runtime) PickBridgeRotationNext() *auth.Auth {
+	list := rt.bridgeRotationCandidates()
+	if len(list) == 0 {
+		return nil
+	}
+	return list[int(rt.bridgeRR.Load())%len(list)]
 }
 
 // pickWithSticky 粘性路由选择账号。
@@ -302,7 +334,7 @@ func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 
 	// 桥接渠道（zcode）：并发集中单账号易撞每账号并发上限，且烧额度应齐烧。
 	if rt.Kind == provider.ZCode {
-		return h.pickBridgeRotation(rt)
+		return rt.pickBridgeRotation()
 	}
 
 	h.stickyMu.RLock()

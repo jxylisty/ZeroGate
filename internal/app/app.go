@@ -1598,7 +1598,8 @@ type AccountView struct {
 	Credits        int64                   `json:"credits"`
 	ExpireAt       int64                   `json:"expire_at"`                // 最早到期套餐时间（Unix 秒，0=长期有效）
 	ResourceItems  []provider.ResourceItem `json:"resource_items,omitempty"` // 积分分类明细（含到期时间）
-	IsNext         bool                    `json:"is_next"`                  // 是否为当前渠道账号池优先调度候选 #1
+	IsNext         bool                    `json:"is_next"`                  // 是否为当前渠道第一顺位（zcode 按真实轮转顺序）
+	BridgeDown     bool                    `json:"bridge_down,omitempty"`    // 桥接账号：bridgeUrl 端口连不上（桥未启动）
 	Cooling        bool                    `json:"cooling"`
 	Until          string                  `json:"until"`
 	Reason         string                  `json:"reason"`
@@ -1667,38 +1668,69 @@ func defaultChannelMode(kind string) string {
 	return "proxy"
 }
 
+// bridgePortUp 探测桥接账号的本地桥端口是否可连（bridgeUrl 形如 http://127.0.0.1:18084）。
+// 仅回环地址：端口关闭时 connect 立即被 RST 拒绝，开销可忽略；解析失败/无端口按不可连处理。
+func bridgePortUp(bridgeURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(bridgeURL))
+	if err != nil || u.Host == "" || u.Port() == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", u.Host, 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func (a *App) accountViews() []AccountView {
 	// 按渠道 pool 遍历：codebuddy 与 wbintl 可能同 uid（同后端同账户），
 	// 必须带上 rt.Kind 才能区分分组，不能仅凭 uid。
 	type sv struct {
-		kind   string
-		s      pool.Status
-		isNext bool
-		mode   string
+		kind       string
+		s          pool.Status
+		isNext     bool
+		mode       string
+		bridgeDown bool
 	}
 	var items []sv
 	for _, rt := range a.runtimes {
 		if rt == nil || rt.Pool == nil {
 			continue
 		}
-		nextAuth := rt.Pool.Pick()
+		// zcode 实际转发走桥接轮转（server.Runtime.pickBridgeRotation），不走 Pool.Pick；
+		// 必须用同一个只读预览算「优先调度」，否则标记与实际调度不符（见 PickNextPreview）。
+		var nextAuth *auth.Auth
+		if a.handler != nil {
+			nextAuth = a.handler.PickNextPreview(rt.Kind)
+		} else {
+			nextAuth = rt.Pool.Pick()
+		}
 		nextUID := ""
 		if nextAuth != nil {
 			nextUID = nextAuth.UID
 		}
 		for _, s := range rt.Pool.List() {
+			au := rt.Pool.AuthByUID(s.UID)
 			mode := ""
-			if au := rt.Pool.AuthByUID(s.UID); au != nil {
+			if au != nil {
 				mode = au.Mode
 			}
 			if mode == "" {
 				mode = defaultChannelMode(string(rt.Kind))
 			}
+			// 只有带 bridgeUrl 的账号（zcode 实例）才探测桥端口：
+			// 桥没启动时该号在池里仍是 healthy，必须显式标注，否则会被误当成可用。
+			bridgeDown := false
+			if au != nil && au.BridgeURL != "" {
+				bridgeDown = !bridgePortUp(au.BridgeURL)
+			}
 			items = append(items, sv{
-				kind:   string(rt.Kind),
-				s:      s,
-				isNext: s.UID == nextUID && !s.Disabled && !s.Cooling,
-				mode:   mode,
+				kind:       string(rt.Kind),
+				s:          s,
+				isNext:     s.UID == nextUID && !s.Disabled && !s.Cooling,
+				mode:       mode,
+				bridgeDown: bridgeDown,
 			})
 		}
 	}
@@ -1715,6 +1747,7 @@ func (a *App) accountViews() []AccountView {
 			ExpireAt:       s.ExpireAt,
 			ResourceItems:  s.ResourceItems,
 			IsNext:         it.isNext,
+			BridgeDown:     it.bridgeDown,
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,

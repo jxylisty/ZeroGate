@@ -122,7 +122,7 @@
           </div>
         </div>
       </div>
-      <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span><strong>智能调度机制</strong>：网关自动遵循【快到期优先】策略（有到期时间优先于长期有效，越早到期越优先消耗，平手时余额低者优先）。带 <span class="tag next-pick" style="font-size:10px; padding:1px 6px;"><span data-ic="target"></span>优先调度</span> 为当前渠道第一顺位；可在「调用流水」核对每次请求实际调用的账号 UID。</p>
+      <p class="hint" style="margin-bottom:12px;"><span data-ic="lightbulb"></span><strong>智能调度机制</strong>：普通渠道遵循【快到期优先】策略（有到期时间优先于长期有效，越早到期越优先消耗，平手时余额低者优先）；zcode 等桥接渠道按【到期时间升序轮转】，把并发摊到多个号。带 <span class="tag next-pick" style="font-size:10px; padding:1px 6px;"><span data-ic="target"></span>优先调度</span> 为当前渠道第一顺位（与真实转发同源）；带 <span class="tag danger" style="font-size:10px; padding:1px 6px;"><span data-ic="alert"></span>桥未启动</span> 表示该号的本地桥没开、请求会失败（请到「本地桥」页启动）。可在「调用流水」核对每次请求实际调用的账号 UID。</p>
       <div class="acct-toolbar">
         <input class="input" id="acctSearch" placeholder="搜索昵称 / UID / 渠道…" style="width:220px">
         <div class="chip-row" id="acctFilter">
