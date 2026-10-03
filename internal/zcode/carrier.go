@@ -225,10 +225,20 @@ func CarrierPageHTML(cfg CaptchaCarrierConfig, contributeURL, token string) stri
       body: JSON.stringify({ param: param })
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      finish(true, '验证完成，可以关闭本页。');
+      finish(true, '验证完成，正在关闭本页…');
+      closeSelf();
     }).catch(function (e) {
       finish(false, '回传失败：' + e + '（请刷新本页重试）');
     });
+  }
+  // 完成后尝试静默关闭本页，避免标签页堆积。浏览器对「非脚本打开」的标签页
+  // 可能拒绝 close()，此时退化为极简成功态（一眼可认、便于手动关闭）。
+  function closeSelf() {
+    try { window.close(); } catch (e) { /* 忽略：被拒时走下方兜底 */ }
+    setTimeout(function () {
+      document.title = '✓ 已完成';
+      document.body.innerHTML = '<div id="status" class="ok">✓ 已完成，可关闭本页</div>';
+    }, 400);
   }
   var script = document.createElement('script');
   script.src = 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js';
