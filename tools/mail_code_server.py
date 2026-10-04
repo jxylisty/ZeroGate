@@ -105,7 +105,7 @@ def imap_worker():
                         subj = decode_mime_words(msg.get("Subject", ""))
                         sender = decode_mime_words(msg.get("From", ""))
 
-                        if "atria" in sender.lower() or "atria" in subj.lower() or "verification" in subj.lower() or "验证码" in subj:
+                        if any(k in sender.lower() or k in subj.lower() for k in ["atria", "cline", "workos", "verification", "auth", "验证码"]):
                             body_text = ""
                             for part in msg.walk():
                                 if part.get_content_type() in ["text/plain", "text/html"]:
