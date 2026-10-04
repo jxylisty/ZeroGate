@@ -119,26 +119,12 @@ const (
 	ErrUpstreamDown = provider.ErrUpstreamDown
 )
 
-// upstreamUnreachableMarkers 本地桥透传的「上游不可达」特征串（解析/连接层失败）。
+// looksUpstreamUnreachable 判断响应体是否为上游域名/网络不可达。
+// 特征串由 provider 统一维护（与 handler 的传输层错误分类共用，避免两处漂移）。
 // 实测形态：HTTP 502 {"error":{"type":"upstream_unreachable",
 // "message":"getaddrinfo ENOTFOUND zcode.z.ai"}}。
-var upstreamUnreachableMarkers = []string{
-	"upstream_unreachable",
-	"getaddrinfo",
-	"enotfound",
-	"eai_again",
-	"no such host",
-	"dial tcp",
-}
-
-// looksUpstreamUnreachable 判断（已转小写的）响应体是否为上游域名/网络不可达。
 func looksUpstreamUnreachable(low string) bool {
-	for _, m := range upstreamUnreachableMarkers {
-		if strings.Contains(low, m) {
-			return true
-		}
-	}
-	return false
+	return provider.LooksUpstreamUnreachable(low)
 }
 
 // Classify 按 HTTP 状态码 + body 判定错误类别。

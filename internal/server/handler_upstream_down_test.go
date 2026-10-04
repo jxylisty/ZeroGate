@@ -18,8 +18,11 @@ package server
 // 这边是「桥活着、桥的上游 DNS 挂了」（HTTP 502），两者都要逃过账号级长冷却。
 
 import (
+	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -90,5 +93,68 @@ func TestPlain5xxStillCountsAsError(t *testing.T) {
 	st, _ := p.Status("a1")
 	if st.ErrCount != 1 {
 		t.Fatalf("err_count = %d, want 1（普通 5xx 应计错）", st.ErrCount)
+	}
+}
+
+// netErrFake 在 ChatStream 直接抛传输层错误（模拟云渠道直连时本机 DNS 抖动）。
+type netErrFake struct {
+	fakeUpstream
+	err error
+}
+
+func (f *netErrFake) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []byte, error) {
+	f.mu.Lock()
+	f.chats++
+	f.mu.Unlock()
+	return nil, 0, nil, f.err
+}
+
+// 传输层 DNS 抖动（2026-10-05 workbuddy 事故现场）：
+//
+//	Post "https://copilot.tencent.com/v2/chat/completions": dial tcp: lookup ...: no such host
+//
+// 走的是 handler 的 terr 分支，两个账号都只吃短冷却，errCount 必须保持 0。
+func TestTransportDNSErrorDoesNotAccumulateErrors(t *testing.T) {
+	dnsErr := &url.Error{
+		Op:  "Post",
+		URL: "https://copilot.tencent.com/v2/chat/completions",
+		Err: &net.DNSError{Err: "no such host", Name: "copilot.tencent.com", IsNotFound: true},
+	}
+	fu := &netErrFake{err: dnsErr}
+	h, p := newEmptyStreamHandler(t, fu, "a1", "a2")
+
+	postStreamChat(h, "qoder/m1")
+
+	if got := fu.chatCount(); got != 2 {
+		t.Fatalf("chat calls = %d, want 2（应轮换试完两个账号）", got)
+	}
+	for _, uid := range []string{"a1", "a2"} {
+		st, ok := p.Status(uid)
+		if !ok {
+			t.Fatalf("%s 不在池中", uid)
+		}
+		if st.ErrCount != 0 {
+			t.Fatalf("%s err_count = %d, want 0（DNS 抖动不应计账号错误）", uid, st.ErrCount)
+		}
+		if st.Disabled {
+			t.Fatalf("%s 不应被禁用", uid)
+		}
+		if !st.Cooling {
+			t.Fatalf("%s 应处于短冷却中（整池不可用时熔断仍能快速失败）", uid)
+		}
+	}
+}
+
+// 对照组：非网络类的传输错误（如 TLS 握手失败）仍必须按账号错误累计，
+// 否则真正的账号级故障将永远不触发熔断。
+func TestPlainTransportErrorStillCountsAsError(t *testing.T) {
+	fu := &netErrFake{err: errors.New("tls: failed to verify certificate")}
+	h, p := newEmptyStreamHandler(t, fu, "a1")
+
+	postStreamChat(h, "qoder/m1")
+
+	st, _ := p.Status("a1")
+	if st.ErrCount != 1 {
+		t.Fatalf("err_count = %d, want 1（非网络类传输错误仍应计错）", st.ErrCount)
 	}
 }

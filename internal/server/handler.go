@@ -872,6 +872,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "本地桥不可达（非账号问题）")
 					continue
 				}
+				if provider.IsUpstreamUnreachable(terr) {
+					// 云渠道直连上游时的本机 DNS 抖动 / 网络瞬断（Go http 客户端在传输层
+					// 抛 *url.Error/*net.DNSError）：错在网络，不在账号。只给一次短冷却、
+					// 绝不累计 errCount —— 否则一次 23 秒的 DNS 抖动就会让整池账号各吃 3 次
+					// 错误 → 10 分钟长冷却 → 熔断反复自触发（2026-10-05 workbuddy 4 号事故）。
+					log.Printf("upstream unreachable platform=%s uid=%s: %v", rt.Kind, acct.UID, terr)
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游不可达（非账号问题）")
+					continue
+				}
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				continue
 			}

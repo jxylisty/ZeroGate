@@ -101,6 +101,46 @@ func BridgeDown(err error) error {
 	return &Error{Kind: ErrBridgeDown, Msg: err.Error()}
 }
 
+// upstreamUnreachableMarkers 传输层「上游域名/网络不可达」特征串（解析/连接层失败）。
+//
+// 云渠道（workbuddy/intl/codebuddy 等）由本机直连上游，DNS 抖动时 Go http 客户端在
+// 传输层抛出 *url.Error/*net.DNSError，错误串含下列特征；zcode 桥透传的
+// {"type":"upstream_unreachable",...} 响应体也复用同一份串。本地桥连不上的场景
+// 由 BridgeDown 标记，与此处区分。
+var upstreamUnreachableMarkers = []string{
+	"upstream_unreachable",
+	"getaddrinfo",
+	"enotfound",
+	"eai_again",
+	"no such host",
+	"dial tcp",
+}
+
+// LooksUpstreamUnreachable 判断字符串（响应体或传输层错误串）是否为上游域名/网络
+// 不可达。zcode 的 body 分类与本包的传输层错误分类共用同一份特征串，避免两处漂移。
+func LooksUpstreamUnreachable(s string) bool {
+	low := strings.ToLower(s)
+	for _, m := range upstreamUnreachableMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsUpstreamUnreachable 判断传输层错误是否为上游域名/网络不可达（本机 DNS 抖动、
+// 网络瞬断等）——与账号凭证/额度无关，绝不可计入账号 errCount。
+//
+// 为什么必须区分：云渠道直连时一次 23 秒的 DNS 抖动会让整池账号各吃 3 次错误 →
+// 10 分钟长冷却 → 渠道熔断反复自触发（2026-10-05 事故：workbuddy 4 个号全冻 10 分钟，
+// 而 DNS 本身只抖了 23 秒）。同 ErrUpstreamDown 规格，只给短冷却。
+func IsUpstreamUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	return LooksUpstreamUnreachable(err.Error())
+}
+
 // IsLoopbackURL 判断上游地址是否指向本机（即自建本地桥，而非云端渠道）。
 // 用 url/IP 解析而非子串匹配，避免把 127.0.0.1.nip.io、localhost.example.com
 // 这类真实公网域名误判成本地桥。
