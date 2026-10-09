@@ -99,6 +99,42 @@ func TestAnthropicRequestToOpenAI(t *testing.T) {
 	}
 }
 
+// Claude Code 走自定义网关时把系统提示内嵌进 messages（role=system 数组 content），
+// 必须提取并合并到顶层 system，且保持 user 消息在后续位置。
+func TestAnthropicRequestToOpenAIEmbeddedSystem(t *testing.T) {
+	raw := `{
+	  "model": "claude-3-5-sonnet",
+	  "max_tokens": 128,
+	  "messages": [
+	    {"role":"user","content":"你好"},
+	    {"role":"system","content":[{"type":"text","text":"你是助手A"},{"type":"text","text":"规则B"}]}
+	  ]
+	}`
+	oai, err := anthropicRequestToOpenAI([]byte(raw))
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(oai, &obj); err != nil {
+		t.Fatalf("invalid JSON out: %v", err)
+	}
+	msgs, _ := obj["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2 (system 提取 + user)", len(msgs))
+	}
+	m0 := msgs[0].(map[string]any)
+	if m0["role"] != "system" {
+		t.Fatalf("msg[0].role = %v, want system（内嵌 system 应提取到最前）", m0["role"])
+	}
+	content, ok := m0["content"].(string)
+	if !ok || !strings.Contains(content, "你是助手A") || !strings.Contains(content, "规则B") {
+		t.Fatalf("system content = %v（应为合并的纯文本）", m0["content"])
+	}
+	if msgs[1].(map[string]any)["role"] != "user" {
+		t.Fatalf("msg[1].role = %v, want user", msgs[1].(map[string]any)["role"])
+	}
+}
+
 func TestAnthropicRequestToOpenAIErrors(t *testing.T) {
 	if _, err := anthropicRequestToOpenAI([]byte(`{}`)); err == nil {
 		t.Fatal("空请求（无 model）应报错")

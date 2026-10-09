@@ -197,21 +197,33 @@ func anthropicRequestToOpenAI(raw []byte) ([]byte, error) {
 	}
 	// 兜底默认：Claude 协议要求 max_tokens，OpenAI 侧可选，缺省不强制。
 
-	// system：字符串或 [{"type":"text","text":...}] 合并为单条 system 消息
-	var msgs []map[string]any
+	// system：顶层 system（字符串或 text 数组）+ messages 内嵌 role=system
+	// 消息全部合并为单条 system。Claude Code 走自定义网关时会把环境/系统提示
+	// 以 {"role":"system","content":[{type:text}]} 形式内嵌进 messages——
+	// OpenAI 兼容上游要求 system 在消息数组之外，必须提取到顶层，否则上游
+	// 收到数组 content 会返回空响应。
+	var sysText []string
 	if len(req.System) > 0 && string(req.System) != "null" {
-		sys := anthropicSystemText(req.System)
-		if sys != "" {
-			msgs = append(msgs, map[string]any{"role": "system", "content": sys})
+		if sys := anthropicSystemText(req.System); sys != "" {
+			sysText = append(sysText, sys)
 		}
 	}
-	// messages：逐条转换
+	var msgs []map[string]any
 	for _, mraw := range req.Messages {
+		if st, ok := extractAnthropicSystem(mraw); ok {
+			if st != "" {
+				sysText = append(sysText, st)
+			}
+			continue
+		}
 		converted, err := anthropicMessageToOpenAI(mraw)
 		if err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, converted...)
+	}
+	if len(sysText) > 0 {
+		msgs = append([]map[string]any{{"role": "system", "content": strings.Join(sysText, "\n\n")}}, msgs...)
 	}
 	if len(msgs) == 0 {
 		return nil, fmt.Errorf("anthropic request has no messages")
@@ -276,6 +288,37 @@ func anthropicSystemText(raw json.RawMessage) string {
 		return sb.String()
 	}
 	return ""
+}
+
+// extractAnthropicSystem 提取 messages 中 role=system 消息的文本（content 支持
+// 纯字符串或 [{type:text}] 数组）。返回（文本, 是否为 system 消息）。
+func extractAnthropicSystem(raw json.RawMessage) (string, bool) {
+	var m struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &m) != nil || m.Role != "system" {
+		return "", false
+	}
+	var plain string
+	if json.Unmarshal(m.Content, &plain) == nil {
+		return plain, true
+	}
+	var blocks []json.RawMessage
+	if json.Unmarshal(m.Content, &blocks) != nil {
+		return "", true
+	}
+	var parts []string
+	for _, braw := range blocks {
+		var b struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(braw, &b) == nil && b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), true
 }
 
 // anthropicMessageToOpenAI 转换一条 Anthropic message 为一条或多条 OpenAI message。
