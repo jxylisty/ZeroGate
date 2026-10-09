@@ -859,6 +859,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				log.Printf("refresh success platform=%s uid=%s expires_at=%d", rt.Kind, acct.UID, acct.ExpiresAt)
 			}
 			rc, status, respBody, terr := rt.Upstream.ChatStream(acct, candBody)
+			// 非流式响应的 TTFT 近似：ChatStream 返回 = 上游响应头就绪（首字节前），
+			// 比总耗时更能反映"排队/等上游"的等待段。
+			hdrAt := time.Now()
 			if terr != nil {
 				lastErr = terr
 				lastStatus = http.StatusBadGateway
@@ -881,7 +884,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游不可达（非账号问题）")
 					continue
 				}
-				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+				// 传输层兜底：非网络特征的传输错误（TLS 握手失败等）同样错在链路而非
+				// 账号 —— 账号级问题只会以 HTTP 响应形态出现，不可能在拿到响应前触发。
+				// 只给短冷却，绝不累计 errCount（2026-10-09 整改：只有风控/封号级错误
+				// 才允许长停账号）。
+				log.Printf("transport error platform=%s uid=%s: %v", rt.Kind, acct.UID, terr)
+				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "传输层故障（非账号问题）")
 				continue
 			}
 			// 诊断（ZG_DUMP_BODY=1 时生效）：落盘实际转发给上游的请求体，
@@ -916,7 +924,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						rt.Kind, acct.UID)
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游不可达（非账号问题）")
 				default:
-					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					// ErrServer / ErrClient 兜底：服务端故障或请求侧问题都不该由账号承担
+					// 3 次累计 → 10 分钟长停的代价（2026-10-09 整改：只有风控/封号级错误
+					// 才允许长停账号）。短冷却保底，防坏账号持续被粘住。
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游响应异常（非账号问题）")
 				}
 				// 限流、排队等待(如 Qoder 10605)、余额不足、会话失效、封禁、模型未找到或服务端异常时，继续重试账号池其他账号或备选渠道
 				isRateLimit := kind == provider.ErrSoftRate || status == http.StatusTooManyRequests || strings.Contains(string(respBody), "10605")
@@ -963,8 +974,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 空流先验门控（2026-09-28 qoder 故障）：上游偶发返回 HTTP 200 + 空流
 			// （几百毫秒内 0 token EOF 结束，如 qoder 的 streamAsOpenAI 会忠实补上
 			// [DONE]，客户端拿到的是"合法的空回复"而非错误）。此处对流做一次带字节
-			// 上限的窥探：流结束且从未出现任何 SSE data: 行 → 判定空流，按上游错误
-			// 处理（stickyClear + NoteError），轮换下一账号重试。窥探时机在写任何
+			// 上限的窥探：流结束且从未出现任何 SSE data: 行 → 判定空流，按上游异常
+			// 处理（stickyClear + 短冷却，不累计 errCount），轮换下一账号重试。窥探时机在写任何
 			// 响应头之前，重试对客户端完全无感；窥探到的字节经 peekReader 原样续传，
 			// 正常流首包零额外等待。
 			var prc io.ReadCloser = rc
@@ -975,7 +986,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					lastStatus = http.StatusBadGateway
 					_ = rc.Close()
 					h.stickyClear(rt)
-					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					// 流中途读挂属链路/上游问题：只短冷却不累计 errCount
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "流读取失败（非账号问题）")
 					continue
 				}
 				if empty {
@@ -985,7 +997,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					log.Printf("empty stream platform=%s uid=%s elapsed=%dms — rotate to next account",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds())
 					h.stickyClear(rt)
-					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "空流（上游异常，非账号问题）")
 					continue
 				}
 				prc = &peekedStream{ReadCloser: rc, head: head}
@@ -1036,7 +1048,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					// 避免重试风暴加深上游风控标记（AutoClaw 封号教训）。每请求上限 1 次。
 					if degraded && !streamRetried && !rw.wroteAny && isStreamEOF(streamErr) {
 						streamRetried = true
-						rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "零 token 瞬断（非账号问题）")
 						h.stickyClear(rt)
 						log.Printf("zero-token stream retry platform=%s uid=%s elapsed=%dms err=%v (retry #1)",
 							rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
@@ -1059,10 +1071,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				// 上游自报了 usage 却 prompt/completion 全 0：无论流时长，都是没吐
 				// 任何内容的"假成功"（快空流兜底 + 桥接实例卡死挂满超时的长流）。
-				// 按一次上游错误计账触发熔断，防止路由持续把流量打进假成功账号。
+				// 不属风控/封号级：只短冷却 + 清粘性让下个请求换号重试，绝不累计
+				// errCount 把账号长停（2026-10-09 整改）。
 				if degraded {
-					rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
-					log.Printf("zero-token long stream platform=%s uid=%s elapsed=%dms — counted as upstream error",
+					h.stickyClear(rt)
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "零 token 假成功（非账号问题）")
+					log.Printf("zero-token long stream platform=%s uid=%s elapsed=%dms — short cooldown (non-account fault)",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds())
 				}
 				if rec := h.recordTokens; rec != nil && (p > 0 || c > 0) {
@@ -1070,6 +1084,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				if h.clientKeys != nil && (p > 0 || c > 0) {
 					h.clientKeys.RecordUsage(caller.Key, p+c)
+				}
+				var ttft int64
+				if !track.firstByte.IsZero() {
+					ttft = track.firstByte.Sub(startTime).Milliseconds()
 				}
 				if h.auditRec != nil {
 					auditStatus := http.StatusOK
@@ -1088,6 +1106,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						CacheTokens:      cr,
 						TotalTokens:      p + c,
 						DurationMs:       time.Since(startTime).Milliseconds(),
+						TTFTMs:           ttft,
 						Status:           auditStatus,
 						Stream:           true,
 						UsageRaw:         track.UsageRaw(),
@@ -1158,6 +1177,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					CacheTokens:      cr,
 					TotalTokens:      p + c,
 					DurationMs:       time.Since(startTime).Milliseconds(),
+					TTFTMs:           hdrAt.Sub(startTime).Milliseconds(),
 					Status:           http.StatusOK,
 					Stream:           false,
 					UsageRaw:         usageRawSnippet,
@@ -1322,11 +1342,15 @@ type tokenTrackingReader struct {
 	cacheWrite int64
 	has        bool
 	usageRaw   string // 最后一次见到的 usage 原文（审计取证：上游到底报没报缓存）
+	firstByte  time.Time // 首个上游字节到达时刻（TTFT 取证：区分"等首字慢"与"出字慢"）
 }
 
 func (t *tokenTrackingReader) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
 	if n > 0 {
+		if t.firstByte.IsZero() {
+			t.firstByte = time.Now()
+		}
 		t.scan(p[:n])
 	}
 	return n, err

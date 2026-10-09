@@ -103,7 +103,7 @@ func postStreamChat(h *Handler, model string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// 空流触发轮换：一号空流计错并轮换，客户端无感拿到二号正常流。
+// 空流触发轮换：一号空流吃短冷却（不累计 errCount）并轮换，客户端无感拿到二号正常流。
 func TestEmptyStreamRotatesToNextAccount(t *testing.T) {
 	fu := &fakeUpstream{bodies: []string{
 		"", // 第一号：HTTP 200 但 EOF 无任何 data 帧
@@ -123,8 +123,11 @@ func TestEmptyStreamRotatesToNextAccount(t *testing.T) {
 	}
 	s1, _ := p.Status("a1")
 	s2, _ := p.Status("a2")
-	if s1.ErrCount+s2.ErrCount != 1 {
-		t.Fatalf("total err_count = %d+%d, want 1 (仅空流账号计错)", s1.ErrCount, s2.ErrCount)
+	if s1.ErrCount+s2.ErrCount != 0 {
+		t.Fatalf("total err_count = %d+%d, want 0 (空流不累计账号错误)", s1.ErrCount, s2.ErrCount)
+	}
+	if !s1.Cooling {
+		t.Fatalf("空流账号应处于短冷却中")
 	}
 }
 
@@ -149,8 +152,9 @@ func TestNormalStreamPassthroughUnchanged(t *testing.T) {
 	}
 }
 
-// usage 报 0 token 的"假成功"：完整透传给客户端，但账号侧计一次上游错误。
-func TestZeroTokenUsageCountedAsError(t *testing.T) {
+// usage 报 0 token 的"假成功"：完整透传给客户端，账号侧只吃短冷却不累计
+// errCount（2026-10-09 整改：非风控/封号级错误不允许长停账号）。
+func TestZeroTokenUsageGetsShortCooldown(t *testing.T) {
 	fu := &fakeUpstream{bodies: []string{
 		"data: {\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0}}\n\ndata: [DONE]\n\n",
 	}}
@@ -166,8 +170,12 @@ func TestZeroTokenUsageCountedAsError(t *testing.T) {
 	if got := fu.chatCount(); got != 1 {
 		t.Fatalf("chat calls = %d, want 1", got)
 	}
-	if s, _ := p.Status("a1"); s.ErrCount != 1 {
-		t.Fatalf("err_count = %d, want 1 (0-token 假成功应计错)", s.ErrCount)
+	s, _ := p.Status("a1")
+	if s.ErrCount != 0 {
+		t.Fatalf("err_count = %d, want 0 (0-token 假成功不累计账号错误)", s.ErrCount)
+	}
+	if !s.Cooling {
+		t.Fatalf("应处于短冷却中")
 	}
 }
 

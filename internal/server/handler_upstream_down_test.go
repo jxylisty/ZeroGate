@@ -12,7 +12,8 @@ package server
 //
 // 修法：zcode.Classify 对 status>=500 且 body 含"上游不可达"特征串的响应返回
 // provider.ErrUpstreamDown，handler 据此只给短冷却（同 ErrBridgeDown 规格），
-// 不累计 errCount。本文件同时锁定对照组：普通 5xx 仍必须累计错误。
+// 不累计 errCount。2026-10-09 整改后对照组语义升级：普通 5xx / 非网络传输
+// 错误同样只短冷却不累计 —— 只有风控/封号级错误才允许长停账号。
 //
 // 与 handler_bridge_down_test.go 的区别：那边是「桥进程没起」（transport error），
 // 这边是「桥活着、桥的上游 DNS 挂了」（HTTP 502），两者都要逃过账号级长冷却。
@@ -79,8 +80,10 @@ func TestUpstreamDownDoesNotAccumulateErrors(t *testing.T) {
 	}
 }
 
-// 对照组：普通 5xx 仍按上游故障计错，否则真故障将永远不触发熔断。
-func TestPlain5xxStillCountsAsError(t *testing.T) {
+// 对照组（2026-10-09 整改后）：普通 5xx（ErrServer）不再累计 errCount，改为只给
+// 短冷却 —— 账号仍被暂时摘除让整池不可用时熔断可快速失败，但网络/上游侧故障
+// 绝不会被放大成 3 次累计 → 10 分钟长停。只有风控/封号级错误才允许长停账号。
+func TestPlain5xxGetsShortCooldownWithoutAccumulating(t *testing.T) {
 	fu := &upstreamDownFake{
 		status: http.StatusInternalServerError,
 		body:   `{"error":{"message":"internal server error"}}`,
@@ -91,8 +94,11 @@ func TestPlain5xxStillCountsAsError(t *testing.T) {
 	postStreamChat(h, "qoder/m1")
 
 	st, _ := p.Status("a1")
-	if st.ErrCount != 1 {
-		t.Fatalf("err_count = %d, want 1（普通 5xx 应计错）", st.ErrCount)
+	if st.ErrCount != 0 {
+		t.Fatalf("err_count = %d, want 0（普通 5xx 不应累计账号错误）", st.ErrCount)
+	}
+	if !st.Cooling {
+		t.Fatalf("应处于短冷却中")
 	}
 }
 
@@ -145,17 +151,21 @@ func TestTransportDNSErrorDoesNotAccumulateErrors(t *testing.T) {
 	}
 }
 
-// 对照组：非网络类的传输错误（如 TLS 握手失败）仍必须按账号错误累计，
-// 否则真正的账号级故障将永远不触发熔断。
-func TestPlainTransportErrorStillCountsAsError(t *testing.T) {
+// 对照组（2026-10-09 整改后）：非网络类的传输错误（如 TLS 握手失败）同样不累计
+// errCount、只给短冷却 —— 账号级问题只会以 HTTP 响应形态出现，不可能在拿到响应
+// 前触发，传输层错误一律错在链路而非账号。
+func TestPlainTransportErrorGetsShortCooldown(t *testing.T) {
 	fu := &netErrFake{err: errors.New("tls: failed to verify certificate")}
 	h, p := newEmptyStreamHandler(t, fu, "a1")
 
 	postStreamChat(h, "qoder/m1")
 
 	st, _ := p.Status("a1")
-	if st.ErrCount != 1 {
-		t.Fatalf("err_count = %d, want 1（非网络类传输错误仍应计错）", st.ErrCount)
+	if st.ErrCount != 0 {
+		t.Fatalf("err_count = %d, want 0（传输层错误不应累计账号错误）", st.ErrCount)
+	}
+	if !st.Cooling {
+		t.Fatalf("应处于短冷却中")
 	}
 }
 

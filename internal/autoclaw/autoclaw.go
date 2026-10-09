@@ -127,14 +127,15 @@ func (c *Client) streamClient() *http.Client {
 
 // ErrKind 复用 provider 语义。
 const (
-	ErrNone        = provider.ErrNone
-	ErrHardCredit  = provider.ErrHardCredit
-	ErrSoftRate    = provider.ErrSoftRate
-	ErrSessionDead = provider.ErrSessionDead
-	ErrNotFound    = provider.ErrNotFound
-	ErrServer      = provider.ErrServer
-	ErrClient      = provider.ErrClient
-	ErrBanned      = provider.ErrBanned
+	ErrNone         = provider.ErrNone
+	ErrHardCredit   = provider.ErrHardCredit
+	ErrSoftRate     = provider.ErrSoftRate
+	ErrSessionDead  = provider.ErrSessionDead
+	ErrNotFound     = provider.ErrNotFound
+	ErrServer       = provider.ErrServer
+	ErrUpstreamDown = provider.ErrUpstreamDown
+	ErrClient       = provider.ErrClient
+	ErrBanned       = provider.ErrBanned
 )
 
 // Classify 按 HTTP 状态码 + body 判定错误类别。
@@ -164,6 +165,10 @@ func Classify(status int, body string) provider.ErrKind {
 	case status == http.StatusPaymentRequired:
 		return ErrHardCredit
 	case status >= 500:
+		// body 呈网络层故障（DNS/连接/读写）→ 上游不可达，非账号问题
+		if provider.LooksUpstreamUnreachable(body) {
+			return ErrUpstreamDown
+		}
 		return ErrServer
 	case status == http.StatusNotFound:
 		return ErrNotFound

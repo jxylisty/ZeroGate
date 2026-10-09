@@ -190,6 +190,10 @@ func (c *Client) Classify(status int, body string) provider.ErrKind {
 	case 403, 404:
 		return provider.ErrNotFound
 	case 500, 502, 503, 504:
+		// body 呈网络层故障（DNS/连接/读写）→ 上游不可达，非账号问题
+		if provider.LooksUpstreamUnreachable(body) {
+			return provider.ErrUpstreamDown
+		}
 		return provider.ErrServer
 	default:
 		return provider.ErrClient

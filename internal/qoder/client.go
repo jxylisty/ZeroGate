@@ -650,6 +650,10 @@ func Classify(status int, body string) provider.ErrKind {
 		return provider.ErrNotFound
 	}
 	if status >= 500 {
+		// body 呈网络层故障（DNS/连接/读写）→ 上游不可达，非账号问题
+		if provider.LooksUpstreamUnreachable(body) {
+			return provider.ErrUpstreamDown
+		}
 		return provider.ErrServer
 	}
 	if status >= 400 {

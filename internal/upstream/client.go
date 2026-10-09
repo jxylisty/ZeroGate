@@ -20,13 +20,14 @@ import (
 type ErrKind = provider.ErrKind
 
 const (
-	ErrNone        = provider.ErrNone        // 成功
-	ErrHardCredit  = provider.ErrHardCredit  // 余额不足（402 或 body 关键词）→ 长冷却
-	ErrSoftRate    = provider.ErrSoftRate    // 429 软限流 → 短冷却
-	ErrSessionDead = provider.ErrSessionDead // 401 + 12153 offline session 失效 → 禁用
-	ErrNotFound    = provider.ErrNotFound    // 404 上游偶发 → 短冷却不累计 errCount（防雪崩）
-	ErrServer      = provider.ErrServer      // 5xx 上游故障
-	ErrClient      = provider.ErrClient      // 其他 4xx / 业务错误
+	ErrNone         = provider.ErrNone        // 成功
+	ErrHardCredit   = provider.ErrHardCredit  // 余额不足（402 或 body 关键词）→ 长冷却
+	ErrSoftRate     = provider.ErrSoftRate    // 429 软限流 → 短冷却
+	ErrSessionDead  = provider.ErrSessionDead // 401 + 12153 offline session 失效 → 禁用
+	ErrNotFound     = provider.ErrNotFound    // 404 上游偶发 → 短冷却不累计 errCount（防雪崩）
+	ErrServer       = provider.ErrServer      // 5xx 上游故障
+	ErrUpstreamDown = provider.ErrUpstreamDown // 5xx body 呈网络层故障（DNS/连接/读写）→ 短冷却不累计
+	ErrClient       = provider.ErrClient      // 其他 4xx / 业务错误
 )
 
 // Error 带分类的上游错误。
@@ -65,6 +66,10 @@ func Classify(status int, body string) ErrKind {
 		return ErrNotFound
 	}
 	if status >= 500 {
+		// 与 intl 渠道同款：网关/网络层故障 body（DNS/dial/wsarecv 等）→ 上游不可达，非账号问题
+		if provider.LooksUpstreamUnreachable(body) {
+			return ErrUpstreamDown
+		}
 		return ErrServer
 	}
 	if status >= 400 {
