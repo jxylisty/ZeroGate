@@ -158,3 +158,53 @@ func TestPlainTransportErrorStillCountsAsError(t *testing.T) {
 		t.Fatalf("err_count = %d, want 1（非网络类传输错误仍应计错）", st.ErrCount)
 	}
 }
+
+// 传输层读写阶段网络错误（2026-10-09 codebuddy 事故现场）：
+//
+//	read tcp 172.19.51.242:7194->43.160.158.125:443: wsarecv: A connection attempt
+//	failed because the connected party did not properly respond after a period of time
+//
+// TCP 已建连、读响应时对端（经代理链路）不回数据。10-05 的修复只覆盖拨号层特征，
+// 这类错误漏网 → 3 次攒满 errThreshold → 10 分钟长冷却 → 熔断。现在必须只给短冷却。
+func TestTransportRecvTimeoutDoesNotAccumulateErrors(t *testing.T) {
+	recvErr := &url.Error{
+		Op:  "Post",
+		URL: "https://www.codebuddy.ai/v2/chat/completions",
+		Err: errors.New(`read tcp 172.19.51.242:7194->43.160.158.125:443: wsarecv: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond.`),
+	}
+	fu := &netErrFake{err: recvErr}
+	h, p := newEmptyStreamHandler(t, fu, "a1", "a2")
+
+	postStreamChat(h, "qoder/m1")
+
+	if got := fu.chatCount(); got != 2 {
+		t.Fatalf("chat calls = %d, want 2（应轮换试完两个账号）", got)
+	}
+	for _, uid := range []string{"a1", "a2"} {
+		st, _ := p.Status(uid)
+		if st.ErrCount != 0 {
+			t.Fatalf("%s err_count = %d, want 0（wsarecv 读超时不应计账号错误）", uid, st.ErrCount)
+		}
+		if !st.Cooling {
+			t.Fatalf("%s 应处于短冷却中", uid)
+		}
+	}
+}
+
+// 断连族（连接被对端重置）同属读写层网络故障，同样不得计账号错误。
+func TestTransportConnResetDoesNotAccumulateErrors(t *testing.T) {
+	resetErr := &url.Error{
+		Op:  "Post",
+		URL: "https://www.codebuddy.ai/v2/chat/completions",
+		Err: errors.New(`write tcp 172.19.51.242:12219->43.160.158.125:443: wsasend: An existing connection was forcibly closed by the remote host.`),
+	}
+	fu := &netErrFake{err: resetErr}
+	h, p := newEmptyStreamHandler(t, fu, "a1")
+
+	postStreamChat(h, "qoder/m1")
+
+	st, _ := p.Status("a1")
+	if st.ErrCount != 0 {
+		t.Fatalf("err_count = %d, want 0（连接被重置不应计账号错误）", st.ErrCount)
+	}
+}

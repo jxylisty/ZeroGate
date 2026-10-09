@@ -101,12 +101,20 @@ func BridgeDown(err error) error {
 	return &Error{Kind: ErrBridgeDown, Msg: err.Error()}
 }
 
-// upstreamUnreachableMarkers 传输层「上游域名/网络不可达」特征串（解析/连接层失败）。
+// upstreamUnreachableMarkers 传输层「上游网络不可达」特征串（解析/连接/读写三层失败）。
 //
-// 云渠道（workbuddy/intl/codebuddy 等）由本机直连上游，DNS 抖动时 Go http 客户端在
-// 传输层抛出 *url.Error/*net.DNSError，错误串含下列特征；zcode 桥透传的
+// 云渠道（workbuddy/intl/codebuddy 等）由本机直连上游，网络抖动时 Go http 客户端在
+// 传输层抛出 *url.Error，错误串含下列特征；zcode 桥透传的
 // {"type":"upstream_unreachable",...} 响应体也复用同一份串。本地桥连不上的场景
 // 由 BridgeDown 标记，与此处区分。
+//
+// 三层覆盖（均为本机/链路侧网络故障，与账号凭证无关）：
+//   - 解析层：no such host / getaddrinfo / enotfound / eai_again（2026-10-05 workbuddy 事故）
+//   - 连接层：dial tcp
+//   - 读写层：wsarecv / wsasend + connection attempt failed / forcibly closed，
+//     i/o timeout、connection reset、broken pipe、EOF（2026-10-09 codebuddy 事故：
+//     read tcp ... wsarecv ... did not properly respond，TCP 已建连但对端经代理链路
+//     不回数据，三次即攒满 errThreshold 触发整渠道 10 分钟冷却）
 var upstreamUnreachableMarkers = []string{
 	"upstream_unreachable",
 	"getaddrinfo",
@@ -114,6 +122,16 @@ var upstreamUnreachableMarkers = []string{
 	"eai_again",
 	"no such host",
 	"dial tcp",
+	"wsarecv",
+	"wsasend",
+	"connection attempt failed",
+	"forcibly closed",
+	"connection reset",
+	"reset before headers",
+	"connection timeout",
+	"broken pipe",
+	"i/o timeout",
+	"eof",
 }
 
 // LooksUpstreamUnreachable 判断字符串（响应体或传输层错误串）是否为上游域名/网络

@@ -667,6 +667,13 @@ func Classify(status int, body string) provider.ErrKind {
 		return ErrNotFound
 	}
 	if status >= 500 {
+		// 代理/网关链路层的 502/504（上游域名解析失败、连接被重置等）属网络故障，
+		// 与账号无关，不应累计 errCount（2026-10-05/10-09 事故同族）。body 命中
+		// 网络特征（nginx/网关透传的错误页、upstream_unreachable JSON）时归为
+		// ErrUpstreamDown，走短冷却。
+		if provider.LooksUpstreamUnreachable(body) {
+			return provider.ErrUpstreamDown
+		}
 		return ErrServer
 	}
 	if status >= 400 {
