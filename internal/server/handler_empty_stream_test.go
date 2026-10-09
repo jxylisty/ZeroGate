@@ -13,6 +13,7 @@ import (
 	"zerogate/internal/auth"
 	"zerogate/internal/pool"
 	"zerogate/internal/provider"
+	"zerogate/internal/upstream"
 )
 
 // fakeUpstream 只实现测试关注的行为：ChatStream 按调用序返回 bodies，
@@ -67,7 +68,7 @@ func (f *fakeUpstream) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksRes
 	return provider.GrowthTasksResult{}
 }
 func (f *fakeUpstream) Aggregate(r io.Reader) (map[string]any, error) {
-	return nil, errors.New("not implemented")
+	return upstream.AggregateWithThink(r, true)
 }
 
 func (f *fakeUpstream) chatCount() int {

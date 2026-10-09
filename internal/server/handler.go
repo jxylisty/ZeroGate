@@ -198,6 +198,8 @@ func NewHandler(cfg Config) *Handler {
 		modelMerge:     cfg.ModelMerge,
 	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
+	h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.anthropicMessages))
+	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withAuth(h.anthropicCountTokens))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
@@ -464,6 +466,10 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		if strings.HasPrefix(authz, "Bearer ") {
 			token = strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
 		}
+		// Anthropic 协议客户端（Claude Code）默认走 x-api-key 头而非 Authorization
+		if token == "" {
+			token = strings.TrimSpace(r.Header.Get("x-api-key"))
+		}
 
 		caller := callerInfo{Name: "Anonymous", Key: token}
 
@@ -700,7 +706,59 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 	return infos
 }
 
+// chatCompletions OpenAI 兼容端点入口：读取请求体后交 serveChat 转发。
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		return
+	}
+	h.serveChat(w, r, body, openAIRenderer{})
+}
+
+// anthropicMessages Anthropic Messages API 端点入口（Claude Code 等客户端）。
+// 请求体为 Anthropic 协议格式，转换为 OpenAI 兼容请求体后交 serveChat 转发，
+// 输出经 anthropicRenderer 转回 Anthropic 格式。
+func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		return
+	}
+	oaiBody, err := anthropicRequestToOpenAI(body)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "anthropic request: "+err.Error())
+		return
+	}
+	h.serveChat(w, r, oaiBody, anthropicRenderer{})
+}
+
+// anthropicCountTokens Anthropic Messages API 的 count_tokens 端点。
+// Claude Code 启动时用它估算上下文预算；本网关无法精确 tokenize，
+// 返回按 body 字节数的粗略估算（UTF-8 约 4 字节/token）即可满足其显示用途。
+func (h *Handler) anthropicCountTokens(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"input_tokens": maxInt(len(body)/4, 1),
+	})
+}
+
+// maxInt 返回两数较大者（避免 count_tokens 对空请求返回 0 引起客户端困惑）。
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// serveChat 共享转发核心：读取 OpenAI 格式请求体并转发到上游，输出经 rnd 渲染。
+// chatCompletions（OpenAI 端点）与 anthropicMessages（Anthropic 端点）共用，
+// 熔断/冷却/空流窥探/零token重试/审计逻辑单点维护。
+func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte, rnd chatRenderer) {
 	startTime := time.Now()
 	caller, _ := r.Context().Value(clientContextKey).(callerInfo)
 	if caller.Name == "" {
@@ -711,12 +769,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		keySnippet = caller.Key[:6] + "..." + caller.Key[len(caller.Key)-4:]
 	} else if caller.Key != "" {
 		keySnippet = "***"
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
-		return
 	}
 	var peek struct {
 		Model  string `json:"model"`
@@ -947,13 +999,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				if status == http.StatusUnauthorized || status == http.StatusForbidden {
 					clientStatus = http.StatusBadGateway
 				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(clientStatus)
-				if isOpenAIError(respBody) {
-					_, _ = w.Write(respBody)
-				} else {
-					_, _ = w.Write(wrapUpstreamError(clientStatus, respBody))
-				}
+				rnd.writeUpstreamError(w, clientStatus, respBody)
 				if h.auditRec != nil {
 					h.auditRec.Record(audit.Entry{
 						Client:      caller.Name,
@@ -1022,11 +1068,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 零 token 断流重试只允许发生在客户端尚未收到任何数据时。
 				rw := newRecordingWriter(w)
 				var streamErr error
-				if tp, ok := rt.Upstream.(provider.ThinkPassthrough); ok && peek.Think {
-					streamErr = tp.StreamWithThink(rw, track, true)
-				} else {
-					streamErr = rt.Upstream.Stream(rw, track)
-				}
+				// 渲染器内部按客户端协议决定如何输出流（OpenAI 透传 / Anthropic 转换）；
+				// keepThinking 仅 OpenAI 端点透传 think:true 时有意义。
+				streamErr = rnd.stream(rw, rt, track, peek.Think)
 				track.finish()
 				// 提前结算 token 统计与降级判定（断流分支同样需要）：
 				// 上游自报了 usage 却 prompt/completion 全 0 = 没吐任何内容的"假成功"。
@@ -1055,19 +1099,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					msg := "上游连接中断：" + streamErr.Error()
-					if payload, jerr := json.Marshal(map[string]any{
-						"error": map[string]any{
-							"message": msg,
-							"type":    "upstream_error",
-							"code":    "stream_aborted",
-						},
-					}); jerr == nil {
-						if _, werr := io.WriteString(w, "data: "+string(payload)+"\n\n"); werr == nil {
-							if fl, ok := w.(http.Flusher); ok {
-								fl.Flush()
-							}
-						}
-					}
+					rnd.streamError(w, msg)
 				}
 				// 上游自报了 usage 却 prompt/completion 全 0：无论流时长，都是没吐
 				// 任何内容的"假成功"（快空流兜底 + 桥接实例卡死挂满超时的长流）。
@@ -1124,7 +1156,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				resp, err = rt.Upstream.Aggregate(rc)
 			}
 			if err != nil {
-				writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
+				rnd.writeError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 				return
 			}
 			var p, c, cr, cw int64
@@ -1183,7 +1215,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					UsageRaw:         usageRawSnippet,
 				})
 			}
-			writeJSON(w, http.StatusOK, resp)
+			rnd.writeCompletion(w, resp)
 			return
 		}
 
@@ -1227,7 +1259,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", "2")
 		}
 	}
-	writeOpenAIError(w, lastStatus, "no_healthy_account", msg)
+	rnd.writeError(w, lastStatus, "no_healthy_account", msg)
 }
 
 // pickBestAcross 跨候选渠道选择最优账号：到期最近优先，余额最低次之。
