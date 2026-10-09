@@ -40,6 +40,13 @@ type Runtime struct {
 	fetched  time.Time
 	lastFail time.Time
 
+	// probing 探针单飞行标记：有探针在途时，并发的 /v1/models 直接复用当前缓存，
+	// 不再各自打一次上游。probeAt 记录最近一次探针时间（最小间隔下限），
+	// probeLast 记录最近一次探针的账号 uid（轮换用）。全部由 rt.mu 保护。
+	probing   bool
+	probeAt   time.Time
+	probeLast string
+
 	// bridgeRR 桥接渠道（zcode）轮转计数。放在 Runtime 而非 Handler，
 	// 这样面板（internal/app）也能只读地预览「下一个会被调度的账号」。
 	bridgeRR atomic.Uint64
@@ -547,6 +554,10 @@ var dynamicModelsCache struct {
 const (
 	dynamicModelsTTL        = time.Hour
 	modelsFetchFailCooldown = 5 * time.Minute
+
+	// modelsFetchMinInterval 探针最小间隔：缓存未命中时，距上次探针不足该值
+	// 直接复用旧缓存（哪怕已过期），防止 /v1/models 高频请求打出探针风暴。
+	modelsFetchMinInterval = 30 * time.Second
 )
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
@@ -564,9 +575,21 @@ func (h *Handler) modelList() []map[string]any {
 		if rt.Pool == nil || len(rt.Pool.List()) == 0 {
 			continue
 		}
+		// 账号全冷却/禁用 → 整渠道不可用，从模型列表与别名中隐藏（R2/R3）。
+		// 不删配置：上游恢复后 healthy>0，模型与别名自动回来。
+		if healthy, total := rt.Pool.HealthyCount(); healthy == 0 && total > 0 {
+			continue
+		}
 		infos := h.fetchRuntimeModels(rt)
 		if len(infos) == 0 {
-			infos = rt.StaticModels
+			// 探针失败：静态表仅作「渠道健康但从未探测成功」的首启兜底，
+			// 不再充当「活着」的依据 —— 探测失败过（lastFail 非零）的渠道不挂牌。
+			rt.mu.RLock()
+			neverProbed := rt.lastFail.IsZero() && len(rt.models) == 0
+			rt.mu.RUnlock()
+			if neverProbed {
+				infos = rt.StaticModels
+			}
 		}
 		set := make(map[string]bool, len(infos))
 		for _, mi := range infos {
@@ -626,9 +649,19 @@ func (h *Handler) modelList() []map[string]any {
 		if rt.Pool == nil || len(rt.Pool.List()) == 0 { // 只暴露已接入账号的平台
 			continue
 		}
+		// 整渠道不可用（账号全冷却/禁用）→ 从模型列表隐藏，避免「点开就 502」
+		if healthy, total := rt.Pool.HealthyCount(); healthy == 0 && total > 0 {
+			continue
+		}
 		infos := h.fetchRuntimeModels(rt)
 		if len(infos) == 0 {
-			infos = rt.StaticModels
+			// 静态表仅作首启兜底；探测失败过的渠道不挂牌（见 liveByKind 收集处）
+			rt.mu.RLock()
+			neverProbed := rt.lastFail.IsZero() && len(rt.models) == 0
+			rt.mu.RUnlock()
+			if neverProbed {
+				infos = rt.StaticModels
+			}
 		}
 		for _, mi := range infos {
 			id := k.String() + "/" + mi.ID
@@ -662,25 +695,62 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 		}
 		dynamicModelsCache.RUnlock()
 	}
-	rt.mu.RLock()
+	// 缓存命中 / 失败退避 / 单飞行 / 最小间隔全部在写锁下原子检查并置位，
+	// 否则并发请求可同时看到 probing=false 而各打一次上游（单飞行失效 + 数据竞争）。
+	rt.mu.Lock()
 	if len(rt.models) > 0 && time.Since(rt.fetched) < dynamicModelsTTL {
 		out := rt.models
-		rt.mu.RUnlock()
+		rt.mu.Unlock()
 		return out
 	}
 	if rt.Kind != provider.WorkBuddy && !rt.lastFail.IsZero() && time.Since(rt.lastFail) < modelsFetchFailCooldown {
-		rt.mu.RUnlock()
+		rt.mu.Unlock()
 		return nil
 	}
-	rt.mu.RUnlock()
-	acct := rt.Pool.Pick()
+	// 单飞行：已有探针在途 → 复用当前缓存（可能为空），绝不再打第二次上游请求。
+	// 修复并发 /v1/models 在缓存未填充前打出 N 倍探针且全落同一账号的风暴。
+	if rt.probing {
+		out := rt.models
+		rt.mu.Unlock()
+		return out
+	}
+	// 最小间隔硬下限：距上次探针不足 30s 直接复用旧缓存（哪怕已过期），
+	// 防止 410004 清缓存后立刻被高频 /v1/models 打成探针风暴。
+	if !rt.probeAt.IsZero() && time.Since(rt.probeAt) < modelsFetchMinInterval {
+		out := rt.models
+		rt.mu.Unlock()
+		return out
+	}
+	// 占位置位：必须与请求解耦（持锁期间不发起上游请求，避免阻塞调度）。
+	// 探针失败刻意不惩罚账号（不写 pool 冷却/禁用/errCount）——模型列表探测失败
+	// 是上游侧问题，不该让账号承担封禁级后果（2026-10-10 整改，测试锁定）。
+	rt.probing = true
+	rt.mu.Unlock()
+
+	// 探针账号轮换：PickExcluding 跳过上次用过的账号，避免反复打同一号（R1）。
+	tried := map[string]bool{}
+	if last := rt.lastProbeUID(); last != "" {
+		tried[last] = true
+	}
+	acct := rt.Pool.PickExcluding(tried)
 	if acct == nil {
+		acct = rt.Pool.Pick()
+	}
+	if acct == nil {
+		rt.mu.Lock()
+		rt.probing = false
+		rt.probeAt = time.Now()
+		rt.mu.Unlock()
 		return nil
 	}
+	rt.setLastProbeUID(acct.UID)
+
 	infos, err := rt.Upstream.FetchModels(acct)
+	now := time.Now()
+	rt.mu.Lock()
+	rt.probing = false
+	rt.probeAt = now
 	if err != nil || len(infos) == 0 {
-		now := time.Now()
-		rt.mu.Lock()
 		rt.lastFail = now
 		rt.mu.Unlock()
 		if rt.Kind == provider.WorkBuddy {
@@ -690,8 +760,6 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 		}
 		return nil
 	}
-	now := time.Now()
-	rt.mu.Lock()
 	rt.models = infos
 	rt.fetched = now
 	rt.lastFail = time.Time{}
@@ -704,6 +772,20 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 		dynamicModelsCache.Unlock()
 	}
 	return infos
+}
+
+// lastProbeUID 返回最近一次探针账号 uid（rt.mu 保护）。
+func (rt *Runtime) lastProbeUID() string {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.probeLast
+}
+
+// setLastProbeUID 记录最近一次探针账号 uid。
+func (rt *Runtime) setLastProbeUID(uid string) {
+	rt.mu.Lock()
+	rt.probeLast = uid
+	rt.mu.Unlock()
 }
 
 // chatCompletions OpenAI 兼容端点入口：读取请求体后交 serveChat 转发。
@@ -964,6 +1046,14 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 				case provider.ErrBanned:
 					// 410004 等封号信号：24h 长冷却，累计 3 次自动禁用
 					rt.Pool.Ban(acct.UID, "上游封禁（410004）")
+					// 封号即渠道状态剧变：立即作废探针缓存，避免继续用旧名单
+					// 挂牌已封渠道（模型可见性以账号健康为准，R3）
+					rt.mu.Lock()
+					rt.models = nil
+					rt.fetched = time.Time{}
+					rt.lastFail = time.Time{}
+					rt.probeAt = time.Time{}
+					rt.mu.Unlock()
 				case provider.ErrNotFound:
 					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
 				case provider.ErrUpstreamDown:
@@ -1373,7 +1463,7 @@ type tokenTrackingReader struct {
 	cacheRead  int64
 	cacheWrite int64
 	has        bool
-	usageRaw   string // 最后一次见到的 usage 原文（审计取证：上游到底报没报缓存）
+	usageRaw   string    // 最后一次见到的 usage 原文（审计取证：上游到底报没报缓存）
 	firstByte  time.Time // 首个上游字节到达时刻（TTFT 取证：区分"等首字慢"与"出字慢"）
 }
 
