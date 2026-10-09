@@ -143,8 +143,33 @@ func (anthropicRenderer) writeUpstreamError(w http.ResponseWriter, status int, r
 	})
 }
 
-func (anthropicRenderer) stream(w http.ResponseWriter, _ *Runtime, rc io.Reader, _ bool) error {
-	return writeAnthropicSSE(w, rc)
+func (anthropicRenderer) stream(w http.ResponseWriter, rt *Runtime, rc io.Reader, _ bool) error {
+	// 渠道上游的流格式并不总是标准 OpenAI SSE：qoder 返回嵌套 SSE
+	// （data:{"body":"<json-string>"}），traework 等 SOLO 协议也有私有外壳，
+	// 只有渠道自己的 Stream 实现知道怎么解析。因此先把上游裸流经
+	// rt.Upstream.Stream 转换成标准 OpenAI SSE（与 OpenAI 端点同一路径，
+	// 该转换已被线上验证），再喂给 Anthropic SSE 转换器。
+	pr, pw := io.Pipe()
+	// 提前返回（客户端断连/上游错误）时关闭 pr，解除 goroutine 对 pw.Write 的阻塞
+	defer pr.Close()
+	go func() {
+		err := rt.Upstream.Stream(&pipeResponseWriter{pw: pw}, rc)
+		_ = pw.CloseWithError(err)
+	}()
+	return writeAnthropicSSE(w, pr)
+}
+
+// pipeResponseWriter 把 http.ResponseWriter 最小实现接到 io.PipeWriter 上，
+// 让渠道的 Stream 转换可以把标准 OpenAI SSE 写入内存管道供渲染器消费。
+// Header/WriteHeader 无意义（最终响应头由 writeAnthropicSSE 自己设置）。
+type pipeResponseWriter struct {
+	pw *io.PipeWriter
+}
+
+func (p *pipeResponseWriter) Header() http.Header { return http.Header{} }
+func (p *pipeResponseWriter) WriteHeader(int)     {}
+func (p *pipeResponseWriter) Write(b []byte) (int, error) {
+	return p.pw.Write(b)
 }
 
 func (anthropicRenderer) writeCompletion(w http.ResponseWriter, resp map[string]any) {
