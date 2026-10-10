@@ -69,6 +69,7 @@ type Config struct {
 	MaxRotate    int
 	HardCooldown time.Duration
 	SoftCooldown time.Duration
+	NetCooldown  time.Duration
 	ErrThreshold int
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
@@ -183,6 +184,9 @@ func NewHandler(cfg Config) *Handler {
 	}
 	if cfg.SoftCooldown <= 0 {
 		cfg.SoftCooldown = 60 * time.Second
+	}
+	if cfg.NetCooldown <= 0 {
+		cfg.NetCooldown = 10 * time.Second
 	}
 	if cfg.ErrThreshold <= 0 {
 		cfg.ErrThreshold = 3
@@ -1006,7 +1010,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					// 让整池不可用时熔断能快速失败，绝不累计 errCount —— 否则桥一挂
 					// 就会把整池账号各罚一次长冷却（2026-09-30 zcode 5 号全冻 10 分钟）。
 					log.Printf("bridge down platform=%s uid=%s: %v", rt.Kind, acct.UID, terr)
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "本地桥不可达（非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "本地桥不可达（非账号问题）")
 					continue
 				}
 				if provider.IsUpstreamUnreachable(terr) {
@@ -1015,7 +1019,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					// 绝不累计 errCount —— 否则一次 23 秒的 DNS 抖动就会让整池账号各吃 3 次
 					// 错误 → 10 分钟长冷却 → 熔断反复自触发（2026-10-05 workbuddy 4 号事故）。
 					log.Printf("upstream unreachable platform=%s uid=%s: %v", rt.Kind, acct.UID, terr)
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游不可达（非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "上游不可达（非账号问题）")
 					continue
 				}
 				// 传输层兜底：非网络特征的传输错误（TLS 握手失败等）同样错在链路而非
@@ -1023,7 +1027,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 				// 只给短冷却，绝不累计 errCount（2026-10-09 整改：只有风控/封号级错误
 				// 才允许长停账号）。
 				log.Printf("transport error platform=%s uid=%s: %v", rt.Kind, acct.UID, terr)
-				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "传输层故障（非账号问题）")
+				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "传输层故障（非账号问题）")
 				continue
 			}
 			// 诊断（ZG_DUMP_BODY=1 时生效）：落盘实际转发给上游的请求体，
@@ -1064,12 +1068,12 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					// 10 分钟整渠道中断）。
 					log.Printf("upstream unreachable platform=%s uid=%s (body 见上游日志)",
 						rt.Kind, acct.UID)
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游不可达（非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "上游不可达（非账号问题）")
 				default:
 					// ErrServer / ErrClient 兜底：服务端故障或请求侧问题都不该由账号承担
 					// 3 次累计 → 10 分钟长停的代价（2026-10-09 整改：只有风控/封号级错误
 					// 才允许长停账号）。短冷却保底，防坏账号持续被粘住。
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "上游响应异常（非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "上游响应异常（非账号问题）")
 				}
 				// 限流、排队等待(如 Qoder 10605)、余额不足、会话失效、封禁、模型未找到或服务端异常时，继续重试账号池其他账号或备选渠道
 				isRateLimit := kind == provider.ErrSoftRate || status == http.StatusTooManyRequests || strings.Contains(string(respBody), "10605")
@@ -1123,7 +1127,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					_ = rc.Close()
 					h.stickyClear(rt)
 					// 流中途读挂属链路/上游问题：只短冷却不累计 errCount
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "流读取失败（非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "流读取失败（非账号问题）")
 					continue
 				}
 				if empty {
@@ -1133,7 +1137,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					log.Printf("empty stream platform=%s uid=%s elapsed=%dms — rotate to next account",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds())
 					h.stickyClear(rt)
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "空流（上游异常，非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "空流（上游异常，非账号问题）")
 					continue
 				}
 				prc = &peekedStream{ReadCloser: rc, head: head}
@@ -1197,7 +1201,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					// track.has=false 导致 degraded 恒 false，61s 思考断流重试被漏掉。
 					if !streamRetried && !rw.wroteAny && isStreamEOF(streamErr) {
 						streamRetried = true
-						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "零 token 瞬断（非账号问题）")
+						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "零 token 瞬断（非账号问题）")
 						h.stickyClear(rt)
 						log.Printf("zero-token stream retry platform=%s uid=%s elapsed=%dms err=%v (retry #1)",
 							rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
@@ -1212,7 +1216,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 				// errCount 把账号长停（2026-10-09 整改）。
 				if degraded {
 					h.stickyClear(rt)
-					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "零 token 假成功（非账号问题）")
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.NetCooldown, "零 token 假成功（非账号问题）")
 					log.Printf("zero-token long stream platform=%s uid=%s elapsed=%dms — short cooldown (non-account fault)",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds())
 				}

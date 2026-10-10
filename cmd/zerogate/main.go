@@ -137,14 +137,13 @@ func main() {
 		}
 	}
 
-	// tierflowModels tierflow.cn 免费聚合渠道模型目录（2026-09-27 实测 /v1/models）。
+	// tierflowModels tierflow.cn 免费聚合渠道模型目录（2026-10-10 实测 /v1/models，
+	// 上游仅认 tierflow / tierflow_pro / TierSense 三个 id；此前登记的 GLM/Qwen 系
+	// 上游不识别，请求会 404 —— 见 channel-scanless 探针复核）。
 	tierflowModels := func() []provider.ModelInfo {
 		return []provider.ModelInfo{
 			{ID: "tierflow", Name: "Tierflow"},
 			{ID: "tierflow_pro", Name: "Tierflow Pro"},
-			{ID: "GLM-5.3-Flash", Name: "GLM-5.3-Flash"},
-			{ID: "GLM-5.3-FlashX", Name: "GLM-5.3-FlashX"},
-			{ID: "Qwen3.8-Flash", Name: "Qwen3.8-Flash"},
 			{ID: "TierSense", Name: "TierSense"},
 		}
 	}
@@ -208,19 +207,6 @@ func main() {
 				return u
 			},
 			// 国际版 CodeBuddy 无签到活动；token 有效期约一年，keepalive 保持配置一致
-			staticModels: intl.StaticModels, runScheduler: true,
-		},
-		{
-			kind: provider.WBIntl, name: "wbintl", stateFile: "state-wbintl.json",
-			load: func() ([]*auth.Auth, error) { return auth.LoadWBIntlDir(cfg.AuthDir) },
-			newUpstream: func() provider.Upstream {
-				// WorkBuddy 国际版与 CodeBuddy 同协议，仅域名不同
-				u := intl.NewWithBase("https://www.workbuddy.ai")
-				u.Channel = "wbintl"
-				u.HTTP.Timeout = upTimeout
-				return u
-			},
-			// 同后端无签到，仅 keepalive
 			staticModels: intl.StaticModels, runScheduler: true,
 		},
 		{
@@ -407,6 +393,7 @@ func main() {
 		APIKey:         cfg.APIKey,
 		HardCooldown:   cfg.HardCreditDur,
 		SoftCooldown:   cfg.SoftRateDur,
+		NetCooldown:    cfg.NetDur,
 		ErrThreshold:   cfg.Cooldown.ErrThresh,
 		ErrCooldown:    cfg.ErrCooldownDur,
 		WebUI:          sub,

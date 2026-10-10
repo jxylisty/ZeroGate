@@ -96,7 +96,8 @@ type Config struct {
 
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"
-		SoftRate    string `json:"soft_rate"`     // "60s"
+		SoftRate    string `json:"soft_rate"`     // "60s"（429 软限流）
+		Net         string `json:"net"`           // "10s"（网络类错误：DNS/dial/读写/桥不可达等非账号问题）
 		ErrThresh   int    `json:"err_threshold"` // 默认 3
 		ErrCooldown string `json:"err_cooldown"`  // "10m"
 	} `json:"cooldown"`
@@ -122,6 +123,7 @@ type Config struct {
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
+	NetDur         time.Duration `json:"-"`
 	ErrCooldownDur time.Duration `json:"-"`
 }
 
@@ -150,7 +152,7 @@ func DefaultModelMerge() map[string][]string {
 		"deepseek-v4-pro":   {"qoder/deepseek-v4-pro", "traework/DeepSeek-V4-Pro-Official", "traework/DeepSeek-V4-Pro", "workbuddy/deepseek-v4-pro"},
 		// ── GLM 系 ──
 		"glm-5.3":           {"traework/glm-5.3", "qoder/glm-5.3", "codebuddy/glm-5.3", "workbuddy/glm-5.3", "glmflash/glm-5.3", "zcode/glm-5.3"},
-		"glm-5.3-flash":     {"qoder/glm-5.3-flash", "workbuddy/glm-5.3-flash", "glmflash/glm-5.3-flash", "zcode/glm-5.3-flash", "tierflow/GLM-5.3-Flash"},
+		"glm-5.3-flash":     {"qoder/glm-5.3-flash", "workbuddy/glm-5.3-flash", "glmflash/glm-5.3-flash", "zcode/glm-5.3-flash"},
 		// ── Doubao 系 ──
 		"doubao-seed-pro":   {"traework/Doubao-Seed-2.1-Pro"},
 		"doubao-seed-turbo": {"traework/Doubao-Seed-2.1-Turbo"},
@@ -160,7 +162,7 @@ func DefaultModelMerge() map[string][]string {
 		"kimi-k2.7":         {"traework/kimi-k2.7-code", "workbuddy/kimi-k2.7", "workbuddy/kimi-k2.8-preview", "qoder/kimi-k2.8-preview"},
 		// ── Qwen 系 ──
 		"qwen3.8-max":       {"traework/qwen3.8-max", "qoder/qwen3.8-max"},
-		"qwen3.8-flash":     {"qoder/qwen3.8-flash", "tierflow/Qwen3.8-Flash"},
+		"qwen3.8-flash":     {"qoder/qwen3.8-flash"},
 		// ── GPT 系（本机白嫖 + codebuddy）──
 		"gpt-5.6":           {"gptgemini/gpt-5.6-terra", "gptgemini/gpt-5.6-luna", "codebuddy/gpt-5.6-sol", "codebuddy/gpt-5.6-terra", "codebuddy/gpt-5.6-luna"},
 		"gpt-5.5":           {"gptgemini/gpt-5.5", "codebuddy/gpt-5.5"},
@@ -187,6 +189,7 @@ func Default() *Config {
 	}
 	c.Cooldown.HardCredit = "12h"
 	c.Cooldown.SoftRate = "60s"
+	c.Cooldown.Net = "10s"
 	c.Cooldown.ErrThresh = 3
 	c.Cooldown.ErrCooldown = "10m"
 	c.Schedule.CheckinHours = []int{9, 21}
@@ -320,6 +323,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WILDWORK_SOFT_RATE"); v != "" {
 		c.Cooldown.SoftRate = v
 	}
+	if v := os.Getenv("WILDWORK_NET_COOLDOWN"); v != "" {
+		c.Cooldown.Net = v
+	}
 	if v := os.Getenv("WILDWORK_ERR_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Cooldown.ErrThresh = n
@@ -345,6 +351,9 @@ func (c *Config) normalize() error {
 	}
 	if c.SoftRateDur, err = time.ParseDuration(c.Cooldown.SoftRate); err != nil {
 		return fmt.Errorf("cooldown.soft_rate: %w", err)
+	}
+	if c.NetDur, err = time.ParseDuration(c.Cooldown.Net); err != nil {
+		return fmt.Errorf("cooldown.net: %w", err)
 	}
 	if c.ErrCooldownDur, err = time.ParseDuration(c.Cooldown.ErrCooldown); err != nil {
 		return fmt.Errorf("cooldown.err_cooldown: %w", err)
