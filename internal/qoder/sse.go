@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"zerogate/internal/provider"
 )
 
 // parseNestedSSE 逐行解析嵌套 SSE，每个有效 chunk 调 onChunk。
@@ -220,6 +222,19 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) error 
 				chunk["code"] = "429"
 				chunk["retryable"] = true
 			}
+		}
+
+		// 1b. 每日配额超限（qoder 110：Billing daily count exceeded）错误帧：
+		// 绝不透传给客户端（retryable=false 会让 Turn 直接失败），返回可分类错误，
+		// 由上层（handler）冷却该号并换号重试——账号级"当天额度用完"，次日 UTC+8
+		// 恢复，不是封禁。
+		if codeVal, hasCode := chunk["code"]; hasCode {
+			if IsBillingCode(codeVal) {
+				return &provider.Error{Kind: provider.ErrHardCredit, Msg: "qoder 每日配额超限（Billing daily count exceeded, code 110）"}
+			}
+		}
+		if msg, ok := chunk["message"].(string); ok && isBillingError(msg) {
+			return &provider.Error{Kind: provider.ErrHardCredit, Msg: "qoder 每日配额超限：" + truncate(msg, 120)}
 		}
 
 		// 2. 补齐 tool_call id：Qoder 流式输出工具调用时 id 常为空字符串，导致 ZCode AI SDK 无法关联工具调用

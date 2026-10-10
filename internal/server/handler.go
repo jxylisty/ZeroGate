@@ -1176,11 +1176,26 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 				if streamErr != nil {
 					log.Printf("stream aborted platform=%s uid=%s elapsed=%dms err=%v",
 						rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
+					// 流内错误帧（HTTP 200 但 SSE 首帧即错误，如 qoder 每日配额超限 code 110）：
+					// 分类为账号级"当天额度用完" → 长冷却该号 + 换号重试。
+					// 只在客户端未收到任何字节时换号（错误帧恒在第一帧，此时必然 wroteAny=false）。
+					var ue *provider.Error
+					if billingDaily := errors.As(streamErr, &ue) && ue.Kind == provider.ErrHardCredit; billingDaily &&
+						!streamRetried && !rw.wroteAny {
+						streamRetried = true
+						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "每日配额超限（非封禁，次日恢复）")
+						h.stickyClear(rt)
+						log.Printf("billing-daily stream retry platform=%s uid=%s elapsed=%dms err=%v (retry #1)",
+							rt.Kind, acct.UID, time.Since(startTime).Milliseconds(), streamErr)
+						continue
+					}
 					// 零 token 断流自动重试：仅限"连接瞬断"（EOF 类）且客户端未收到任何字节时
 					// 才换号重试；认证/风控类错误（401/403/405/10605/token 过期等）根本到不了
 					// 这里（响应头阶段就按 status>=400 处理了），即使到达也一律不重试，
 					// 避免重试风暴加深上游风控标记（AutoClaw 封号教训）。每请求上限 1 次。
-					if degraded && !streamRetried && !rw.wroteAny && isStreamEOF(streamErr) {
+					// 2026-10-10 整改：去掉 degraded 前置——断流时上游往往来不及发 usage 帧，
+					// track.has=false 导致 degraded 恒 false，61s 思考断流重试被漏掉。
+					if !streamRetried && !rw.wroteAny && isStreamEOF(streamErr) {
 						streamRetried = true
 						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "零 token 瞬断（非账号问题）")
 						h.stickyClear(rt)

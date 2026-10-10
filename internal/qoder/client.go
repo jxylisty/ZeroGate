@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -621,6 +622,20 @@ var hardMarkers = []string{
 	"积分不足", "额度不足", "余额不足", "积分用完", "额度用尽", "没有积分",
 }
 
+// billingErrorRe 识别 qoder 每日配额超限（错误码 110：Billing daily count
+// exceeded，UTC+8 当日用完、次日 24:00 恢复）。关键词刻意收窄——宽泛的
+// balance/quota 会误伤正文里讨论额度的普通模型输出（移植自 tinylab）。
+var billingErrorRe = regexp.MustCompile(`(?i)billing\s+daily\s+count\s+exceeded|daily\s+count\s+exceeded|billing_error`)
+
+// isBillingError 判断 body/错误帧文本是否属于 qoder 每日配额超限。
+func isBillingError(text string) bool { return billingErrorRe.MatchString(text) }
+
+// IsBillingCode 判断上游业务码是否为 qoder 110（每日配额超限）。
+// code 可能是 string "110" 或 JSON 数字（float64/int），统一转字符串比较。
+func IsBillingCode(code any) bool {
+	return fmt.Sprintf("%v", code) == "110"
+}
+
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 func Classify(status int, body string) provider.ErrKind {
 	// Qoder 10605 并发排队与限流（上游返回 403，body 含 10605 或 retryAfterSeconds）
@@ -628,6 +643,12 @@ func Classify(status int, body string) provider.ErrKind {
 		return provider.ErrSoftRate
 	}
 	if status == http.StatusPaymentRequired {
+		return provider.ErrHardCredit
+	}
+	// Qoder 每日配额超限（110）：账号级"当天额度用完"，冷却到次日恢复。
+	// 归入 ErrHardCredit → 池长冷却该号 + handler 自动换号重试（不是封禁，
+	// 冷却到期自动回来，绝不影响其他账号）。
+	if isBillingError(body) {
 		return provider.ErrHardCredit
 	}
 	lower := strings.ToLower(body)

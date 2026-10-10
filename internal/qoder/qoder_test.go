@@ -1,7 +1,9 @@
 package qoder
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -186,6 +188,71 @@ func TestQoder10605ClassifyAndParse(t *testing.T) {
 	kind := Classify(403, string(sample10605))
 	if kind != provider.ErrSoftRate {
 		t.Fatalf("Classify 10605 failed: got %v, want ErrSoftRate", kind)
+	}
+}
+
+// 每日配额超限（code 110 / Billing daily count exceeded）必须分类为
+// ErrHardCredit（账号级当天用完，长冷却 + 换号重试），而不是 ErrClient
+// 直接透传给客户端导致 Turn 失败。
+func TestQoderBillingDailyClassify(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+	}{
+		{403, `{"code":"110","message":"Billing daily count exceeded"}`},
+		{403, `{"code":110,"message":"Billing daily count exceeded"}`},
+		{401, `{"code":"110","message":"Billing daily count exceeded"}`},
+		{400, `{"code":"110","message":"daily count exceeded"}`},
+		{429, `{"code":"110","message":"billing_error"}`},
+	}
+	for _, c := range cases {
+		if got := Classify(c.status, c.body); got != provider.ErrHardCredit {
+			t.Fatalf("Classify(%d, %q) = %v, want ErrHardCredit", c.status, c.body, got)
+		}
+	}
+	// 反例：普通对话正文提到 billing/quota 不得误判
+	if got := Classify(200, `你问我 billing 和 quota 的区别，答案是……`); got != provider.ErrNone {
+		t.Fatalf("Classify 误伤普通正文: got %v, want ErrNone", got)
+	}
+}
+
+func TestQoderIsBillingCode(t *testing.T) {
+	if !IsBillingCode("110") || !IsBillingCode(110) {
+		t.Fatal("IsBillingCode 未识别 110")
+	}
+	if IsBillingCode("10605") || IsBillingCode(403) || IsBillingCode(nil) {
+		t.Fatal("IsBillingCode 误判非 110")
+	}
+}
+
+// 流内错误帧（HTTP 200 SSE 首帧）携带 billing code/message 时，streamAsOpenAI
+// 必须返回 ErrHardCredit 错误（交由 handler 换号），绝不透传给客户端。
+func TestStreamAsOpenAIInterceptsBillingFrame(t *testing.T) {
+	body := "data: {\"body\":\"{\\\"code\\\":110,\\\"message\\\":\\\"Billing daily count exceeded\\\"}\"}\n\n"
+	var buf bytes.Buffer
+	err := streamAsOpenAI(&buf, strings.NewReader(body), "qoder/m1", nil)
+	var ue *provider.Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("streamAsOpenAI err = %v, want *provider.Error", err)
+	}
+	if ue.Kind != provider.ErrHardCredit {
+		t.Fatalf("kind = %v, want ErrHardCredit", ue.Kind)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("错误帧不应透传给客户端, buf=%q", buf.String())
+	}
+}
+
+// 正常流不受影响：错误帧拦截只针对 billing，其余 chunk 照常透传并补 [DONE]。
+func TestStreamAsOpenAINormalStillWorks(t *testing.T) {
+	body := "data: {\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"hi\\\"}}]}\"}\n\n" +
+		"data: {\"body\":\"[DONE]\"}\n\n"
+	var buf bytes.Buffer
+	if err := streamAsOpenAI(&buf, strings.NewReader(body), "qoder/m1", nil); err != nil {
+		t.Fatalf("normal stream err: %v", err)
+	}
+	if !strings.Contains(buf.String(), "hi") || !strings.Contains(buf.String(), "[DONE]") {
+		t.Fatalf("normal stream corrupted: %q", buf.String())
 	}
 }
 
