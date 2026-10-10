@@ -6,6 +6,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -77,6 +78,12 @@ type Manager struct {
 	handles         map[string]*exec.Cmd
 	lastAction      map[string]string
 	lastActionT     map[string]time.Time
+
+	// storm 记录（zcode captcha mint storm 自动重启 watchdog）：
+	// stormCount 记录每实例 serve.log 中累计命中的 storm 行数，
+	// rebootAt 记录每实例最近一次自动重启时间（防抖：10 分钟内不重复）。
+	stormCount    map[string]int
+	stormRebootAt map[string]time.Time
 }
 
 // Config 构建参数。
@@ -136,20 +143,23 @@ func NewManager(cfg Config) *Manager {
 			{ID: "autoclaw", Name: "AutoClaw 客户端", Port: 18789, Kind: "autoclaw", Group: "external", NoStop: true,
 				desc: "官方桌面客户端 D:\\autoclaw\\AutoClaw.exe（登录态/本地网关 18789 托管在此，由用户自行启停）"},
 		},
-		authDir:     resolveWorkspacePath("auths"),
-		zcodeDir:    zd,
-		doubaoDir:   dd,
-		doubaoKey:   dk,
-		bridgeKey:   cfg.BridgeKey,
-		cpaKey:      ck,
-		copilotKey:  pk,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		stopCh:      make(chan struct{}),
-		handles:     map[string]*exec.Cmd{},
-		lastAction:  map[string]string{},
-		lastActionT: map[string]time.Time{},
+		authDir:       resolveWorkspacePath("auths"),
+		zcodeDir:      zd,
+		doubaoDir:     dd,
+		doubaoKey:     dk,
+		bridgeKey:     cfg.BridgeKey,
+		cpaKey:        ck,
+		copilotKey:    pk,
+		httpClient:    &http.Client{Timeout: 10 * time.Second},
+		stopCh:        make(chan struct{}),
+		handles:       map[string]*exec.Cmd{},
+		lastAction:    map[string]string{},
+		lastActionT:   map[string]time.Time{},
+		stormCount:    map[string]int{},
+		stormRebootAt: map[string]time.Time{},
 	}
 	go m.logTailLoop()
+	go m.stormWatchLoop()
 	return m
 }
 
@@ -851,6 +861,86 @@ func (m *Manager) logTailLoop() {
 			m.mu.Unlock()
 		}
 	}
+}
+
+// stormRestartThreshold 单轮检查窗口内新增 storm 次数达到该值即触发重启。
+// 桥自身每轮 storm 都会先做 IP reset（约 1~2 分钟生效）；连续两轮检查（60s 间隔）
+// 仍在爆 storm 说明 IP reset 没缓过来，此时重启实例是唯一有效手段
+// （2026-10-11 凌晨 acc-big/fuka/fuka2 三实例同时 stall，手动重启后 ttft 143s→7s）。
+const stormRestartThreshold = 2
+
+// stormRebootDebounce 同一实例两次自动重启的最小间隔。
+const stormRebootDebounce = 10 * time.Minute
+
+// stormWatchLoop 周期扫描各 zcode 实例 serve.log 中的 captcha storm 行，
+// 新增达到阈值时自动重启该实例（用户不再需要半夜手动点重启）。
+// 只扫 zcode 实例（serve.log 是 zcode-proxy 专属日志），且只数「新增」，
+// 日志轮转/重启导致的行数回退天然安全（count 比对取 max 防误触发）。
+func (m *Manager) stormWatchLoop() {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-t.C:
+			m.stormCheck()
+		}
+	}
+}
+
+func (m *Manager) stormCheck() {
+	for _, ins := range m.zcodeInstances() {
+		logPath := filepath.Join(m.zcodeDir, "instances", ins.ID, "serve.log")
+		raw, err := os.ReadFile(logPath)
+		if err != nil {
+			continue
+		}
+		count := bytes.Count(raw, []byte("[captcha] mint storm detected"))
+		m.mu.Lock()
+		prev := m.stormCount[ins.ID]
+		m.stormCount[ins.ID] = count
+		lastReboot := m.stormRebootAt[ins.ID]
+		m.mu.Unlock()
+		if count <= prev {
+			continue // 无新增（含日志轮转回退），跳过
+		}
+		delta := count - prev
+		if delta < stormRestartThreshold {
+			log.Printf("bridge storm-watch: %s 新增 %d 次 storm（阈值 %d，继续观察）", ins.ID, delta, stormRestartThreshold)
+			continue
+		}
+		if time.Since(lastReboot) < stormRebootDebounce {
+			log.Printf("bridge storm-watch: %s 新增 %d 次 storm，但距上次自动重启仅 %s，跳过",
+				ins.ID, delta, time.Since(lastReboot).Round(time.Second))
+			continue
+		}
+		m.stormRestart(ins)
+	}
+}
+
+// stormRestart 自动重启单个 zcode 实例：Stop（按端口兜底杀）→ 间隔 2s → Start。
+// 全程记录到面板「最近操作」，失败只记日志不强求（下一轮检查会再试）。
+func (m *Manager) stormRestart(ins Instance) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	m.mu.Lock()
+	m.stormRebootAt[ins.ID] = time.Now()
+	m.mu.Unlock()
+	log.Printf("bridge storm-watch: %s captcha storm 持续（≥%d 次/分钟窗口），自动重启实例", ins.ID, stormRestartThreshold)
+	m.note(ins.ID, fmt.Sprintf("自动重启：captcha storm 连续爆发（watchdog，%s）", time.Now().Format("15:04:05")))
+
+	if _, err := m.Stop(ctx, ins.ID); err != nil {
+		log.Printf("bridge storm-watch: %s 停止失败（可能本来就没在跑，继续尝试拉起）: %v", ins.ID, err)
+	}
+	time.Sleep(2 * time.Second)
+	st, err := m.Start(ctx, ins.ID)
+	if err != nil {
+		log.Printf("bridge storm-watch: %s 重启失败: %v", ins.ID, err)
+		m.noteErr(ins.ID, "自动重启失败: "+err.Error())
+		return
+	}
+	log.Printf("bridge storm-watch: %s 重启完成 online=%v", ins.ID, st.Online)
 }
 
 // ---------------------------------------------------------------------------
