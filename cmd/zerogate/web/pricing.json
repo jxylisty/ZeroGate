@@ -31,7 +31,6 @@
   { "re": "autoclaw", "in": 0.11, "cache": 0.032, "out": 0.39 },
   { "re": "traework", "in": 0.42, "cache": 0.08, "out": 2.08 },
   { "re": "workbuddy", "in": 0.15, "cache": 0.003, "out": 0.6 },
-  { "re": "wbintl", "in": 1.4, "cache": 0.26, "out": 4.4 },
   { "re": "codebuddy", "in": 0.833, "cache": 0.042, "out": 2.5 },
   { "re": "qoder", "in": 0.14, "cache": 0.03, "out": 0.42 }
 ]

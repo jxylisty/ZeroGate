@@ -32,6 +32,7 @@ type Entry struct {
 	CacheTokens      int64  `json:"cache_tokens"`        // 缓存命中 Token
 	TotalTokens      int64  `json:"total_tokens"`        // 总 Token
 	DurationMs       int64  `json:"duration_ms"`         // 耗时毫秒
+	TTFTMs           int64  `json:"ttft_ms,omitempty"`   // 首字延迟毫秒（流式=首帧到达；非流式=响应头就绪）
 	Status           int    `json:"status"`              // HTTP 状态码
 	Error            string `json:"error,omitempty"`     // 错误信息摘要
 	Stream           bool   `json:"stream"`              // 是否流式

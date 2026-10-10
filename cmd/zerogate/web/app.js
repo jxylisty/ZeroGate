@@ -46,7 +46,7 @@ function cssVar(name) {
 function chColor(kind) {
   const v = cssVar("--ch-" + kind);
   if (v) return v;
-  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", wbintl: "#ea580c", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7", copilot: "#475569", doubao: "#dc2626", gptgemini: "#db2777", glmflash: "#65a30d", groq: "#f59e0b", tierflow: "#d946ef" };
+  const fb = { workbuddy: "#7c3aed", traework: "#2563eb", qoder: "#0891b2", codebuddy: "#16a34a", zcode: "#6366f1", autoclaw: "#0d9488", atria: "#0284c7", copilot: "#475569", doubao: "#dc2626", gptgemini: "#db2777", glmflash: "#65a30d", groq: "#f59e0b", tierflow: "#d946ef" };
   return fb[kind] || "#64748b";
 }
 
@@ -55,8 +55,7 @@ function groupMeta(g) {
   switch (g) {
     case "traework": return { cls: "trae", name: "TraeWork", checkin: false };
     case "qoder": return { cls: "qoder", name: "Qoder", checkin: false };
-    case "codebuddy": return { cls: "cb", name: "CodeBuddy(国际)", checkin: true };
-    case "wbintl": return { cls: "wbi", name: "WorkBuddy(国际)", checkin: true };
+    case "codebuddy": return { cls: "cb", name: "CodeBuddy", checkin: false };
     case "zcode": return { cls: "zc", name: "ZCode (Z.AI)", checkin: false };
     case "autoclaw": return { cls: "ac", name: "AutoClaw", checkin: true };
     case "atria": return { cls: "atria", name: "Atria", checkin: false };
@@ -71,7 +70,7 @@ function groupMeta(g) {
 }
 
 // NO_CHECKIN_GROUPS 无签到活动的渠道：无网页签到体系渠道 + key 型白嫖渠道。
-const NO_CHECKIN_GROUPS = ["codebuddy", "wbintl", "zcode", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow"];
+const NO_CHECKIN_GROUPS = ["codebuddy", "zcode", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow"];
 
 // ---------- 全局状态 ----------
 let state = null;
@@ -223,7 +222,7 @@ const MODE_SECTIONS = [
   { key: "bridge", name: "桥接账号", desc: "转发到本地 zcode-proxy 实例，网关不直接持有凭证" },
   { key: "direct", name: "直连账号", desc: "官方 API Key 直连，非反代，独立管理" },
 ];
-const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow"];
+const CHANNEL_ORDER = ["workbuddy", "traework", "qoder", "codebuddy", "zcode", "autoclaw", "atria", "copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow"];
 const GROUP_KEY_LS = "zg_acct_groups";
 let acctSearchQ = "";
 let acctFilterKey = "all";
@@ -409,7 +408,6 @@ const ADD_CHANNELS = [
   { ch: "traework",  name: "TraeWork",         hint: "浏览器登录" },
   { ch: "qoder",     name: "Qoder",            hint: "浏览器登录" },
   { ch: "codebuddy", name: "CodeBuddy (国际)", hint: "浏览器登录" },
-  { ch: "wbintl",    name: "WorkBuddy (国际)", hint: "浏览器登录" },
   { ch: "zcode",     name: "ZCode (Z.AI)",     hint: "浏览器登录 · 桥接" },
   { ch: "autoclaw",  name: "AutoClaw",         hint: "手机验证码" },
   { ch: "atria",     name: "Atria (官方 Key)", hint: "粘贴 atr_ Key" },
@@ -449,7 +447,6 @@ const feeThemes = {
   traework: ["#2563eb", "#38bdf8"],
   qoder:     ["#7c3aed", "#a855f7"],
   codebuddy: ["#0ea5e9", "#06b6d4"],
-  wbintl:    ["#f59e0b", "#fbbf24"],
   zcode:     ["#10b981", "#34d399"],
   autoclaw:  ["#6366f1", "#818cf8"],
   copilot:   ["#334155", "#64748b"],
@@ -827,9 +824,9 @@ function pickZcodeProvider(btn) {
   document.querySelectorAll("#zcodeProviderRow .btn").forEach((b) => b.classList.remove("primary"));
   btn.classList.add("primary");
 }
-let wbtKind = "wbintl";
+let wbtKind = "codebuddy";
 function openWbtDialog(channel) {
-  wbtKind = channel === "codebuddy" ? "codebuddy" : "wbintl";
+  wbtKind = "codebuddy";
   $("wbtTitle").textContent = "添加 " + groupMeta(channel).name + " 账号（粘贴 token）";
   $("wbtToken").value = ""; $("wbtRefresh").value = ""; $("wbtName").value = ""; $("wbtMsg").textContent = "";
   $("wbtokenOverlay").classList.remove("hidden");
@@ -838,7 +835,7 @@ function closeWbtDialog() { $("wbtokenOverlay").classList.add("hidden"); }
 async function wbtImport() {
   const token = $("wbtToken").value.trim();
   if (!token) { toast("请粘贴 accessToken"); return; }
-  const domain = wbtKind === "codebuddy" ? "codebuddy.ai" : "workbuddy.ai";
+  const domain = "codebuddy.ai";
   $("wbtConfirm").disabled = true;
   try {
     const r = await api("/api/wbintl/add", { domain, token, refresh_token: $("wbtRefresh").value.trim(), nickname: $("wbtName").value.trim() });
@@ -901,8 +898,8 @@ function promptLogin(channel) {
     row.classList.add("hidden");
   }
   $("lcTitle").textContent = "添加 " + name + " 账号";
-  if (channel === "wbintl" || channel === "codebuddy") {
-    $("lcMsg").textContent = `点击「登录${name}」将打开浏览器窗口，请按指示登录 workbuddy.ai 账号（国际版 WorkBuddy / CodeBuddy 同源共用账号），完成后关闭浏览器窗口即可。`;
+  if (channel === "codebuddy") {
+    $("lcMsg").textContent = `点击「登录${name}」将打开浏览器窗口，请按指示登录 ${name} 账号（国际版，与 WorkBuddy 同源共用账号），完成后关闭浏览器窗口即可。`;
   } else {
     $("lcMsg").textContent = groupMeta(channel).checkin
       ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。（${name} 渠道无签到活动，仅 API 转发）`
@@ -1219,6 +1216,7 @@ function bind() {
   if ($("btnAddRedirect")) $("btnAddRedirect").onclick = saveRedirect;
   if ($("btnResetRedirects")) $("btnResetRedirects").onclick = resetRedirects;
   if ($("btnRefreshTokens")) $("btnRefreshTokens").onclick = loadTokenAnalytics;
+  if ($("btnRefreshAssets")) $("btnRefreshAssets").onclick = loadAssets;
 }
 
 // ---------- Tab 导航控制 ----------
@@ -1232,7 +1230,7 @@ function initTabs() {
     panes.forEach(p => p.classList.toggle("active", p.id === `tab-${name}`));
     localStorage.setItem("zg_active_tab", name);
     if (name === "dashboard") loadDashboard();
-    else if (name === "usage") loadTokenAnalytics();
+    else if (name === "usage") { loadTokenAnalytics(); loadAssets(); }
     else if (name === "logs") loadAuditLogs();
     else if (name === "clients") loadClients();
     else if (name === "router") loadRedirects();
@@ -1296,7 +1294,7 @@ async function loadAuditLogs() {
     if (!tbody) return;
     const logs = data.logs || [];
     if (!logs.length) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--muted); padding:20px;">暂无调用记录</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--muted); padding:20px;">暂无调用记录</td></tr>`;
       return;
     }
     tbody.innerHTML = logs.map(l => {
@@ -1304,6 +1302,8 @@ async function loadAuditLogs() {
       const statusCls = l.status === 200 ? "s200" : (l.status === 429 ? "s429" : "sErr");
       const errTooltip = l.error ? `title="${esc(l.error)}"` : "";
       const streamTag = l.stream ? `<span class="tag neutral" style="font-size:9px; padding:1px 4px; margin-left:2px;">流</span>` : "";
+      const ttft = l.ttft_ms ? `${l.ttft_ms < 1000 ? l.ttft_ms + "ms" : (l.ttft_ms / 1000).toFixed(1) + "s"}` : "-";
+      const ttftColor = !l.ttft_ms ? "var(--muted)" : (l.ttft_ms < 5000 ? "var(--ok, green)" : (l.ttft_ms < 15000 ? "var(--warn, orange)" : "var(--danger, red)"));
       return `
         <tr>
           <td style="font-family:ui-monospace, monospace; font-size:11px; color:var(--muted);">${timeStr}</td>
@@ -1311,6 +1311,7 @@ async function loadAuditLogs() {
           <td><code>${esc(l.model_req || "-")}</code>${streamTag}</td>
           <td><span class="badge ${groupMeta(l.channel).cls}" style="margin-right:4px;">${esc(l.channel || "-")}</span><code>${esc(l.model_target || "-")}</code> <span style="font-size:11px; color:var(--muted)">(${esc(shortUid(l.uid))})</span></td>
           <td>${l.duration_ms}ms</td>
+          <td style="font-family:ui-monospace, monospace; font-size:11px; color:${ttftColor};">${ttft}</td>
           <td>${fmtTotal(l.total_tokens || 0)} <span style="font-size:11px; color:var(--muted)">(${fmtTotal(l.prompt_tokens || 0)}/${fmtTotal(l.completion_tokens || 0)})</span></td>
           <td><span class="status-pill ${statusCls}">${l.status}</span></td>
           <td ${errTooltip} style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:${l.error ? 'var(--danger)' : 'var(--muted)'};">${esc(l.error || "成功")}</td>
@@ -1486,12 +1487,12 @@ async function saveRedirect() {
 async function resetRedirects() {
   confirmDialog("确定恢复为系统预置的默认模型映射规则？", async () => {
     const defaults = {
-      "claude-3-5-sonnet": ["traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"],
-      "claude-3.5-sonnet": ["traework/claude-3-5-sonnet", "wbintl/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"],
-      "claude-3-7-sonnet": ["wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"],
-      "claude-3.7-sonnet": ["wbintl/claude-3-7-sonnet", "traework/claude-3-7-sonnet"],
-      "claude-3-5-haiku": ["wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"],
-      "claude-3.5-haiku": ["wbintl/claude-3-5-haiku", "workbuddy/claude-3.5-haiku"],
+      "claude-3-5-sonnet": ["traework/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"],
+      "claude-3.5-sonnet": ["traework/claude-3-5-sonnet", "workbuddy/claude-3.5-sonnet"],
+      "claude-3-7-sonnet": ["traework/claude-3-7-sonnet"],
+      "claude-3.7-sonnet": ["traework/claude-3-7-sonnet"],
+      "claude-3-5-haiku": ["workbuddy/claude-3.5-haiku"],
+      "claude-3.5-haiku": ["workbuddy/claude-3.5-haiku"],
       "deepseek-chat": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
       "deepseek-v3": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
       "deepseek-reasoner": ["codebuddy/deepseek-v4.1-flash", "qoder/glm-5.3-flash", "traework/glm-5.2"],
@@ -1543,6 +1544,40 @@ function fmtTotal(n) {
 }
 
 // ============================================================
+// 剩余资产总览（积分折算 token）
+// ============================================================
+
+async function loadAssets() {
+  try {
+    const res = await fetch("/api/assets");
+    if (!res.ok) return;
+    const data = await res.json();
+    const conv = data.channels.filter(c => c.convertible);
+    const convTokens = conv.reduce((s, c) => s + (c.tokens || 0), 0);
+    const convCredits = conv.reduce((s, c) => s + (c.credits || 0), 0);
+    $("assetHeroTokens").textContent = fmtTotal(convTokens) + " tokens";
+    $("assetHeroCredits").textContent =
+      `来自 ${conv.map(c => c.channel).join(" + ")} · 合计 ${fmtTotal(convCredits)} 积分 · 1 积分 = 1 token（实测口径）`;
+    $("assetsUpdatedAt").textContent = "更新于 " + (data.updated_at || "");
+    const tb = $("assetsTable").querySelector("tbody");
+    tb.innerHTML = data.channels.map(c => {
+      const meta = CHANNEL_METAS[c.channel] || { name: c.channel, color: "#64748b" };
+      const tok = c.convertible ? fmtTotal(c.tokens) : '<span style="color:var(--muted)">不可折算</span>';
+      const note = c.note ? `<span class="assets-note">${esc(c.note)}</span>` : "";
+      const acct = `${c.healthy}/${c.accounts}`;
+      return `
+        <tr>
+          <td><span class="badge" style="background:${meta.color}1a; color:${meta.color};">${esc(meta.name)}</span></td>
+          <td>${acct}${c.healthy < c.accounts ? ' <span class="assets-note">(健康/总数)</span>' : ""}</td>
+          <td><strong>${fmtTotal(c.credits)}</strong></td>
+          <td>${tok}</td>
+          <td>${note}</td>
+        </tr>`;
+    }).join("");
+  } catch (e) { /* 面板加载失败静默 */ }
+}
+
+// ============================================================
 // Token 资产大屏与高级图表引擎 (纯原生 SVG，零依赖，高颜值)
 // ============================================================
 
@@ -1551,7 +1586,6 @@ const CHANNEL_METAS = {
   traework:  { name: "TraeWork",  color: "#2563eb" },
   qoder:     { name: "Qoder",     color: "#0891b2" },
   codebuddy: { name: "CodeBuddy", color: "#16a34a" },
-  wbintl:    { name: "WBIntl",    color: "#ea580c" },
   zcode:     { name: "ZCode",     color: "#6366f1" },
   autoclaw:  { name: "AutoClaw",  color: "#0d9488" },
   atria:     { name: "Atria",     color: "#0284c7" },
@@ -1625,7 +1659,6 @@ const MODEL_PRICES = [
   { re: "autoclaw",             in: 0.11, cache: 0.032, out: 0.39 },
   { re: "traework",             in: 0.42, cache: 0.08,  out: 2.08 },
   { re: "workbuddy",            in: 0.15, cache: 0.003, out: 0.60 },
-  { re: "wbintl",               in: 1.40, cache: 0.26,  out: 4.40 },
   { re: "codebuddy",            in: 0.833, cache: 0.042, out: 2.50 }, // CodeBuddy(国际) 后端混元 Hy4（TokenHub ¥6/缓存¥0.3/¥18）
   { re: "qoder",                in: 0.14, cache: 0.03,  out: 0.42 },
 ];
@@ -1985,7 +2018,7 @@ function renderChannelDonut(channelTokens) {
   `;
 }
 
-// 4. 热门模型白嫖榜 TOP 5
+// 4. 热门模型白嫖榜 TOP 5（渠道色条形 + 输入/输出堆叠段 + 行内节省金额）
 function renderTopModels(models, summary) {
   const box = $("topModelsList");
   if (!box) return;
@@ -1996,6 +2029,7 @@ function renderTopModels(models, summary) {
   const top5 = models.slice(0, 5);
   const max = top5[0].total_tokens || 1;
   const badges = ["top1", "top2", "top3", "", ""];
+  const medals = ["🥇", "🥈", "🥉"];
 
   // 全局 输入/输出/缓存 占比：把各模型的总量拆成三段后按官方单价折算节省金额
   const tot = Number(summary && summary.total_tokens || 0);
@@ -2007,6 +2041,11 @@ function renderTopModels(models, summary) {
 
   box.innerHTML = top5.map((m, idx) => {
     const pct = Math.max(8, Math.round((m.total_tokens / max) * 100));
+    const chSeg = (share, cls) =>
+      share > 0.01 ? `<i class="rank-seg ${cls}" style="width:${Math.round(share * 100)}%"></i>` : "";
+    const pBar = shares
+      ? chSeg(shares.p, "seg-p") + chSeg(shares.cr, "seg-cr") + chSeg(shares.c, "seg-c")
+      : "";
     let savingsHtml = "";
     if (shares) {
       const usd = priceUSD(
@@ -2016,21 +2055,20 @@ function renderTopModels(models, summary) {
         m.total_tokens * shares.cr,
       );
       if (usd > 0.0001) {
-        savingsHtml = ` <span style="font-weight:600;color:var(--ok)">省 ¥${(usd * USD_CNY).toFixed(2)}</span>`;
+        savingsHtml = `<span class="rank-save" title="按官方 API 单价折算的等值节省">省 ¥${(usd * USD_CNY).toFixed(2)}</span>`;
       }
     }
     return `
       <div class="rank-item">
-        <span class="rank-num ${badges[idx]}">${idx + 1}</span>
+        <span class="rank-num ${badges[idx]}">${idx < 3 ? medals[idx] : idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name" title="${esc(m.model)}">${esc(m.model)}</span>
-            <span class="rank-val">${fmtTokens(m.total_tokens)} <span style="font-weight:400;color:var(--muted)">(${m.req_count || 0}次)</span></span>
+            <span class="rank-val">${fmtTokens(m.total_tokens)} <span class="rank-cnt">${m.req_count || 0} 次</span>${savingsHtml}</span>
           </div>
           <div class="rank-bar-bg">
-            <div class="rank-bar-fill" style="width:${pct}%"></div>
+            <div class="rank-bar-fill" style="width:${pct}%">${pBar}</div>
           </div>
-          ${savingsHtml ? `<div style="font-size:11px;margin-top:2px;">${savingsHtml}</div>` : ""}
         </div>
       </div>
     `;
@@ -2068,12 +2106,12 @@ function renderTopClients(clients) {
   }).join("");
 }
 
-// 6. 账号 Token 生产力榜单
+// 6. 账号 Token 生产力榜单（卡片流可视化：排名徽章 + 占比条形 + 关键数字右对齐）
 function renderAcctProductivity(accounts) {
-  const tbody = $("acctProductivityBody");
-  if (!tbody) return;
+  const box = $("acctProductivityList");
+  if (!box) return;
   if (!accounts || accounts.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--muted)">暂无账号生产力数据</td></tr>`;
+    box.innerHTML = `<div class="empty-hint">暂无账号生产力数据</div>`;
     return;
   }
 
@@ -2090,33 +2128,50 @@ function renderAcctProductivity(accounts) {
   });
 
   list.sort((a, b) => b.sumTotal - a.sumTotal);
+  const grand = list.reduce((s, a) => s + a.sumTotal, 0) || 1;
+  const max = list[0].sumTotal || 1;
+  const topUid = list[0].uid;
+  const medals = ["🥇", "🥈", "🥉"];
 
-  tbody.innerHTML = list.map(a => {
+  box.innerHTML = list.map((a, idx) => {
     const gm = groupMeta(a.kind);
     const exp = formatExpire(a.expire_at);
-    const expireTag = `<span class="tag ${exp.cls}">${I.clock} ${esc(exp.text)}</span>`;
     const stateAcct = (state && state.accounts ? state.accounts : []).find(s => s.uid === a.uid && s.group === a.kind);
     const isNext = stateAcct && stateAcct.is_next;
     const bridgeDown = stateAcct && stateAcct.bridge_down;
+    const sharePct = Math.round((a.sumTotal / grand) * 100);
+    const barPct = Math.max(2, Math.round((a.sumTotal / max) * 100));
+    const rankBadge = idx < 3 ? `<span class="prod-rank">${medals[idx]}</span>` : `<span class="prod-rank plain">${idx + 1}</span>`;
     const statusTag = bridgeDown
       ? `<span class="tag danger" title="该账号本地桥未启动，请求打到它会失败">${I.alert} 桥未启动</span>`
       : isNext
-        ? `<span class="tag next-pick">${I.target} 优先调度 #1</span>`
-        : (stateAcct && stateAcct.disabled ? `<span class="tag danger">已停用</span>` : `<span class="tag neutral">就绪待命</span>`);
+        ? `<span class="tag next-pick" title="下一个请求会优先调度它">${I.target} 优先 #1</span>`
+        : (stateAcct && stateAcct.disabled ? `<span class="tag danger">已停用</span>` : "");
+    const hitChip = a.hitRate !== null
+      ? `<span class="prod-chip" title="缓存命中率 ${a.hitRate}%"><span style="color:var(--chart-cache)">◈</span> ${a.hitRate}%</span>`
+      : "";
 
     return `
-      <tr>
-        <td>
-          <span class="badge ${gm.cls}" style="margin-right:6px;">${gm.name}</span>
-          <b>${esc(a.nickname || shortUid(a.uid))}</b>
-        </td>
-        <td><code style="font-size:11px;color:var(--muted)">${esc(shortUid(a.uid))}</code></td>
-        <td><b>${fmtTokens(a.sumTotal)}</b></td>
-        <td>${fmtTokens(a.today || 0)}</td>
-        <td>${a.hitRate !== null ? a.hitRate + '%' : '—'}</td>
-        <td>${expireTag}</td>
-        <td>${statusTag}</td>
-      </tr>
+      <div class="prod-item ${a.uid === topUid ? "is-top" : ""}" title="${esc(a.uid)}">
+        ${rankBadge}
+        <div class="prod-main">
+          <div class="prod-head">
+            <span class="badge ${gm.cls}">${gm.name}</span>
+            <b class="prod-name">${esc(a.nickname || shortUid(a.uid))}</b>
+            <code class="prod-uid">${esc(shortUid(a.uid))}</code>
+            ${statusTag}
+            <span class="tag ${exp.cls}" title="最早到期时间">${I.clock} ${esc(exp.text)}</span>
+            <span class="prod-share" title="占全池累计产出的比例">占池 ${sharePct}%</span>
+          </div>
+          <div class="prod-bar-bg">
+            <div class="prod-bar-fill" style="width:${barPct}%"></div>
+          </div>
+        </div>
+        <div class="prod-nums">
+          <span class="prod-num-main" title="累计产出">${fmtTokens(a.sumTotal)}</span>
+          <span class="prod-num-sub">今日 ${fmtTokens(a.today || 0)} ${hitChip}</span>
+        </div>
+      </div>
     `;
   }).join("");
 }
@@ -2528,7 +2583,7 @@ function loadGrowthCheckin() {
   if (!wrap) return;
   const list = (state && state.accounts || []).filter((a) => {
     const g = a.group;
-    return g === "workbuddy" || g === "traework" || g === "autoclaw" || g === "qoder" || g === "codebuddy" || g === "wbintl" || g === "zcode";
+    return g === "workbuddy" || g === "traework" || g === "autoclaw" || g === "qoder" || g === "codebuddy" || g === "zcode";
   });
   wrap.innerHTML = list.length
     ? list.map(growthCheckinCardHTML).join("")

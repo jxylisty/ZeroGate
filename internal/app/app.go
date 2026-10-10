@@ -244,7 +244,7 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 }
 
 func (a *App) firstRuntime() *Runtime {
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.TraeWork, provider.Qoder, provider.CodeBuddy, provider.WBIntl} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.TraeWork, provider.Qoder, provider.CodeBuddy} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -445,7 +445,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		k = provider.WorkBuddy
 	}
 	if k != provider.WorkBuddy && k != provider.TraeWork && k != provider.Qoder && k != provider.ZCode &&
-		k != provider.WBIntl && k != provider.CodeBuddy {
+		k != provider.CodeBuddy {
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
 	if k == provider.ZCode {
@@ -852,14 +852,6 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
-	if rt := a.runtime(provider.WBIntl); rt != nil && rt.Pool != nil {
-		auths, err := auth.LoadWBIntlDir(a.cfg.AuthDir)
-		if err != nil {
-			log.Printf("reload wbintl accounts: %v", err)
-		} else {
-			rt.Pool.SyncToDir(auths)
-		}
-	}
 	if rt := a.runtime(provider.ZCode); rt != nil && rt.Pool != nil {
 		auths, err := auth.LoadZCodeDir(a.cfg.AuthDir)
 		if err != nil {
@@ -937,7 +929,7 @@ func (a *App) reloadAccounts() {
 // kindNoCheckin 无签到活动的渠道：无网页签到体系渠道 + OpenAI 兼容 key 型渠道。
 func kindNoCheckin(k provider.Kind) bool {
 	switch k {
-	case provider.CodeBuddy, provider.WBIntl, provider.ZCode, provider.Atria,
+	case provider.CodeBuddy, provider.ZCode, provider.Atria,
 		provider.Copilot, provider.Doubao, provider.GptGemini, provider.GlmFlash, provider.Groq,
 		provider.Tierflow:
 		return true
@@ -1647,6 +1639,82 @@ func (a *App) GetState() State {
 	return st
 }
 
+// ---------------------------------------------------------------------------
+// 资产总览（GET /api/assets）
+// ---------------------------------------------------------------------------
+
+// AssetChannel 单渠道资产：积分余额与 token 折算。
+// 折算系数来自 2026-10-06 实测对账（app.log 刷新记录 × requests.jsonl 消耗）：
+//   - zcode：干净时段严丝合缝 1 积分 = 1 token（如 10-03 掉 20,547,701 分
+//     恰好对应 20,547,701 token），掉分异常时段均为签到/充值事件；
+//   - atria：每号赠送 1 亿「积分」即 1 亿 token（pricing-cache 官方备注）；
+//   - 其余渠道（workbuddy/qoder/traework/autoclaw 等）两周数亿 token 流量
+//     仅掉几百积分 = 限免/按次计费，token 折算无稳定系数，如实标 0。
+type AssetChannel struct {
+	Channel      string `json:"channel"`
+	Accounts     int    `json:"accounts"`
+	Healthy      int    `json:"healthy"`
+	Credits      int64  `json:"credits"`
+	Tokens       int64  `json:"tokens"`        // 可折算 token（不可折算渠道为 0）
+	Convertible  bool   `json:"convertible"`   // 积分是否可稳定折算为 token
+	Note         string `json:"note,omitempty"`
+}
+
+// Assets 资产总览响应。
+type Assets struct {
+	Channels     []AssetChannel `json:"channels"`
+	TotalTokens  int64          `json:"total_tokens"`
+	ConvertibleTokens int64     `json:"convertible_tokens"`
+	UpdatedAt    string         `json:"updated_at"`
+}
+
+// GetAssets 汇总各渠道积分余额并按实测系数折算 token（只读内存池，不发上游请求）。
+func (a *App) GetAssets() Assets {
+	res := Assets{UpdatedAt: time.Now().Format("2006-01-02 15:04:05")}
+	byCh := map[string]*AssetChannel{}
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil {
+			continue
+		}
+		ch := rt.Kind.String()
+		ac := byCh[ch]
+		if ac == nil {
+			ac = &AssetChannel{Channel: ch}
+			byCh[ch] = ac
+		}
+		for _, st := range rt.Pool.List() {
+			ac.Accounts++
+			if !st.Cooling && !st.Disabled {
+				ac.Healthy++
+			}
+			ac.Credits += st.Credits
+		}
+	}
+	for _, ac := range byCh {
+		switch ac.Channel {
+		case "zcode":
+			ac.Convertible = true
+			ac.Tokens = ac.Credits
+			ac.Note = "实测 1 积分 ≈ 1 token"
+		case "atria":
+			ac.Convertible = true
+			ac.Tokens = ac.Credits
+			ac.Note = "赠送积分即 token（官方口径 1 亿/号）"
+		case "workbuddy", "qoder", "traework", "autoclaw", "codebuddy":
+			ac.Note = "限免/按次计费，无法折算 token"
+		default:
+			ac.Note = "积分制渠道，系数未实测"
+		}
+		res.Channels = append(res.Channels, *ac)
+		if ac.Convertible {
+			res.ConvertibleTokens += ac.Tokens
+		}
+		res.TotalTokens += ac.Credits
+	}
+	sort.Slice(res.Channels, func(i, j int) bool { return res.Channels[i].Credits > res.Channels[j].Credits })
+	return res
+}
+
 // channelDefaultMode 渠道缺省接入方式：zcode 与本机白嫖三件套（copilot/doubao/gptgemini）
 // 走本地桥接，atria 与 OpenAI 兼容 key 渠道（glmflash/groq/tierflow）为 API Key 直连，
 // 其余渠道均为网关持有凭证的反代。auth 文件里账号级 account.mode 可覆盖（见 auth.Parse）。
@@ -1787,9 +1855,6 @@ func (a *App) accountGroup(uid string) string {
 			if strings.HasPrefix(base, "codebuddy") {
 				return "codebuddy"
 			}
-			if strings.HasPrefix(base, "wbintl") {
-				return "wbintl"
-			}
 			if strings.HasPrefix(base, "zcode") {
 				return "zcode"
 			}
@@ -1910,6 +1975,9 @@ func (a *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.GetState())
 	})
+	mux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.GetAssets())
+	})
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
 		if a.usage != nil {
 			writeJSON(w, http.StatusOK, a.usage.JSON())
@@ -2013,7 +2081,7 @@ func (a *App) registerAPIRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/wbintl/add", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Domain       string `json:"domain"` // workbuddy.ai | codebuddy.ai
+			Domain       string `json:"domain"` // codebuddy.ai（wbintl 渠道已下线，仅保留 codebuddy）
 			Token        string `json:"token"`
 			RefreshToken string `json:"refresh_token"`
 			Nickname     string `json:"nickname"`
@@ -2026,12 +2094,10 @@ func (a *App) registerAPIRoutes(mux *http.ServeMux) {
 		}
 		kind := ""
 		switch req.Domain {
-		case "workbuddy.ai":
-			kind = "wbintl"
 		case "codebuddy.ai":
 			kind = "codebuddy"
 		default:
-			apiError(w, http.StatusBadRequest, "domain 仅支持 workbuddy.ai / codebuddy.ai")
+			apiError(w, http.StatusBadRequest, "domain 仅支持 codebuddy.ai")
 			return
 		}
 		uid, uname := jwtIDName(token)
@@ -2484,7 +2550,7 @@ func (a *App) FeesInfo() map[string]any {
 	}
 
 	channels := make([]map[string]any, 0)
-	for _, ch := range []string{"workbuddy", "traework", "qoder", "codebuddy", "wbintl", "zcode", "autoclaw"} {
+	for _, ch := range []string{"workbuddy", "traework", "qoder", "codebuddy", "zcode", "autoclaw"} {
 		if models, ok := groups[ch]; ok {
 			channels = append(channels, map[string]any{
 				"channel": ch,
@@ -2630,13 +2696,6 @@ func staticFeesInfo() map[string]any {
 				"channel": "codebuddy",
 				"models": []map[string]any{
 					{"model": "default / fast / balanced / primary / deep-model", "rate": 0, "note": "国际版，按积分倍率计费"},
-					{"model": "o4-mini", "rate": 0, "note": "GPT-4o-Mini"},
-				},
-			},
-			{
-				"channel": "wbintl",
-				"models": []map[string]any{
-					{"model": "default / fast / balanced / primary / deep-model", "rate": 0, "note": "WorkBuddy 国际版，限免期 DS 0 积分"},
 					{"model": "o4-mini", "rate": 0, "note": "GPT-4o-Mini"},
 				},
 			},

@@ -179,6 +179,7 @@
               <th>请求模型</th>
               <th>命中渠道/账号</th>
               <th>耗时</th>
+              <th>首字</th>
               <th>Tokens</th>
               <th>状态</th>
               <th>详情</th>
@@ -309,6 +310,40 @@
       </div>
     </section>
 
+    <!-- 剩余资产总览（积分 → token 折算） -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="wallet"></span>剩余资产 · 积分折算 Token</h2>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:11px; color:var(--muted);" id="assetsUpdatedAt"></span>
+          <button class="btn small" id="btnRefreshAssets"><span data-ic="refresh" style="width:13px;height:13px;"></span>重算</button>
+        </div>
+      </div>
+      <div class="asset-hero">
+        <div class="asset-hero-main">
+          <div class="asset-hero-lbl">可折算 Token 资产（zcode + atria 精确）</div>
+          <div class="asset-hero-val" id="assetHeroTokens">—</div>
+          <div class="asset-hero-sub" id="assetHeroCredits"></div>
+        </div>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="data-table" id="assetsTable">
+          <thead>
+            <tr>
+              <th>渠道</th>
+              <th>账号</th>
+              <th>积分余额</th>
+              <th>折算 Token</th>
+              <th>折算口径</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" style="text-align:center; color:var(--muted); padding:16px;">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- 模型榜单与客户端榜单 -->
     <div class="analytics-row">
       <div class="analytics-col">
@@ -338,24 +373,9 @@
       <div class="panel-head">
         <h2><span data-ic="zap"></span>账号 Token 生产力榜单</h2>
       </div>
-      <p class="hint" style="margin-bottom:12px;">查看账号池中每一个活跃账号的实际产出贡献，结合到期倒计时，合理调度家庭多账号资产。</p>
-      <div class="data-table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>渠道 / 账号</th>
-              <th>UID</th>
-              <th>累计 Token</th>
-              <th>今日 Token</th>
-              <th>缓存命中率</th>
-              <th>最早到期时间</th>
-              <th>当前调度状态</th>
-            </tr>
-          </thead>
-          <tbody id="acctProductivityBody">
-            <tr><td colspan="7" style="text-align:center; padding:20px; color:var(--muted)">加载中…</td></tr>
-          </tbody>
-        </table>
+      <p class="hint" style="margin-bottom:12px;">按累计产出排序。条形长度 = 该账号占全池产出的比例，右侧数字为今日/累计与缓存命中，悬停卡片可看完整 UID。</p>
+      <div id="acctProductivityList" class="prod-list">
+        <div class="empty-hint">加载中…</div>
       </div>
     </section>
   </div>
