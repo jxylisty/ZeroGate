@@ -929,8 +929,19 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 			log.Printf("channel breaker open platform=%s wait=%.0fs (skip upstream)", rt.Kind, wait.Seconds())
 			continue
 		}
-		// 整池健康数 = 0：无需尝试，直接置位熔断并快速失败
+		// 整池健康数 = 0：无需尝试，快速失败。
 		if healthy, total := rt.Pool.HealthyCount(); total > 0 && healthy == 0 {
+			// 若整池只是处于"短冷却"（网络抖动/429 等非账号问题的瞬断，
+			// 剩余 <= NetCooldown），不置位 60s 通道熔断 —— 那会把 10s 瞬断
+			// 放大成整通道停摆 1 分钟（违反"网络类只短冷却"铁律）。
+			// 仅快速失败，等短冷却自然到期即自动恢复。
+			if short, remain := rt.Pool.ShortBlocked(h.cfg.NetCooldown); short {
+				lastErr = fmt.Errorf("%s 渠道账号池短暂冷却中（%.0fs 后自动恢复，非账号问题）", rt.Kind, remain.Seconds())
+				lastStatus = http.StatusServiceUnavailable
+				lastCandKind = rt.Kind
+				log.Printf("channel short-cooldown platform=%s (%.0fs remain, skip upstream, no breaker)", rt.Kind, remain.Seconds())
+				continue
+			}
 			h.breakerTrip(rt.Kind)
 			lastErr = fmt.Errorf("%s 渠道账号池整体不可用（%d 个账号全部禁用/冷却），已暂停转发", rt.Kind, total)
 			lastStatus = http.StatusServiceUnavailable

@@ -104,3 +104,53 @@ func TestPoolHealthyCountAfterBanCooldown(t *testing.T) {
 		t.Fatalf("banned account should be unhealthy, got healthy=%d", healthy)
 	}
 }
+
+// 短冷却判定：全池只是短冷却（网络瞬断，剩余 <= max）时应可自愈，不该被渠道
+// 熔断锁 60s；长冷却/禁用/存在健康账号都应交回渠道熔断处理。
+func TestPoolShortBlocked(t *testing.T) {
+	const max = 10 * time.Second
+	newPool := func(uids ...string) *pool.Pool {
+		p := pool.New(t.TempDir() + "/state.json")
+		for _, uid := range uids {
+			p.Add(&auth.Auth{UID: uid, Kind: "codebuddy", AccessToken: "tok"})
+		}
+		return p
+	}
+
+	// 空池：不视为短阻塞
+	if short, _ := newPool().ShortBlocked(max); short {
+		t.Fatal("empty pool should not be short-blocked")
+	}
+
+	// 全部短冷却 → 短暂阻塞，可自愈
+	p := newPool("a", "b")
+	p.Cooldown("a", pool.CoolSoft, 8*time.Second, "上游不可达（非账号问题）")
+	p.Cooldown("b", pool.CoolSoft, 8*time.Second, "上游不可达（非账号问题）")
+	short, remain := p.ShortBlocked(max)
+	if !short {
+		t.Fatal("all short-cooldown: want short=true")
+	}
+	if remain <= 0 || remain > max {
+		t.Fatalf("remain %v out of range (0, %v]", remain, max)
+	}
+
+	// 有一个账号健康 → 不是整池阻塞
+	p.ReenableIfCredits("a", 100)
+	if short, _ := p.ShortBlocked(max); short {
+		t.Fatal("one healthy account: should not be short-blocked")
+	}
+
+	// 长冷却（超过 max）→ 交给渠道熔断
+	p2 := newPool("a")
+	p2.Cooldown("a", pool.CoolHard, time.Hour, "余额不足")
+	if short, _ := p2.ShortBlocked(max); short {
+		t.Fatal("long cooldown: should not be short-blocked")
+	}
+
+	// 禁用账号 → 交给渠道熔断
+	p3 := newPool("a")
+	p3.SetDisabled("a", true)
+	if short, _ := p3.ShortBlocked(max); short {
+		t.Fatal("disabled account: should not be short-blocked")
+	}
+}

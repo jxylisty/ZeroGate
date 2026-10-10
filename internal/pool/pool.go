@@ -423,6 +423,40 @@ func (p *Pool) HealthyCount() (healthy, total int) {
 	return healthy, total
 }
 
+// ShortBlocked 判断整池是否"仅因短冷却而暂时不可用"，供渠道熔断区分处置。
+//
+// HealthyCount 只回答"有没有健康账号"，无法区分"全池被封禁/长冷却"（该熔断）
+// 与"全池只是撞上一次网络抖动/429 的瞬断"（几秒后自愈，不该把整通道锁 60s）。
+// 仅当池中存在账号、且每个账号都处于剩余 <= max 的冷却时返回 (true, 最长剩余)；
+// 任一账号健康、被禁用、占位，或冷却剩余超过 max，都返回 false（交给渠道熔断）。
+func (p *Pool) ShortBlocked(max time.Duration) (bool, time.Duration) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	seen := false
+	var remain time.Duration
+	for _, e := range p.byUID {
+		seen = true
+		if e.disabled || e.placeholder {
+			return false, 0
+		}
+		if e.until.IsZero() || !now.Before(e.until) {
+			return false, 0 // 有健康账号
+		}
+		r := e.until.Sub(now)
+		if r > max {
+			return false, 0 // 长冷却，交给渠道熔断
+		}
+		if r > remain {
+			remain = r
+		}
+	}
+	if !seen {
+		return false, 0
+	}
+	return true, remain
+}
+
 func (p *Pool) List() []Status {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
