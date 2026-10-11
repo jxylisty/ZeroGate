@@ -22,7 +22,9 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/simplifiedchinese"
 
@@ -84,6 +86,10 @@ type Manager struct {
 	// rebootAt 记录每实例最近一次自动重启时间（防抖：10 分钟内不重复）。
 	stormCount    map[string]int
 	stormRebootAt map[string]time.Time
+
+	// halfDead 记录每实例「端口可连但 /health 无响应」的连续轮数（半死桥自动重启）。
+	halfDead    map[string]int
+	probeClient *http.Client // 半死探测专用短超时客户端（避免每次等满 10s）
 }
 
 // Config 构建参数。
@@ -157,6 +163,8 @@ func NewManager(cfg Config) *Manager {
 		lastActionT:   map[string]time.Time{},
 		stormCount:    map[string]int{},
 		stormRebootAt: map[string]time.Time{},
+		halfDead:      map[string]int{},
+		probeClient:   &http.Client{Timeout: 3 * time.Second},
 	}
 	go m.logTailLoop()
 	go m.stormWatchLoop()
@@ -332,7 +340,8 @@ func (m *Manager) probe(ins Instance) Status {
 		// 探活打桥自身的本地 /health（秒回、不依赖上游），而不是 /quota。
 		// /quota 要等上游计费接口，10s 超时后会把「已启动的桥」误判成离线，
 		// 面板徽章于是从「在线」翻转成「启动中」——即用户反馈的怪现象（2026-09-28）。
-		body, err := m.httpGet(ins, "/health", m.bridgeKey)
+		// 用短超时 client：半死桥（端口可连但 /health 不响应）时面板刷新不至于被拖 10s。
+		body, err := m.httpGetClient(m.probeClient, ins, "/health", m.bridgeKey)
 		if err != nil {
 			// 健康端点没应答但端口已监听：桥正在起（监听早于路由就绪），
 			// 按在线给出反馈，避免「明明起来了却显示未运行/启动中」。
@@ -431,6 +440,12 @@ func probeFailReason(err error) string {
 }
 
 func (m *Manager) httpGet(ins Instance, path, key string) ([]byte, error) {
+	return m.httpGetClient(m.httpClient, ins, path, key)
+}
+
+// httpGetClient 用指定 client 发起探测 GET。zcode 的 /health 是纯本地端点，
+// 用短超时 client，半死桥（端口可连但不响应）时把面板刷新的最坏耗时从 10s 压到 3s。
+func (m *Manager) httpGetClient(client *http.Client, ins Instance, path, key string) ([]byte, error) {
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", ins.Port, path)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -439,7 +454,7 @@ func (m *Manager) httpGet(ins Instance, path, key string) ([]byte, error) {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := m.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -550,10 +565,17 @@ func resolveExe(name string, fallbackPaths ...string) string {
 }
 
 // hiddenOutput 执行一次性探测命令并隐藏其控制台窗口。
-// 探测用的 tasklist/schtasks 同样是控制台程序：面板每次刷新都会调用，
+// 探测用的 netstat/schtasks 是控制台程序：面板每次刷新都会调用，
 // 不加隐藏标志会在每次刷新时闪一个黑框（用户视角=服务"一直在弹 cmd"）。
+//
+// 必须带超时：外部工具会挂死。2026-10-12 实测本机 tasklist 全部卡住不返回，
+// 面板「本地桥」列表因此永久转圈（探活同步等在这条 cmd.Output 上）。
+// 超时后 Kill 子进程 + WaitDelay 兜底关闭管道，保证探活最坏也是「状态未知」而非卡死。
 func hiddenOutput(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 2 * time.Second // 子进程被杀后其孙进程仍持有管道时强制收尾
 	hideWindow(cmd)
 	return cmd.Output()
 }
@@ -810,27 +832,89 @@ func (m *Manager) killByPID(ins Instance, pid int) (Status, error) {
 	return m.probe(ins), nil
 }
 
-// pidListeningOnPort 查询监听指定端口的进程 PID（netstat -ano，0 = 未找到）。
-// 仅匹配 LISTENING 行，避免误杀恰好连着该端口的客户端进程。
+// pidListeningOnPort 查询监听指定端口的进程 PID（0 = 未找到）。
+//
+// 为什么不用 netstat：2026-10-12 本机 netstat 与 tasklist 一样会挂死不返回，
+// 面板「停止」按钮和 storm watchdog 都会卡满 hiddenOutput 的 8s 超时且杀不掉进程。
+// 这里改用 iphlpapi!GetExtendedTcpTable 原生枚举内核监听表（纯内存查询、微秒级、
+// 不可能被外部工具卡住），先查 IPv4 再查 IPv6（服务以 :port 双栈监听时落在 v6 表）。
 func pidListeningOnPort(port int) int {
-	out, err := hiddenOutput("netstat", "-ano", "-p", "tcp")
-	if err != nil {
+	if pid := lookupListenerPID(port, windows.AF_INET,
+		unsafe.Sizeof(mibTCPRowOwnerPID{}),
+		unsafe.Offsetof(mibTCPRowOwnerPID{}.LocalPort),
+		unsafe.Offsetof(mibTCPRowOwnerPID{}.OwningPID)); pid > 0 {
+		return pid
+	}
+	return lookupListenerPID(port, windows.AF_INET6,
+		unsafe.Sizeof(mibTCP6RowOwnerPID{}),
+		unsafe.Offsetof(mibTCP6RowOwnerPID{}.LocalPort),
+		unsafe.Offsetof(mibTCP6RowOwnerPID{}.OwningPID))
+}
+
+// TCP_TABLE_OWNER_PID_LISTENER：只取处于 LISTENING 状态的监听项，避免误杀
+// 恰好连着该端口的客户端进程。
+const tcpTableOwnerPidListener = 3
+
+var procGetExtendedTcpTable = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetExtendedTcpTable")
+
+// mibTCPRowOwnerPID 对应 iphlpapi!MIB_TCPROW_OWNER_PID（IPv4，全 uint32 无填充）。
+type mibTCPRowOwnerPID struct {
+	State      uint32
+	LocalAddr  uint32
+	LocalPort  uint32
+	RemoteAddr uint32
+	RemotePort uint32
+	OwningPID  uint32
+}
+
+// mibTCP6RowOwnerPID 对应 iphlpapi!MIB_TCP6ROW_OWNER_PID（IPv6）。
+type mibTCP6RowOwnerPID struct {
+	LocalAddr     [16]byte
+	LocalScopeID  uint32
+	LocalPort     uint32
+	RemoteAddr    [16]byte
+	RemoteScopeID uint32
+	RemotePort    uint32
+	State         uint32
+	OwningPID     uint32
+}
+
+// lookupListenerPID 在指定地址族的监听表里查目标端口对应的属主 PID。
+// rowSize / portOff / pidOff 使 IPv4/IPv6 两套行结构共用同一段解析逻辑。
+func lookupListenerPID(port int, family uint32, rowSize, portOff, pidOff uintptr) int {
+	size := uint32(64 << 10)
+	for {
+		buf := make([]byte, size)
+		ret, _, _ := procGetExtendedTcpTable.Call(
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(unsafe.Pointer(&size)),
+			0, // bOrder = FALSE
+			uintptr(family),
+			tcpTableOwnerPidListener,
+			0,
+		)
+		if windows.Errno(ret) == windows.ERROR_INSUFFICIENT_BUFFER {
+			if size == 0 {
+				return 0
+			}
+			continue // size 已被内核写回为所需字节数，扩容重试
+		}
+		if ret != 0 {
+			return 0
+		}
+		n := *(*uint32)(unsafe.Pointer(&buf[0]))
+		base := uintptr(unsafe.Pointer(&buf[0])) + unsafe.Sizeof(uint32(0))
+		for i := uint32(0); i < n; i++ {
+			row := base + uintptr(i)*rowSize
+			// dwLocalPort 为网络字节序（网络序 16 位在低 16 位），转回主机序
+			lp := *(*uint32)(unsafe.Pointer(row + portOff))
+			if int(lp&0xff)<<8|int(lp>>8&0xff) != port {
+				continue
+			}
+			return int(*(*uint32)(unsafe.Pointer(row + pidOff)))
+		}
 		return 0
 	}
-	suffix := ":" + strconv.Itoa(port)
-	for _, line := range strings.Split(decodeGBK(out), "\n") {
-		f := strings.Fields(strings.TrimSpace(line))
-		if len(f) < 5 || !strings.EqualFold(f[3], "LISTENING") {
-			continue
-		}
-		if !strings.HasSuffix(f[1], suffix) {
-			continue
-		}
-		if pid, err := strconv.Atoi(f[4]); err == nil && pid > 0 {
-			return pid
-		}
-	}
-	return 0
 }
 
 func (m *Manager) note(id, msg string) {
@@ -885,6 +969,7 @@ func (m *Manager) stormWatchLoop() {
 			return
 		case <-t.C:
 			m.stormCheck()
+			m.halfDeadCheck()
 		}
 	}
 }
@@ -915,20 +1000,86 @@ func (m *Manager) stormCheck() {
 				ins.ID, delta, time.Since(lastReboot).Round(time.Second))
 			continue
 		}
-		m.stormRestart(ins)
+		m.stormRestart(ins, fmt.Sprintf("captcha storm 持续爆发（≥%d 次/分钟窗口）", stormRestartThreshold))
 	}
 }
 
+// halfDeadThreshold 连续 N 轮「端口可连但 /health 无响应」即判定半死并重启。
+const halfDeadThreshold = 2
+
+// halfDeadCheck 检测「半死桥」：TCP 端口能连上，但 /health 永不响应。
+//
+// 症状（2026-10-12 实测）：进程还活着、端口处于 LISTENING，/health 请求却永远
+// 不返回——面板探活撞满 10s 超时，显示成「端口已就绪，健康接口预热中」（看起来
+// 在线），网关却可能把请求路由过去导致整条链路挂住。这类桥重启是唯一有效手段。
+// 判定需连续两轮命中（间隔 60s），避开正在冷启动预热中的桥；并复用 stormRebootAt
+// 做 10 分钟防抖，与 storm 重启共享同一冷静期，防止两套 watchdog 互相打架。
+func (m *Manager) halfDeadCheck() {
+	for _, ins := range m.zcodeInstances() {
+		if !portAccept(ins.Port) || m.zcodeHealthOK(ins) {
+			// 端口未监听（本就没起）或健康接口正常：清零计数
+			m.mu.Lock()
+			delete(m.halfDead, ins.ID)
+			m.mu.Unlock()
+			continue
+		}
+		m.mu.Lock()
+		m.halfDead[ins.ID]++
+		n := m.halfDead[ins.ID]
+		lastReboot := m.stormRebootAt[ins.ID]
+		m.mu.Unlock()
+		if n < halfDeadThreshold {
+			log.Printf("bridge half-dead: %s 端口 %d 可连但 /health 无响应（第 %d 轮，阈值 %d）",
+				ins.ID, ins.Port, n, halfDeadThreshold)
+			continue
+		}
+		if time.Since(lastReboot) < stormRebootDebounce {
+			log.Printf("bridge half-dead: %s 半死持续，但距上次自动重启仅 %s，跳过",
+				ins.ID, time.Since(lastReboot).Round(time.Second))
+			continue
+		}
+		m.mu.Lock()
+		delete(m.halfDead, ins.ID)
+		m.mu.Unlock()
+		log.Printf("bridge half-dead: %s /health 连续 %d 轮无响应，判定半死，自动重启实例", ins.ID, n)
+		m.stormRestart(ins, "健康接口无响应（半死）")
+	}
+}
+
+// zcodeHealthOK 短超时探活 zcode 桥的 /health（半死探测专用，区别于面板 10s 探活）。
+func (m *Manager) zcodeHealthOK(ins Instance) bool {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/health", ins.Port), nil)
+	if err != nil {
+		return false
+	}
+	if m.bridgeKey != "" {
+		req.Header.Set("Authorization", "Bearer "+m.bridgeKey)
+	}
+	resp, err := m.probeClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return false
+	}
+	var h struct {
+		Status string `json:"status"`
+	}
+	return json.NewDecoder(resp.Body).Decode(&h) == nil && h.Status == "ok"
+}
+
 // stormRestart 自动重启单个 zcode 实例：Stop（按端口兜底杀）→ 间隔 2s → Start。
-// 全程记录到面板「最近操作」，失败只记日志不强求（下一轮检查会再试）。
-func (m *Manager) stormRestart(ins Instance) {
+// reason 说明触发原因（captcha storm / 半死），写入日志与面板「最近操作」。
+// 全程记录失败只写日志不强求（下一轮检查会再试）。
+func (m *Manager) stormRestart(ins Instance, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	m.mu.Lock()
 	m.stormRebootAt[ins.ID] = time.Now()
 	m.mu.Unlock()
-	log.Printf("bridge storm-watch: %s captcha storm 持续（≥%d 次/分钟窗口），自动重启实例", ins.ID, stormRestartThreshold)
-	m.note(ins.ID, fmt.Sprintf("自动重启：captcha storm 连续爆发（watchdog，%s）", time.Now().Format("15:04:05")))
+	log.Printf("bridge watchdog: %s %s，自动重启实例", ins.ID, reason)
+	m.note(ins.ID, fmt.Sprintf("自动重启：%s（watchdog，%s）", reason, time.Now().Format("15:04:05")))
 
 	if _, err := m.Stop(ctx, ins.ID); err != nil {
 		log.Printf("bridge storm-watch: %s 停止失败（可能本来就没在跑，继续尝试拉起）: %v", ins.ID, err)
@@ -947,13 +1098,30 @@ func (m *Manager) stormRestart(ins Instance) {
 // Windows 进程 / 计划任务 / 端口探测（命令行实现，无需管理员权限）
 // ---------------------------------------------------------------------------
 
-// procExists 进程名是否存在（tasklist 查询；探测频率为面板点击级，开销可忽略）。
+// procExists 进程名是否存在（原生 ToolHelp 快照，不走 tasklist 子进程）。
+//
+// 为什么不用 tasklist：2026-10-12 本机 tasklist 全部挂死不返回（杀掉又冒出新的），
+// 而面板探活是同步串行调用，于是「本地桥」列表永久转圈。原生快照是内存枚举，
+// 微秒级且不可能被外部工具卡住，同时省掉每次刷新一个控制台子进程。
 func procExists(name string) bool {
-	out, err := hiddenOutput("tasklist", "/FI", "IMAGENAME eq "+name, "/NH", "/FO", "CSV")
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(decodeGBK(out), name)
+	defer windows.CloseHandle(snap)
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	if err := windows.Process32First(snap, &e); err != nil {
+		return false
+	}
+	for {
+		if strings.EqualFold(windows.UTF16ToString(e.ExeFile[:]), name) {
+			return true
+		}
+		if err := windows.Process32Next(snap, &e); err != nil {
+			return false
+		}
+	}
 }
 
 // portAccept 端口是否可建立 TCP 连接。
