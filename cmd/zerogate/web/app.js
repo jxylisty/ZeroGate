@@ -74,11 +74,54 @@ const NO_CHECKIN_GROUPS = ["codebuddy", "zcode", "atria", "copilot", "doubao", "
 
 // ---------- 全局状态 ----------
 let state = null;
+// readOnly：只读大屏模式。只读监听（config.json → listen_dashboard）刻意不暴露 /api/state，
+// 前端据此收敛为“仅 Token 大屏”，隐藏其余管理入口。
+let readOnly = false;
+// switchTabFn：initTabs 内部 switchTab 的引用，供只读模式强制切换 Tab。
+let switchTabFn = null;
 
 // ---------- 数据加载 ----------
 async function loadState() {
-  state = await api("/api/state");
+  try {
+    state = await api("/api/state");
+  } catch (e) {
+    // 只读大屏监听不暴露 /api/state（含 API-Key）。用安全兜底状态填充，
+    // 避免下方各渲染函数解引用 state 抛错；随后由 applyReadOnlyMode 收敛界面。
+    readOnly = true;
+    state = {
+      version: "",
+      running: true,
+      listen_host: "127.0.0.1",
+      listen_port: 7863,
+      api_key: "",
+      autostart: false,
+      accounts: [],
+      checkin_times: [],
+      next_checkin: "",
+      growth_times: [],
+    };
+  }
   render();
+  if (readOnly) applyReadOnlyMode();
+}
+
+// applyReadOnlyMode 只读大屏模式：仅保留 Token 资产大屏，隐藏其余 Tab 与管理入口。
+function applyReadOnlyMode() {
+  const allowed = new Set(["usage"]);
+  document.querySelectorAll(".nav-tab").forEach(t => {
+    if (!allowed.has(t.dataset.tab)) t.style.display = "none";
+  });
+  document.querySelectorAll(".tab-pane").forEach(p => {
+    if (p.id !== "tab-usage") p.classList.remove("active");
+  });
+  const topInfo = document.querySelector(".top-info");
+  if (topInfo) topInfo.style.display = "none";
+  const btnDoubao = $("btnDoubao");
+  if (btnDoubao) btnDoubao.style.display = "none";
+  const title = document.querySelector(".brand .title");
+  if (title) title.innerHTML = 'ZeroGate <span class="ver">只读大屏</span>';
+  if ($("serverLine")) $("serverLine").textContent = "Token 资产大屏（只读）";
+  if (switchTabFn) switchTabFn("usage");
 }
 
 async function loadFees() {
@@ -1243,6 +1286,7 @@ function initTabs() {
     t.addEventListener("click", () => switchTab(t.dataset.tab));
   });
 
+  switchTabFn = switchTab;
   switchTab(savedTab);
 }
 

@@ -62,6 +62,13 @@ type Config struct {
 	// AttachAPI 由调用方注册管理 API 路由（internal/app 的 HandleAPI）
 	AttachAPI func(mux *http.ServeMux)
 
+	// ReadOnly 只读模式：仅注册 Token 大屏所需匿名读端点 + 静态 UI，
+	// 不注册 /v1/*、/status、/healthz，也不挂管理 API（避免 /api/state 泄露 API-Key）。
+	// 供局域网 Token 大屏专用监听使用。
+	ReadOnly bool
+	// AttachReadOnlyAPI 只读模式下由调用方注册只读 API 路由（internal/app 的 HandleReadOnlyAPI）。
+	AttachReadOnlyAPI func(mux *http.ServeMux)
+
 	// 兼容旧调用方：只传 Pool/Upstream 时等价于只启用 workbuddy。
 	Pool     *pool.Pool
 	Upstream provider.Upstream
@@ -208,12 +215,14 @@ func NewHandler(cfg Config) *Handler {
 		modelRedirects: cfg.ModelRedirects,
 		modelMerge:     cfg.ModelMerge,
 	}
-	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
-	h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.anthropicMessages))
-	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withAuth(h.anthropicCountTokens))
-	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
-	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
-	h.mux.HandleFunc("GET /healthz", h.healthz)
+	if !cfg.ReadOnly {
+		h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
+		h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.anthropicMessages))
+		h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withAuth(h.anthropicCountTokens))
+		h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+		h.mux.HandleFunc("GET /status", h.withAuth(h.status))
+		h.mux.HandleFunc("GET /healthz", h.healthz)
+	}
 	// 管理面板与用量大屏都要匿名读取（与其余 /api/* 管理端点一致），
 	// 之前挂在 withAuth 下导致面板 401 被吞、大屏恒为 0。
 	h.mux.HandleFunc("GET /api/token_usage", h.tokenUsage)
@@ -251,7 +260,11 @@ func NewHandler(cfg Config) *Handler {
 			http.FileServer(webFS).ServeHTTP(w, r)
 		}))
 	}
-	if cfg.AttachAPI != nil {
+	if cfg.ReadOnly {
+		if cfg.AttachReadOnlyAPI != nil {
+			cfg.AttachReadOnlyAPI(h.mux)
+		}
+	} else if cfg.AttachAPI != nil {
 		cfg.AttachAPI(h.mux)
 	}
 	return h

@@ -88,8 +88,12 @@ func ParseListen(s string) (Listen, error) {
 
 // Config 顶层配置。
 type Config struct {
-	Listen    Listen `json:"listen"`
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
+	Listen Listen `json:"listen"`
+	// ListenDashboard 只读 Token 大屏专用监听（可选）。Port>0 时额外起一个只读监听，
+	// 仅暴露 Token 大屏所需匿名读端点 + 静态 UI，不暴露管理 API（/api/state 含 API-Key）。
+	// 供手机 / 局域网访问大屏使用；主监听（Listen）仍保持仅回环。
+	ListenDashboard *Listen `json:"listen_dashboard,omitempty"`
+	APIKey          string  `json:"api_key"` // 空 = 不鉴权
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
 	Region    string `json:"region"`     // 只收 "cn"
@@ -369,6 +373,15 @@ func (c *Config) normalize() error {
 	}
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863
+	}
+	// listen_dashboard：仅当显式配置了 port>0 才启用只读大屏监听；
+	// port<=0 视为未启用，置 nil，避免误开一个空的监听端口。
+	if c.ListenDashboard != nil {
+		if c.ListenDashboard.Port <= 0 {
+			c.ListenDashboard = nil
+		} else if c.ListenDashboard.Host == "" {
+			c.ListenDashboard.Host = "0.0.0.0"
+		}
 	}
 	if c.Region == "" {
 		c.Region = "cn"

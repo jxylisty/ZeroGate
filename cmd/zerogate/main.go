@@ -409,6 +409,25 @@ func main() {
 		fatal("监听 %s 失败：%v\n\n可能已有一个实例正在运行。\n请用托盘“退出”，或先结束占用该端口的进程后再启动。", cfg.Listen.Addr(), err)
 	}
 
+	// 只读 Token 大屏监听（可选，config.json → listen_dashboard）。
+	// 与主监听隔离：仅暴露大屏读端点 + 静态 UI，不含管理 API（/api/state 含 API-Key）。
+	// 主监听保持 127.0.0.1 不动，因此开启它不会中断任何在途会话。
+	if cfg.ListenDashboard != nil && cfg.ListenDashboard.Port > 0 {
+		dashHandler := server.NewHandler(server.Config{
+			Runtimes:          runtimes,
+			APIKey:            cfg.APIKey,
+			WebUI:             sub,
+			UsageRecorder:     appInst.UsageRecorder(),
+			ReadOnly:          true,
+			AttachReadOnlyAPI: appInst.HandleReadOnlyAPI,
+		})
+		if err := appInst.StartDashboardServer(dashHandler); err != nil {
+			log.Printf("⚠️ 只读大屏监听 %s 启动失败：%v（主服务不受影响）", cfg.ListenDashboard.Addr(), err)
+		} else {
+			log.Printf("只读 Token 大屏已开启：http://%s/（仅大屏，无管理 API）", cfg.ListenDashboard.Addr())
+		}
+	}
+
 	// 非回环地址告警：绑定 0.0.0.0/局域网 IP 时，匿名可读端点（如 /api/token_usage）
 	// 与管理 API 会暴露给局域网内所有设备。
 	if h := cfg.Listen.Host; h != "" && h != "127.0.0.1" && h != "localhost" && h != "::1" {

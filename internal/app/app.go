@@ -80,8 +80,11 @@ type App struct {
 	clientKeys *clientkey.Store
 	auditRec   *audit.Recorder
 
-	mu      sync.Mutex // 保护 httpSrv / cfg 修改
+	mu      sync.Mutex // 保护 httpSrv / dashSrv / cfg 修改
 	httpSrv *http.Server
+	// dashSrv 只读 Token 大屏专用监听（cfg.ListenDashboard 启用时非空）。
+	// 与主监听隔离：仅暴露大屏读端点 + 静态 UI，不含管理 API。
+	dashSrv *http.Server
 
 	muLogin       sync.Mutex
 	loginBusy     bool
@@ -378,6 +381,9 @@ func (a *App) SetHandler(h *server.Handler) {
 	}
 }
 
+// UsageRecorder 返回 token 用量记录器，供只读大屏 handler 注入（否则 /api/token_usage 返回 501）。
+func (a *App) UsageRecorder() any { return a.usage }
+
 // ---------------------------------------------------------------------------
 // HTTP 服务
 // ---------------------------------------------------------------------------
@@ -419,13 +425,54 @@ func (a *App) Stop() {
 	a.mu.Lock()
 	srv := a.httpSrv
 	a.httpSrv = nil
+	dash := a.dashSrv
+	a.dashSrv = nil
 	a.mu.Unlock()
 	if srv != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}
+	if dash != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = dash.Shutdown(shutdownCtx)
+	}
 	a.Close()
+}
+
+// StartDashboardServer 在 cfg.ListenDashboard 上启动只读 Token 大屏监听。
+// 使用调用方传入的只读 handler（server.Config.ReadOnly=true，仅大屏读端点 + 静态 UI），
+// 与主监听完全隔离：不触碰主 httpSrv，因此不会中断任何在途会话。
+// 未配置 ListenDashboard（nil 或 Port<=0）时直接返回 nil。
+func (a *App) StartDashboardServer(h *server.Handler) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg.ListenDashboard == nil || a.cfg.ListenDashboard.Port <= 0 {
+		return nil
+	}
+	addr := a.cfg.ListenDashboard.Addr()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 30 * time.Second,
+	}
+	old := a.dashSrv
+	a.dashSrv = srv
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("dashboard serve %s: %v", addr, err)
+		}
+	}()
+	if old != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = old.Shutdown(shutdownCtx)
+	}
+	return nil
 }
 
 // Quit 退出整个程序（供外部显式调用；Web UI 已无对应按钮）。
@@ -1968,6 +2015,44 @@ func (a *App) csrfGuard(next http.Handler) http.Handler {
 func (a *App) HandleAPI(mux *http.ServeMux) {
 	apiMux := http.NewServeMux()
 	a.registerAPIRoutes(apiMux)
+	mux.Handle("/api/", a.csrfGuard(apiMux))
+}
+
+// HandleReadOnlyAPI 注册只读 Token 大屏所需的最小 API 路由（供 ListenDashboard 只读监听）。
+// 只挂匿名读端点：token_usage / audit 汇总与明细 / usage / assets。
+// 刻意不挂 /api/state（含 API-Key）、登录、账号操作、路由重定向等管理端点，
+// 确保局域网内只能“看大屏”，拿不到任何敏感信息或控制能力。
+func (a *App) HandleReadOnlyAPI(mux *http.ServeMux) {
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.GetAssets())
+	})
+	apiMux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
+		if a.usage != nil {
+			writeJSON(w, http.StatusOK, a.usage.JSON())
+		} else {
+			writeJSON(w, http.StatusOK, map[string]any{"accounts": []any{}})
+		}
+	})
+	apiMux.HandleFunc("GET /api/audit/summary", func(w http.ResponseWriter, r *http.Request) {
+		if a.auditRec == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"requests_today": 0, "tokens_today": 0, "fails_today": 0})
+			return
+		}
+		reqs, tokens, fails := a.auditRec.SummaryToday()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"requests_today": reqs,
+			"tokens_today":   tokens,
+			"fails_today":    fails,
+		})
+	})
+	apiMux.HandleFunc("GET /api/audit/analytics", func(w http.ResponseWriter, r *http.Request) {
+		if a.auditRec == nil {
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
+		writeJSON(w, http.StatusOK, a.auditRec.Analytics())
+	})
 	mux.Handle("/api/", a.csrfGuard(apiMux))
 }
 
