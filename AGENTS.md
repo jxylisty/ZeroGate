@@ -13,7 +13,7 @@
 |---|---|---|
 | 源码 + git 仓库 | `src-true\`（本文件所在） | remote `zero` = `github.com/jxylisty/ZeroGate`；master 跟踪 zero |
 | 常驻程序 | `src-true\daemon.exe` | 监听 `127.0.0.1:7863`，OpenAI 兼容端点 + 管理 API + Web UI |
-| 构建与启动 | `src-true\restart.bat` | 杀 7863 → `go build -ldflags "-H windowsgui" -o daemon.exe ./cmd/zerogate` → 启动（唯一入口链；**必须带 `-H windowsgui`**，否则双击/自启弹黑框） |
+| 构建与启动 | `src-true\restart.bat` | 杀 7863 → `go build -ldflags "-H windowsgui" -o daemon.exe ./cmd/zerogate` → 启动（唯一入口链；**必须带 `-H windowsgui`**，否则双击/自启弹黑框）。⚠️ 本机 `netstat`/`taskkill` 挂死致脚本卡死，重启方式见 **0C 第 5 条**（PowerShell 原生） |
 | 运行时数据 | `src-true\auths\`、`src-true\data\`、`src-true\config.json` | 单份；main.go 开头固定工作目录，从任何路径启动都指向这里 |
 | 工作区根目录 | `d:\wild-work\` | 仅有 `启动.bat`（调用 `src-true\restart.bat`）+ 独立资产；**不是**代码或数据存放地（根目录无 git，多仓库容器，见根 `AGENTS.md`/`OWNERS.md`） |
 
@@ -68,8 +68,24 @@
 4. **哪些改动要重启才生效**：`internal/**`、`cmd/**`、以及 `cmd/zerogate/web/**`
    （Web UI 经 `go:embed` 打进 exe，改 `app.js`/`style.css` 同样必须重启）。
    只有 `docs/**`、`AGENTS.md`、`research/**` 不需要。
-5. **确需重启时**：只走 `restart.bat`（唯一入口链，必须带 `-H windowsgui`）；
-   重启后立刻核对 `GET /healthz` 与 `GET /api/bridges`（4 个 zcode 实例应显示在线）。
+5. **确需重启时**：默认走 `restart.bat`（唯一入口链，必须带 `-H windowsgui`）。
+   **本机例外（2026-10-12）**：本机 `netstat` / `tasklist` / `taskkill` 三个控制台工具
+   **全部会挂死不返回**（`tasklist` 杀掉又冒新进程），而 `restart.bat` → `restart-gate.bat`
+   正是靠 `netstat | findstr` + `taskkill` 找/杀进程，所以在这台机器上**点重启必卡死**。
+   本机请改用 PowerShell 原生方式（等价于脚本三步，已验证可用）：
+
+   ```powershell
+   # cwd: D:\wild-work\src-true
+   Get-Process daemon -ErrorAction SilentlyContinue | Stop-Process -Force   # ① 杀旧进程
+   Start-Sleep 2
+   $env:ZCODE_BRIDGE_URL='http://127.0.0.1:18083'                          # ② 桥变量（与 restart-gate.bat 一致）
+   $env:ZCODE_BRIDGE_KEY='sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4'
+   go build -ldflags "-H windowsgui" -o daemon.exe ./cmd/zerogate           # ③ 构建（必须 -H windowsgui）
+   Start-Process -FilePath "D:\wild-work\src-true\daemon.exe" -WorkingDirectory "D:\wild-work\src-true"
+   ```
+
+   重启后立刻核对 `GET /healthz` 与 `GET /api/bridges`（zcode 实例应显示在线）。
+   注意：本机 `Get-NetTCPConnection` 也很慢/会挂，不要用它找监听 PID。
 
 ---
 

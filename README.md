@@ -407,6 +407,16 @@ GOOS=darwin GOARCH=arm64 go build -o dist/ZeroGate-darwin ./cmd/zerogate  # macO
 
 Windows 本机日常开发直接跑 `restart.bat`：杀 7863 端口 → 编译 → 启动，一条龙。
 
+> ⚠️ **本机例外（2026-10-12）**：这台机器 `netstat` / `tasklist` / `taskkill` 三个控制台工具会挂死不返回，`restart.bat` 依赖它们找/杀进程，所以**点重启必卡死**。请改用 PowerShell 原生方式（cwd 为 `src-true`）：
+>
+> ```powershell
+> Get-Process daemon -ErrorAction SilentlyContinue | Stop-Process -Force
+> Start-Sleep 2
+> $env:ZCODE_BRIDGE_URL='http://127.0.0.1:18083'; $env:ZCODE_BRIDGE_KEY='sk-04cEYoXf3mThKD0El6zG9jyrfc4YgZH4'
+> go build -ldflags "-H windowsgui" -o daemon.exe ./cmd/zerogate
+> Start-Process -FilePath "D:\wild-work\src-true\daemon.exe" -WorkingDirectory "D:\wild-work\src-true"
+> ```
+
 ### 代码地图
 
 ```
