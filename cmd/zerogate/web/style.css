@@ -94,6 +94,15 @@
 .stat-card .stat-val { font-size: 22px; font-weight: 700; color: var(--text); }
 .stat-card .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
+/* 积分消耗汇总（今日 / 近 7 天 / 近 14 天） */
+.credit-summary {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;
+}
+@media (max-width: 800px) {
+  .credit-summary { grid-template-columns: 1fr; }
+}
+.credit-summary .stat-card .stat-title .ic { color: var(--chart-credit); }
+
 /* ============================================================
    账号矩阵
    ============================================================ */
@@ -521,6 +530,18 @@ html[data-theme="dark"] .heatmap-cell.lvl0 { background: color-mix(in srgb, var(
   background: linear-gradient(90deg, var(--primary), var(--purple));
   transition: width .3s ease;
 }
+.rank-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.rank-meta .tag { display: inline-flex; align-items: center; gap: 4px; }
+.rank-meta .tag .ic { width: 12px; height: 12px; }
+
+/* 资产续航估算 */
+.asset-runway {
+  display: flex; align-items: center; gap: 6px; margin: 10px 0 14px;
+  font-size: 12px; color: var(--muted);
+}
+.asset-runway b { color: var(--text); }
+.runway-ic { display: inline-flex; align-items: center; }
+.runway-ic .ic { width: 14px; height: 14px; color: var(--chart-credit); }
 
 .empty-chart, .empty-hint {
   display: flex; align-items: center; justify-content: center; min-height: 160px;

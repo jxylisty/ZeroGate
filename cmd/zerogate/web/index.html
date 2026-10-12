@@ -262,6 +262,25 @@
       </div>
     </div>
 
+    <!-- 积分消耗汇总（今日 / 近 7 天 / 近 14 天，正负相抵后的净消耗） -->
+    <div class="credit-summary">
+      <div class="stat-card">
+        <div class="stat-title"><span data-ic="coins"></span>今日积分消耗</div>
+        <div class="stat-val" id="creditToday">0</div>
+        <div class="stat-sub" id="creditTodaySub">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title"><span data-ic="trend"></span>近 7 天积分消耗</div>
+        <div class="stat-val" id="credit7d">0</div>
+        <div class="stat-sub" id="credit7dSub">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title"><span data-ic="calendar"></span>近 14 天积分消耗</div>
+        <div class="stat-val" id="credit14d">0</div>
+        <div class="stat-sub" id="credit14dSub">—</div>
+      </div>
+    </div>
+
     <!-- 趋势图与渠道分布 -->
     <div class="analytics-row">
       <div class="analytics-col chart-col">
@@ -285,6 +304,34 @@
             <h2><span data-ic="pie"></span>白嫖渠道贡献占比</h2>
           </div>
           <div id="channelDonutWrap" class="donut-chart-container">
+            <div class="empty-chart">加载中…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 积分消耗趋势与节省走势 -->
+    <div class="analytics-row">
+      <div class="analytics-col chart-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2><span data-ic="coins"></span>近 14 天每日积分消耗趋势</h2>
+            <div class="legend-group">
+              <span class="legend-item"><i style="background:var(--chart-credit)"></i>净消耗 (积分)</span>
+              <span class="legend-item"><i style="background:var(--ok)"></i>入账 / 赠送</span>
+            </div>
+          </div>
+          <div id="creditTrendChartWrap" class="svg-chart-container">
+            <div class="empty-chart">加载中…</div>
+          </div>
+        </div>
+      </div>
+      <div class="analytics-col chart-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2><span data-ic="trend"></span>累计白嫖节省金额走势</h2>
+          </div>
+          <div id="savingsTrendChartWrap" class="svg-chart-container">
             <div class="empty-chart">加载中…</div>
           </div>
         </div>
@@ -326,6 +373,7 @@
           <div class="asset-hero-sub" id="assetHeroCredits"></div>
         </div>
       </div>
+      <div class="asset-runway" id="assetRunway"></div>
       <div style="overflow-x:auto;">
         <table class="data-table" id="assetsTable">
           <thead>
@@ -359,10 +407,10 @@
       <div class="analytics-col">
         <div class="panel">
           <div class="panel-head">
-            <h2><span data-ic="key"></span>客户端用量排行 TOP 5</h2>
+            <h2><span data-ic="alert"></span>积分即将耗尽账号</h2>
           </div>
-          <div id="topClientsList" class="rank-list">
-            <div class="empty-hint">暂无客户端调用数据</div>
+          <div id="lowBalanceList" class="rank-list">
+            <div class="empty-hint">暂无账号积分数据</div>
           </div>
         </div>
       </div>

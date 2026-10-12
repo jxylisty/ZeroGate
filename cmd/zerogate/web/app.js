@@ -1596,6 +1596,7 @@ async function loadAssets() {
     const res = await fetch("/api/assets");
     if (!res.ok) return;
     const data = await res.json();
+    _lastAssets = data;
     const conv = data.channels.filter(c => c.convertible);
     const convTokens = conv.reduce((s, c) => s + (c.tokens || 0), 0);
     const convCredits = conv.reduce((s, c) => s + (c.credits || 0), 0);
@@ -1618,6 +1619,7 @@ async function loadAssets() {
           <td>${note}</td>
         </tr>`;
     }).join("");
+    renderRunway();
   } catch (e) { /* 面板加载失败静默 */ }
 }
 
@@ -1641,6 +1643,10 @@ function localYMD(d) {
   return t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
 }
 
+// 最近一次 usage / assets 响应缓存：积分续航估算需要两者同时在场，任一先到都可重算。
+let _lastAccounts = [];
+let _lastAssets = null;
+
 async function loadTokenAnalytics() {
   try {
     const [tokenData, auditAnalytics, usageData] = await Promise.all([
@@ -1649,13 +1655,20 @@ async function loadTokenAnalytics() {
       api("/api/usage").catch(() => ({ accounts: [] })),
     ]);
 
+    const accounts = usageData.accounts || [];
+    _lastAccounts = accounts;
+
     renderTokenHero(tokenData.summary || {}, tokenData.models || {}, tokenData.channels || {});
-    renderTokenTrend(auditAnalytics.daily_trend || [], usageData.accounts || []);
-    renderTokenHeatmap(auditAnalytics.daily_trend || [], usageData.accounts || []);
+    renderCreditSummary(accounts);
+    renderCreditTrend(accounts);
+    renderTokenTrend(auditAnalytics.daily_trend || [], accounts);
+    renderSavingsTrend(auditAnalytics.daily_trend || [], tokenData.models || {});
+    renderTokenHeatmap(auditAnalytics.daily_trend || [], accounts);
     renderChannelDonut(tokenData.channels || auditAnalytics.channel_tokens || {});
-    renderTopModels(auditAnalytics.top_models || [], tokenData.summary || {});
-    renderTopClients(auditAnalytics.top_clients || []);
-    renderAcctProductivity(usageData.accounts || []);
+    renderTopModels(tokenData.models || {}, auditAnalytics.top_models || []);
+    renderLowBalanceAccounts(accounts);
+    renderAcctProductivity(accounts);
+    renderRunway();
   } catch (e) {
     console.error("loadTokenAnalytics error:", e);
   }
@@ -1820,6 +1833,149 @@ function renderTokenHero(summary, models, channels) {
     $("tkHeroSavings").textContent = `约为你白嫖节省: ￥${savingsYuan} (约 $${savingsUsdStr})`;
     $("tkHeroSavings").title = tip;
   }
+}
+
+// 1.5 积分消耗汇总卡片（今日 / 近 7 天 / 近 14 天，正负相抵后的净消耗）
+function renderCreditSummary(accounts) {
+  const acc = accounts || [];
+
+  // 逐日汇总各账号 delta：正=消耗，负=签到入账，求和即当日净消耗
+  const dayDelta = {};
+  acc.forEach(a => (a.daily || []).forEach(d => {
+    if (!d.day) return;
+    dayDelta[d.day] = (dayDelta[d.day] || 0) + Number(d.delta || 0);
+  }));
+
+  const today = acc.reduce((s, a) => s + Number(a.today || 0), 0);
+
+  const now = new Date();
+  let sum7 = 0, sum14 = 0;
+  for (let i = 0; i < 14; i++) {
+    const v = dayDelta[localYMD(new Date(now.getTime() - i * 86400 * 1000))] || 0;
+    sum14 += v;
+    if (i < 7) sum7 += v;
+  }
+
+  const setVal = (id, v) => { const el = $(id); if (el) el.textContent = fmtTotal(Math.round(v)); };
+  const setSub = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+  const netTip = "正负相抵后的净消耗：已扣除签到/赠送等入账（负 delta）";
+
+  setVal("creditToday", today);
+  setVal("credit7d", sum7);
+  setVal("credit14d", sum14);
+
+  setSub("creditTodaySub", `${localYMD(now)} 当日`);
+  setSub("credit7dSub", `日均 ${fmtTotal(Math.round(sum7 / 7))}/天`);
+  setSub("credit14dSub", `日均 ${fmtTotal(Math.round(sum14 / 14))}/天`);
+
+  ["creditToday", "credit7d", "credit14d"].forEach(id => {
+    const el = $(id);
+    if (el) el.title = netTip;
+  });
+}
+
+// 1.6 近 14 天每日积分消耗趋势（SVG 柱状图：正 delta 消耗向上、负 delta 入账向下）
+function renderCreditTrend(accounts) {
+  const wrap = $("creditTrendChartWrap");
+  if (!wrap) return;
+
+  const dayMap = {};
+  (accounts || []).forEach(a => {
+    (a.daily || []).forEach(d => {
+      if (!d.day) return;
+      const m = dayMap[d.day] || (dayMap[d.day] = { delta: 0, remain: 0 });
+      m.delta += Number(d.delta || 0);
+      m.remain += Number(d.remain || 0);
+    });
+  });
+
+  const now = new Date();
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const key = localYMD(new Date(now.getTime() - i * 86400 * 1000));
+    const m = dayMap[key] || { delta: 0, remain: 0 };
+    days.push({ day: key, label: key.slice(5), delta: m.delta, remain: m.remain });
+  }
+
+  const hasPos = days.some(d => d.delta > 0);
+  const hasNeg = days.some(d => d.delta < 0);
+  if (!hasPos && !hasNeg) {
+    wrap.innerHTML = `<div class="empty-chart">暂无按日积分数据，跑起业务后这里会显示每日消耗</div>`;
+    return;
+  }
+
+  const maxPos = Math.max(...days.map(d => Math.max(0, d.delta)));
+  const maxNeg = Math.max(...days.map(d => Math.max(0, -d.delta)));
+
+  const W = 740, H = 220;
+  const padLeft = 55, padRight = 15, padTop = 20, padBottom = 28;
+  const chartW = W - padLeft - padRight;
+  const chartH = H - padTop - padBottom;
+
+  // 0 轴位置：有正有负按比例分割；仅单侧时贴边，把空间全让给实际方向
+  let zeroY = padTop + chartH, scalePos = 0, scaleNeg = 0;
+  if (hasPos && hasNeg) {
+    const total = maxPos + maxNeg || 1;
+    zeroY = padTop + (maxPos / total) * chartH;
+    scalePos = chartH / total;
+    scaleNeg = chartH / total;
+  } else if (hasPos) {
+    scalePos = chartH / (maxPos || 1);
+  } else {
+    zeroY = padTop;
+    scaleNeg = chartH / (maxNeg || 1);
+  }
+  const yOf = v => v >= 0 ? zeroY - v * scalePos : zeroY + (-v) * scaleNeg;
+
+  const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
+  const cCredit = cssVar("--chart-credit") || cssVar("--danger");
+  const cOk = cssVar("--ok");
+
+  let grid = "";
+  const ticks = [];
+  if (hasPos) { ticks.push(maxPos, maxPos / 2); }
+  if (hasNeg) { ticks.push(-maxNeg, -maxNeg / 2); }
+  ticks.forEach(v => {
+    const y = yOf(v);
+    grid += `
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">${fmtTotal(Math.round(Math.abs(v)))}</text>
+    `;
+  });
+
+  const stepW = chartW / days.length;
+  const barW = Math.max(16, Math.min(30, stepW * 0.62));
+  let bars = "";
+  days.forEach((d, i) => {
+    const x = padLeft + i * stepW + (stepW - barW) / 2;
+    const dTxt = d.delta >= 0
+      ? `净消耗 ${fmtTotal(Math.round(d.delta))} 积分`
+      : `净入账 ${fmtTotal(Math.round(-d.delta))} 积分`;
+    const tip = `${d.day}\n${dTxt}\n当日末余额 ${fmtTotal(Math.round(d.remain))}`;
+    let rect = "";
+    if (d.delta > 0) {
+      const h = d.delta * scalePos;
+      rect = `<rect x="${x}" y="${zeroY - h}" width="${barW}" height="${h}" fill="${cCredit}" rx="2" />`;
+    } else if (d.delta < 0) {
+      const h = (-d.delta) * scaleNeg;
+      rect = `<rect x="${x}" y="${zeroY}" width="${barW}" height="${h}" fill="${cOk}" rx="2" />`;
+    }
+    bars += `
+      <g class="chart-bar-group">
+        <title>${esc(tip)}</title>
+        ${rect}
+        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
+      </g>
+    `;
+  });
+
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
+      ${grid}
+      <line x1="${padLeft}" y1="${zeroY}" x2="${W - padRight}" y2="${zeroY}" stroke="${cssVar("--border-strong") || cGrid}" stroke-width="1" />
+      ${bars}
+    </svg>
+  `;
 }
 
 // 2. 近 14 天 Token 每日消耗趋势（SVG 堆叠柱状图）
@@ -2062,53 +2218,59 @@ function renderChannelDonut(channelTokens) {
   `;
 }
 
-// 4. 热门模型白嫖榜 TOP 5（渠道色条形 + 输入/输出堆叠段 + 行内节省金额）
-function renderTopModels(models, summary) {
+// 4. 热门模型白嫖榜 TOP 5（按各模型独立折算的节省金额降序，条形堆叠=输入/缓存/输出）
+function renderTopModels(models, topModels) {
   const box = $("topModelsList");
   if (!box) return;
-  if (!models || models.length === 0) {
+
+  // 优先用 /api/token_usage 的 models（含每模型 prompt/completion/cache_read，可精确折算）；
+  // 结构不足时退回 audit 的 top_models（仅有总量，按全局比例拆分）。
+  let rows = [];
+  const modelEntries = Object.entries(models || {});
+  if (modelEntries.length > 0) {
+    rows = modelEntries.map(([name, m]) => {
+      const prompt = Number(m.prompt_tokens || 0);
+      const comp = Number(m.completion_tokens || 0);
+      const cache = Number(m.cache_read_tokens || 0);
+      const usd = priceUSD(name, prompt, comp, cache);
+      return { model: name, prompt, comp, cache, total: Number(m.total_tokens || 0), usd };
+    });
+  } else if (Array.isArray(topModels) && topModels.length > 0) {
+    const tot = topModels.reduce((s, m) => s + Number(m.total_tokens || 0), 0) || 1;
+    rows = topModels.map(m => {
+      const total = Number(m.total_tokens || 0);
+      const prompt = total * 0.9, comp = total * 0.1, cache = 0;
+      return { model: m.model, prompt, comp, cache, total, usd: priceUSD(m.model, prompt, comp, cache) };
+    });
+  }
+
+  if (rows.length === 0) {
     box.innerHTML = `<div class="empty-hint">暂无模型调用数据</div>`;
     return;
   }
-  const top5 = models.slice(0, 5);
-  const max = top5[0].total_tokens || 1;
+
+  rows.sort((a, b) => b.usd - a.usd);
+  const top5 = rows.slice(0, 5);
+  const maxUsd = top5[0].usd || 1;
   const badges = ["top1", "top2", "top3", "", ""];
   const medals = ["🥇", "🥈", "🥉"];
 
-  // 全局 输入/输出/缓存 占比：把各模型的总量拆成三段后按官方单价折算节省金额
-  const tot = Number(summary && summary.total_tokens || 0);
-  const shares = tot > 0 ? {
-    p: Number(summary.prompt_tokens || 0) / tot,
-    c: Number(summary.completion_tokens || 0) / tot,
-    cr: Number(summary.cache_read_tokens || 0) / tot,
-  } : null;
-
   box.innerHTML = top5.map((m, idx) => {
-    const pct = Math.max(8, Math.round((m.total_tokens / max) * 100));
-    const chSeg = (share, cls) =>
-      share > 0.01 ? `<i class="rank-seg ${cls}" style="width:${Math.round(share * 100)}%"></i>` : "";
-    const pBar = shares
-      ? chSeg(shares.p, "seg-p") + chSeg(shares.cr, "seg-cr") + chSeg(shares.c, "seg-c")
+    const pct = Math.max(8, Math.round((m.usd / maxUsd) * 100));
+    const denom = m.prompt + m.cache + m.comp || 1;
+    const seg = (v, cls) =>
+      v > 0 ? `<i class="rank-seg ${cls}" style="width:${(v / denom) * 100}%"></i>` : "";
+    const pBar = seg(m.prompt, "seg-p") + seg(m.cache, "seg-cr") + seg(m.comp, "seg-c");
+    const savingsHtml = m.usd > 0.0001
+      ? `<span class="rank-save" title="按该模型官方 API 单价独立折算的等值节省">省 ¥${(m.usd * USD_CNY).toFixed(2)}</span>`
       : "";
-    let savingsHtml = "";
-    if (shares) {
-      const usd = priceUSD(
-        m.model,
-        m.total_tokens * shares.p,
-        m.total_tokens * shares.c,
-        m.total_tokens * shares.cr,
-      );
-      if (usd > 0.0001) {
-        savingsHtml = `<span class="rank-save" title="按官方 API 单价折算的等值节省">省 ¥${(usd * USD_CNY).toFixed(2)}</span>`;
-      }
-    }
     return `
       <div class="rank-item">
         <span class="rank-num ${badges[idx]}">${idx < 3 ? medals[idx] : idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name" title="${esc(m.model)}">${esc(m.model)}</span>
-            <span class="rank-val">${fmtTokens(m.total_tokens)} <span class="rank-cnt">${m.req_count || 0} 次</span>${savingsHtml}</span>
+            <span class="rank-val">${fmtTokens(m.total)}${savingsHtml}</span>
           </div>
           <div class="rank-bar-bg">
             <div class="rank-bar-fill" style="width:${pct}%">${pBar}</div>
@@ -2119,35 +2281,188 @@ function renderTopModels(models, summary) {
   }).join("");
 }
 
-// 5. 客户端排行 TOP 5
-function renderTopClients(clients) {
-  const box = $("topClientsList");
+// 5. 积分即将耗尽账号榜（按到期紧迫度排序，条形=剩余积分占全池比例，越短越告急）
+function renderLowBalanceAccounts(accounts) {
+  const box = $("lowBalanceList");
   if (!box) return;
-  if (!clients || clients.length === 0) {
-    box.innerHTML = `<div class="empty-hint">暂无客户端调用数据</div>`;
+  if (!accounts || accounts.length === 0) {
+    box.innerHTML = `<div class="empty-hint">暂无账号积分数据</div>`;
     return;
   }
-  const top5 = clients.slice(0, 5);
-  const max = top5[0].total_tokens || 1;
+
+  const now = Math.floor(Date.now() / 1000);
+  const totalRemain = accounts.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0) || 1;
+
+  // 排序：最快到期的优先（长期有效视为最不紧迫）；同日到期则余额少者优先
+  const rank = a => (a.expire_at && a.expire_at > 0 && a.expire_at < 4102444800) ? a.expire_at : Infinity;
+  const list = [...accounts].sort((a, b) => {
+    const ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    return Number(a.remain || 0) - Number(b.remain || 0);
+  });
+
+  const top5 = list.slice(0, 5);
   const badges = ["top1", "top2", "top3", "", ""];
 
-  box.innerHTML = top5.map((c, idx) => {
-    const pct = Math.max(8, Math.round((c.total_tokens / max) * 100));
+  box.innerHTML = top5.map((a, idx) => {
+    const gm = groupMeta(a.kind);
+    const exp = formatExpire(a.expire_at);
+    const remain = Math.max(0, Number(a.remain || 0));
+    const pct = Math.max(3, Math.round((remain / totalRemain) * 100));
+    const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
+    const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
     return `
-      <div class="rank-item">
+      <div class="rank-item" title="${esc(a.uid)}">
         <span class="rank-num ${badges[idx]}">${idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
-            <span class="rank-name">${esc(c.client || "Default")}</span>
-            <span class="rank-val">${fmtTokens(c.total_tokens)} <span style="font-weight:400;color:var(--muted)">(${c.req_count || 0}次)</span></span>
+            <span class="rank-name"><span class="badge ${gm.cls}">${gm.name}</span> ${esc(a.nickname || shortUid(a.uid))}</span>
+            <span class="rank-val">${fmtTotal(remain)} 积分</span>
           </div>
           <div class="rank-bar-bg">
-            <div class="rank-bar-fill" style="width:${pct}%; background:linear-gradient(90deg, var(--chart-comp), var(--ok))"></div>
+            <div class="rank-bar-fill" style="width:${pct}%; ${fillCls}"></div>
+          </div>
+          <div class="rank-meta">
+            <span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>
+            <code class="prod-uid">${esc(shortUid(a.uid))}</code>
           </div>
         </div>
       </div>
     `;
   }).join("");
+}
+
+// 5.5 累计白嫖节省金额走势（每日 Token 构成 × priceUSD 逐日折算后累加，SVG 面积折线）
+function renderSavingsTrend(auditDaily, tokenModels) {
+  const wrap = $("savingsTrendChartWrap");
+  if (!wrap) return;
+
+  // 每日 Token 构成（audit_daily 落盘，含 prompt/completion/cache）
+  const dayMap = {};
+  (auditDaily || []).forEach(d => {
+    if (!d.day) return;
+    dayMap[d.day] = {
+      prompt: Number(d.prompt || 0),
+      comp: Number(d.completion || 0),
+      cache: Number(d.cache || 0),
+    };
+  });
+
+  const now = new Date();
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const key = localYMD(new Date(now.getTime() - i * 86400 * 1000));
+    const m = dayMap[key] || { prompt: 0, comp: 0, cache: 0 };
+    // 单日节省：无按日模型明细，按全局口径 + 中档单价折算（与 Hero 兜底同逻辑）
+    const usd = priceUSD("", m.prompt, m.comp, m.cache);
+    days.push({ day: key, label: key.slice(5), usd, tokens: m.prompt + m.comp + m.cache });
+  }
+
+  const anyData = days.some(d => d.usd > 0.0001);
+  if (!anyData) {
+    wrap.innerHTML = `<div class="empty-chart">暂无按日 Token 数据，跑起业务后这里会显示累计节省走势</div>`;
+    return;
+  }
+
+  let cum = 0;
+  days.forEach(d => { cum += d.usd; d.cum = cum; });
+  const maxCum = cum || 1;
+
+  const W = 740, H = 220;
+  const padLeft = 60, padRight = 15, padTop = 20, padBottom = 28;
+  const chartW = W - padLeft - padRight;
+  const chartH = H - padTop - padBottom;
+
+  const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
+  const cOk = cssVar("--ok");
+
+  const stepW = chartW / Math.max(1, days.length - 1);
+  const xOf = i => padLeft + i * stepW;
+  const yOf = v => padTop + chartH - (v / maxCum) * chartH;
+
+  let grid = "";
+  for (let step = 0; step <= 4; step++) {
+    const v = (maxCum / 4) * step;
+    const y = yOf(v);
+    grid += `
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">¥${(v * USD_CNY).toFixed(1)}</text>
+    `;
+  }
+
+  const pts = days.map((d, i) => `${xOf(i)},${yOf(d.cum)}`).join(" ");
+  const areaPath = `M ${xOf(0)},${padTop + chartH} L ${days.map((d, i) => `${xOf(i)},${yOf(d.cum)}`).join(" L ")} L ${xOf(days.length - 1)},${padTop + chartH} Z`;
+
+  let dots = "";
+  days.forEach((d, i) => {
+    const tip = `${d.day}\n当日节省 ¥${(d.usd * USD_CNY).toFixed(2)}\n累计节省 ¥${(d.cum * USD_CNY).toFixed(2)}`;
+    dots += `
+      <g class="chart-bar-group">
+        <title>${esc(tip)}</title>
+        <circle cx="${xOf(i)}" cy="${yOf(d.cum)}" r="6" fill="transparent" />
+        <circle cx="${xOf(i)}" cy="${yOf(d.cum)}" r="2.5" fill="${cOk}" />
+      </g>
+    `;
+  });
+
+  let xLabels = "";
+  days.forEach((d, i) => {
+    xLabels += `<text x="${xOf(i)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>`;
+  });
+
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="savingsGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${cOk}" stop-opacity="0.35" />
+          <stop offset="100%" stop-color="${cOk}" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+      ${grid}
+      <path d="${areaPath}" fill="url(#savingsGrad)" stroke="none" />
+      <polyline points="${pts}" fill="none" stroke="${cOk}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      ${dots}
+      ${xLabels}
+    </svg>
+  `;
+}
+
+// 5.6 资产续航估算（可折算积分余额 ÷ 近 7 日日均消耗 → 预计可用天数）
+function renderRunway() {
+  const el = $("assetRunway");
+  if (!el) return;
+
+  const accounts = _lastAccounts || [];
+  const assets = _lastAssets;
+
+  // 近 7 日净消耗（正负相抵）与有效天数
+  const dayDelta = {};
+  accounts.forEach(a => (a.daily || []).forEach(d => {
+    if (!d.day) return;
+    dayDelta[d.day] = (dayDelta[d.day] || 0) + Number(d.delta || 0);
+  }));
+  const now = new Date();
+  let sum7 = 0;
+  for (let i = 0; i < 7; i++) {
+    sum7 += dayDelta[localYMD(new Date(now.getTime() - i * 86400 * 1000))] || 0;
+  }
+  const avg = sum7 / 7;
+
+  // 可折算积分余额：优先 /api/assets 的 convertible 合计，缺失时退回账号 remain 之和
+  let balance = null;
+  if (assets && Array.isArray(assets.channels)) {
+    balance = assets.channels.filter(c => c.convertible).reduce((s, c) => s + Number(c.credits || 0), 0);
+  }
+  if (balance == null) {
+    balance = accounts.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
+  }
+
+  if (avg <= 0.5) {
+    el.innerHTML = `<span class="runway-ic">${I.clock}</span>按近 7 日均耗估算：消耗极低，积分可长期续航`;
+    return;
+  }
+  const daysLeft = Math.floor(balance / avg);
+  el.innerHTML = `<span class="runway-ic">${I.clock}</span>按近 7 日均耗 <b>${fmtTotal(Math.round(avg))}</b> 积分/天，当前可折算积分预计续航约 <b>${daysLeft}</b> 天`;
 }
 
 // 6. 账号 Token 生产力榜单（卡片流可视化：排名徽章 + 占比条形 + 关键数字右对齐）
