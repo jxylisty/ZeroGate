@@ -195,7 +195,11 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 	}
 	var resp struct {
 		ConfigInfoList []struct {
-			ConfigName    string `json:"config_name"`
+			ConfigName          string           `json:"config_name"`
+			ContextWindowTokens map[string]int64 `json:"context_window_tokens"` // 形如 {"dev":200000}；少数自定义模型含 {"dev":..,"max":..}
+			ModelDetailList     []struct {
+				MaxTokens int64 `json:"max_tokens"` // 输出上限（prompt_max_tokens 为输入上限，二者之和≈总窗口）
+			} `json:"model_detail_list"`
 			DisplayConfig struct {
 				DisplayName   string `json:"display_name"`
 				IsCustomModel bool   `json:"is_custom_model"` // 自定义模型（第三方代理）需额外授权
@@ -220,7 +224,14 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			continue
 		}
 		seen[name] = true
-		out = append(out, provider.ModelInfo{ID: name, Name: cfg.DisplayConfig.DisplayName})
+		mi := provider.ModelInfo{ID: name, Name: cfg.DisplayConfig.DisplayName}
+		// 上报上下文窗口/输出上限：此前只取 config_name，导致 /v1/models 缺 context_length，
+		// 客户端按小窗口兜底，稍长上下文即触发自动压缩（任务效率骤降）。
+		mi.ContextWindow = pickContextWindow(cfg.ContextWindowTokens)
+		if len(cfg.ModelDetailList) > 0 {
+			mi.MaxTokens = cfg.ModelDetailList[0].MaxTokens
+		}
+		out = append(out, mi)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
@@ -306,6 +317,23 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		return nil, fmt.Errorf("trae pricing api returned empty")
 	}
 	return out, nil
+}
+
+// pickContextWindow 从 context_window_tokens 中选上下文窗口：
+// 优先 dev（常规档），其次 max（自定义模型的高档位），最后回退任一正值。
+func pickContextWindow(m map[string]int64) int64 {
+	if v := m["dev"]; v > 0 {
+		return v
+	}
+	if v := m["max"]; v > 0 {
+		return v
+	}
+	for _, v := range m {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 // parseTraeFeatures 解析 features JSON 字符串中的 consumption_rate.rate。
@@ -631,6 +659,8 @@ func truncate(s string, n int) string {
 }
 
 // GrowthTravel / GrowthLottery / GrowthTasksDetailed 成长中心功能暂未支持。
-func (c *Client) GrowthTravel(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthLottery(a *auth.Auth) error                              { return nil }
-func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult   { return provider.GrowthTasksResult{Message: "暂未支持"} }
+func (c *Client) GrowthTravel(a *auth.Auth) error  { return nil }
+func (c *Client) GrowthLottery(a *auth.Auth) error { return nil }
+func (c *Client) GrowthTasksDetailed(a *auth.Auth) provider.GrowthTasksResult {
+	return provider.GrowthTasksResult{Message: "暂未支持"}
+}
