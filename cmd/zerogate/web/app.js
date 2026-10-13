@@ -2418,7 +2418,7 @@ function renderTopModels(models, topModels) {
   }).join("");
 }
 
-// 5. 账号余额与到期榜（token 族 / 积分族分组，各自按到期紧迫度排序，条形=组内余额占比）
+// 5. 账号余额与到期榜（统一 token 计量，按到期紧迫度排序，条形=余额占全池比例）
 function renderLowBalanceAccounts(accounts) {
   const box = $("lowBalanceList");
   if (!box) return;
@@ -2437,27 +2437,25 @@ function renderLowBalanceAccounts(accounts) {
     return Number(a.remain || 0) - Number(b.remain || 0);
   };
 
-  // token 族与积分族分组渲染：单位不同，跨族排序/求和都无意义
-  const group = (title, list, unit) => {
-    if (list.length === 0) return "";
-    const totalRemain = list.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0) || 1;
-    const top = [...list].sort(sortFn).slice(0, 5);
-    const badges = ["top1", "top2", "top3", "", ""];
-    const rows = top.map((a, idx) => {
-      const gm = groupMeta(a.kind);
-      const exp = formatExpire(a.expire_at);
-      const remain = Math.max(0, Number(a.remain || 0));
-      const pct = Math.max(3, Math.round((remain / totalRemain) * 100));
-      const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
-      const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
-      const val = unit === "token" ? `${fmtTokens(remain)} token` : `${fmtTotal(remain)} 积分`;
-      return `
+  // 统一以 token 计量展示（与余额续航口径一致），单一列表、不按族分组
+  const totalRemain = all.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0) || 1;
+  const list = [...all].sort(sortFn);
+  const badges = ["top1", "top2", "top3", "", ""];
+
+  box.innerHTML = list.slice(0, 8).map((a, idx) => {
+    const gm = groupMeta(a.kind);
+    const exp = formatExpire(a.expire_at);
+    const remain = Math.max(0, Number(a.remain || 0));
+    const pct = Math.max(3, Math.round((remain / totalRemain) * 100));
+    const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
+    const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
+    return `
       <div class="rank-item" title="${esc(a.uid)}">
-        <span class="rank-num ${badges[idx]}">${idx + 1}</span>
+        <span class="rank-num ${badges[idx] || ""}">${idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name"><span class="badge ${gm.cls}">${gm.name}</span> ${esc(a.nickname || shortUid(a.uid))}</span>
-            <span class="rank-val">${val}</span>
+            <span class="rank-val">${fmtTokens(remain)} token</span>
           </div>
           <div class="rank-bar-bg">
             <div class="rank-bar-fill" style="width:${pct}%; ${fillCls}"></div>
@@ -2468,13 +2466,7 @@ function renderLowBalanceAccounts(accounts) {
           </div>
         </div>
       </div>`;
-    }).join("");
-    return `<div class="rank-group"><div class="rank-group-title">${esc(title)}</div>${rows}</div>`;
-  };
-
-  box.innerHTML =
-    group("Token 族 · 余额(token) 与到期", all.filter(a => isTokenUnit(a.kind)), "token") +
-    group("积分族 · 余额(积分) 与到期", all.filter(a => !isTokenUnit(a.kind)), "credit");
+  }).join("");
 }
 
 // 5.5 累计白嫖节省金额走势（每日 Token 构成 × priceUSD 逐日折算后累加，SVG 面积折线）
@@ -2572,7 +2564,7 @@ function renderSavingsTrend(auditDaily, tokenModels) {
   `;
 }
 
-// 5.6 资产续航估算（按计量单位分族：Token 族算 token 天数，积分族给净变动）
+// 5.6 资产续航估算（统一 token 口径：余额合计 ÷ 近 7 日日均 token 消耗 → 预计可用天数）
 function renderRunway() {
   const el = $("assetRunway");
   if (!el) return;
@@ -2581,44 +2573,28 @@ function renderRunway() {
   const now = new Date();
   const key = i => localYMD(new Date(now.getTime() - i * 86400 * 1000));
 
-  // Token 族：余额(token) ÷ 近 7 日 Token 日均消耗 → 剩余天数
-  const tokenAcc = accounts.filter(a => isTokenUnit(a.kind));
-  const tokenBalance = tokenAcc.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
-  const rToken7 = {};
-  tokenAcc.forEach(a => (a.tokens || []).forEach(t => {
+  // 统一 token 口径：余额合计（含 zcode/atria 等以 token 计的渠道）÷ 近 7 日全渠道 token 日均消耗
+  const balance = accounts.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
+  const dayTok = {};
+  accounts.forEach(a => (a.tokens || []).forEach(t => {
     if (!t.day) return;
-    rToken7[t.day] = (rToken7[t.day] || 0) + Number(t.total || 0) + Number(t.cache_read || 0);
+    dayTok[t.day] = (dayTok[t.day] || 0) + Number(t.total || 0) + Number(t.cache_read || 0);
   }));
-  let token7 = 0;
-  for (let i = 0; i < 7; i++) token7 += rToken7[key(i)] || 0;
-  const tokenAvg = token7 / 7;
-
-  // 积分族：近 7 日积分净变动（正=消耗，负=入账），积分无法折算 token，仅供参考
-  const creditAcc = accounts.filter(a => !isTokenUnit(a.kind));
-  const creditBalance = creditAcc.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
-  const cDelta = {};
-  creditAcc.forEach(a => (a.daily || []).forEach(d => {
-    if (!d.day) return;
-    cDelta[d.day] = (cDelta[d.day] || 0) + Number(d.delta || 0);
-  }));
-  let credit7 = 0;
-  for (let i = 0; i < 7; i++) credit7 += cDelta[key(i)] || 0;
+  let tok7 = 0;
+  for (let i = 0; i < 7; i++) tok7 += dayTok[key(i)] || 0;
+  const avg = tok7 / 7;
 
   const ic = `<span class="runway-ic">${I.clock}</span>`;
-  let html = "";
-  if (tokenBalance > 0 || tokenAvg > 0) {
-    if (tokenAvg <= 0.5) {
-      html += `<div class="asset-runway">${ic}<b>Token 族</b>：现有 ${fmtTokens(tokenBalance)} token，近 7 日消耗极低，可长期续航</div>`;
-    } else {
-      const days = Math.floor(tokenBalance / tokenAvg);
-      html += `<div class="asset-runway">${ic}<b>Token 族</b>：现有 ${fmtTokens(tokenBalance)} token，近 7 日日均耗 <b>${fmtTokens(Math.round(tokenAvg))}</b>，预计续航约 <b>${days}</b> 天</div>`;
-    }
+  if (balance <= 0 && avg <= 0) {
+    el.innerHTML = `<div class="asset-runway">${ic}暂无足够的余额 / 消耗数据用于续航估算</div>`;
+    return;
   }
-  if (creditBalance > 0 || credit7 !== 0) {
-    const sign = credit7 >= 0 ? "净消耗" : "净入账";
-    html += `<div class="asset-runway">${ic}<b>积分族</b>：现有 ${fmtTotal(creditBalance)} 积分，近 7 日${sign} <b>${fmtTotal(Math.abs(Math.round(credit7)))}</b>（含签到；无法折算 token，仅供参考）</div>`;
+  if (avg <= 0.5) {
+    el.innerHTML = `<div class="asset-runway">${ic}现有 <b>${fmtTokens(balance)}</b> token，近 7 日消耗极低，可长期续航</div>`;
+    return;
   }
-  el.innerHTML = html || `<div class="asset-runway">${ic}暂无足够的余额 / 消耗数据用于续航估算</div>`;
+  const days = Math.floor(balance / avg);
+  el.innerHTML = `<div class="asset-runway">${ic}现有 <b>${fmtTokens(balance)}</b> token，近 7 日日均耗 <b>${fmtTokens(Math.round(avg))}</b>，预计续航约 <b>${days}</b> 天</div>`;
 }
 
 // 6. 账号 Token 生产力榜单（卡片流可视化：排名徽章 + 占比条形 + 关键数字右对齐）
