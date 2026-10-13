@@ -10,6 +10,7 @@
 document.documentElement.dataset.uiStyle =
   localStorage.getItem("zg_ui_style") || "visual-novel";
 </script>
+<script src="./theme.js?v={{timestamp}}"></script>
 <link rel="stylesheet" href="./theme.css?v={{timestamp}}">
 <link rel="stylesheet" href="./style.css?v={{timestamp}}">
 </head>
@@ -36,6 +37,7 @@ document.documentElement.dataset.uiStyle =
         <span class="proto-tag openai">OpenAI</span>
         <code id="apiAddr"><span class="val">http://127.0.0.1:7863/v1</span></code>
         <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
+        <span data-ic="pencil" id="btnEditApiConfig" class="icon-edit" style="width:13px;height:13px;margin-left:4px;" title="配置监听主机与端口"></span>
       </div>
       <div class="protocol-pill" id="anthropicAddrPill" title="点击复制 Anthropic 格式端点（Claude Code/Cline 专用）">
         <span class="proto-tag anthropic">Claude</span>
@@ -45,7 +47,7 @@ document.documentElement.dataset.uiStyle =
       <div class="protocol-pill" id="apiKeyDisplayPill" style="max-width:180px;" title="点击复制 API-Key">
         <span style="font-size:10px;color:var(--muted);font-weight:700;">KEY</span>
         <code id="apiKeyDisplay"><span class="val"></span></code>
-        <span data-ic="pencil" class="icon-edit" style="width:13px;height:13px;" title="修改密钥"></span>
+        <span data-ic="pencil" id="btnEditApiKey" class="icon-edit" style="width:13px;height:13px;" title="修改密钥"></span>
       </div>
     </div>
 

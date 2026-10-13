@@ -201,13 +201,15 @@ code, pre, kbd { font-family: var(--mono); }
 .empty { color: var(--muted); text-align: center; padding: 24px 0; font-size: 14px; }
 
 /* ---------- SVG 图标 ---------- */
+[data-ic] { display: inline-flex; align-items: center; justify-content: center; line-height: 1; flex-shrink: 0; vertical-align: middle; }
 .ic { width: 1em; height: 1em; display: inline-block; flex-shrink: 0; vertical-align: -0.15em; }
-.icon-link .ic { width: 16px; height: 16px; vertical-align: middle; }
-.icon-op .ic { width: 14px; height: 14px; vertical-align: middle; }
-.tag .ic { width: .88em; height: .88em; vertical-align: -0.15em; }
-.nav-tab .ic { width: 15px; height: 15px; vertical-align: -0.2em; }
-.panel-head .ic { width: 16px; height: 16px; vertical-align: -0.2em; color: var(--primary); }
-.btn .ic { width: 15px; height: 15px; vertical-align: -0.2em; }
+.icon-link .ic, .icon-link [data-ic] > .ic { width: 16px; height: 16px; vertical-align: middle; }
+.icon-op .ic, .icon-op [data-ic] > .ic { width: 14px; height: 14px; vertical-align: middle; }
+.dock-item-btn .ic, .dock-item-btn [data-ic] > .ic { width: 16px; height: 16px; vertical-align: middle; }
+.tag .ic, .tag [data-ic] > .ic { width: .88em; height: .88em; vertical-align: -0.15em; }
+.nav-tab .ic, .nav-tab [data-ic] > .ic { width: 15px; height: 15px; vertical-align: -0.2em; }
+.panel-head .ic, .panel-head [data-ic] > .ic { width: 16px; height: 16px; vertical-align: -0.2em; color: var(--primary); }
+.btn .ic, .btn [data-ic] > .ic { width: 15px; height: 15px; vertical-align: -0.2em; }
 .ch-card-head .ic, .fee-icon .ic { vertical-align: middle; }
 
 /* ---------- 按钮 ---------- */

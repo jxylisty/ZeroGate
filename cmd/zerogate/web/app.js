@@ -213,6 +213,7 @@ function render() {
   renderAccounts();
   renderTimes();
   renderGrowthTimes();
+  if (window.__fillIcons) window.__fillIcons();
 }
 
 function renderTopbar() {
@@ -1207,18 +1208,39 @@ function bind() {
   $("atriaOverlay").onclick = (e) => { if (e.target === $("atriaOverlay")) closeAtriaDialog(); };
   $("atriaKey").addEventListener("keydown", (e) => { if (e.key === "Enter") addAtriaKey(); });
 
-  $("apiAddr").onclick = () => {
+  $("apiAddr").onclick = (e) => {
+    e.stopPropagation();
     const v = $("apiAddr").querySelector(".val").textContent;
     copyText(v, "OpenAI 接口地址");
   };
-  $("apiKeyDisplay").onclick = () => {
+  $("apiKeyDisplay").onclick = (e) => {
+    e.stopPropagation();
     const v = $("apiKeyDisplay").querySelector(".val").textContent;
     if (v === "（无鉴权）") { toast("当前未设置 API-Key"); return; }
     copyText(v, "API-Key");
   };
   // 修改图标点击弹配置对话框（不触发复制）
-  document.querySelectorAll(".icon-edit")[0].onclick = openApiConfig;
-  document.querySelectorAll(".icon-edit")[1].onclick = openApiKey;
+  const btnEditApiConfig = $("btnEditApiConfig");
+  if (btnEditApiConfig) {
+    btnEditApiConfig.onclick = (e) => {
+      e.stopPropagation();
+      openApiConfig();
+    };
+  }
+  const btnEditApiKey = $("btnEditApiKey");
+  if (btnEditApiKey) {
+    btnEditApiKey.onclick = (e) => {
+      e.stopPropagation();
+      openApiKey();
+    };
+  }
+  const edits = document.querySelectorAll(".icon-edit");
+  if (!btnEditApiKey && edits.length > 0) {
+    edits[edits.length - 1].onclick = (e) => {
+      e.stopPropagation();
+      openApiKey();
+    };
+  }
 
   $("btnHelp").onclick = openHelp;
   $("btnAbout").onclick = openAbout;
@@ -1642,7 +1664,11 @@ async function resetRedirects() {
 (async function init() {
   if (window.__fillIcons) window.__fillIcons();
   initTabs();
-  bind();
+  try {
+    bind();
+  } catch (err) {
+    console.error("bind 异常:", err);
+  }
   renderAddMenu();
   setupAuditLogsPolling();
   document.addEventListener("zg:themechange", () => {
@@ -1653,8 +1679,10 @@ async function resetRedirects() {
     await loadDashboard();
     await loadFees();
   } catch (e) {
+    console.error("加载状态异常:", e);
     toast("无法连接后台服务：" + e.message);
   }
+  if (window.__fillIcons) window.__fillIcons();
 })();
 
 function fmtTokens(n) {
