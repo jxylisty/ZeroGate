@@ -5,14 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ZeroGate 管理面板</title>
 <link rel="icon" href="./favicon.ico?v={{timestamp}}">
-<script src="./theme.js?v={{timestamp}}"></script>
+<script>
+/* 先于样式表定主题与 UI 风格，避免闪色 */
+document.documentElement.dataset.uiStyle =
+  localStorage.getItem("zg_ui_style") || "visual-novel";
+</script>
 <link rel="stylesheet" href="./theme.css?v={{timestamp}}">
 <link rel="stylesheet" href="./style.css?v={{timestamp}}">
 </head>
 <body>
+
+<!-- 🌸 视觉小说全景壁纸与暗角遮罩层 -->
+<div id="zgVnBgLayer"><div id="zgVnBgMask"></div></div>
+
 <div id="app">
 
-  <!-- 顶部 -->
+  <!-- 顶部悬浮控制岛 -->
   <header class="topbar">
     <div class="brand">
       <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
@@ -21,19 +29,30 @@
         <div class="sub" id="serverLine"></div>
       </div>
     </div>
-    <div class="top-info">
-      <div class="info-cell">
-        <span class="info-label">OpenAI接口</span>
-        <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
-        <span class="icon-edit" title="修改"><span data-ic="pencil"></span></span>
+
+    <!-- 双协议端点速显（OpenAI + Anthropic） -->
+    <div class="protocol-pill-group">
+      <div class="protocol-pill" id="apiAddrPill" title="点击复制 OpenAI 格式端点">
+        <span class="proto-tag openai">OpenAI</span>
+        <code id="apiAddr"><span class="val">http://127.0.0.1:7863/v1</span></code>
+        <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
       </div>
-      <div class="info-cell">
-        <span class="info-label">API-Key</span>
-        <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
-        <span class="icon-edit" title="修改"><span data-ic="pencil"></span></span>
+      <div class="protocol-pill" id="anthropicAddrPill" title="点击复制 Anthropic 格式端点（Claude Code/Cline 专用）">
+        <span class="proto-tag anthropic">Claude</span>
+        <code id="anthropicAddr"><span class="val">http://127.0.0.1:7863</span></code>
+        <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
+      </div>
+      <div class="protocol-pill" id="apiKeyDisplayPill" style="max-width:180px;" title="点击复制 API-Key">
+        <span style="font-size:10px;color:var(--muted);font-weight:700;">KEY</span>
+        <code id="apiKeyDisplay"><span class="val"></span></code>
+        <span data-ic="pencil" class="icon-edit" style="width:13px;height:13px;" title="修改密钥"></span>
       </div>
     </div>
+
     <div class="top-icons">
+      <button class="icon-link" id="btnWpToggle" title="壁纸与二次元风格切换">
+        <span data-ic="image"></span>
+      </button>
       <span class="icon-link" id="btnDoubao" title="豆包保活续期"><span data-ic="heart"></span></span>
       <span class="icon-link" id="btnHelp" title="帮助"><span data-ic="help"></span></span>
       <span class="icon-link" id="btnAbout" title="关于"><span data-ic="info"></span></span>
@@ -44,8 +63,34 @@
     </div>
   </header>
 
-  <!-- 顶部导航 Tab -->
-  <nav class="nav-tabs" id="navTabs">
+  <!-- 壁纸切换浮窗 -->
+  <div class="wp-selector-card" id="wpCard">
+    <div style="font-size:13px;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
+      <span>全景动漫壁纸库</span>
+      <button id="btnCloseWp" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;">✕</button>
+    </div>
+    <div class="wp-grid-mini">
+      <div class="wp-thumb" data-wp="linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)" style="background: linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%);">
+        <span>星穹夜幕</span>
+      </div>
+      <div class="wp-thumb" data-wp="linear-gradient(135deg, #09203f 0%, #537895 100%)" style="background: linear-gradient(135deg, #09203f 0%, #537895 100%);">
+        <span>深海冷空</span>
+      </div>
+      <div class="wp-thumb" data-wp="linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%)" style="background: linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%);">
+        <span>晨曦暖樱</span>
+      </div>
+      <div class="wp-thumb" data-wp="linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)" style="background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);">
+        <span>赛博流光</span>
+      </div>
+    </div>
+    <div>
+      <input class="input" id="inpCustomWp" placeholder="自定义图片 URL (https://...)" style="font-size:11px;margin-top:4px;" />
+      <button class="btn small primary" id="btnSaveCustomWp" style="width:100%;margin-top:6px;">应用壁纸</button>
+    </div>
+  </div>
+
+  <!-- 隐藏原生 nav-tabs，由底部 Cyber Command Dock 统一调度控制 -->
+  <nav class="nav-tabs" id="navTabs" style="display:none;">
     <button class="nav-tab active" data-tab="dashboard"><span data-ic="grid"></span>概览看板</button>
     <button class="nav-tab" data-tab="arsenal"><span data-ic="bot"></span>账号矩阵</button>
     <button class="nav-tab" data-tab="router"><span data-ic="shuffle"></span>模型路由</button>
@@ -57,6 +102,21 @@
     <button class="nav-tab" data-tab="models"><span data-ic="layers"></span>渠道模型</button>
     <button class="nav-tab" data-tab="settings"><span data-ic="settings"></span>系统设置</button>
   </nav>
+
+  <!-- 🌸 底部赛博悬浮指挥坞 (Cyber Command Dock) —— 彻底干掉常规侧栏/死板顶栏 -->
+  <nav id="cyberCommandDock">
+    <button class="dock-item-btn active" data-tab="dashboard"><span data-ic="grid"></span>概览看板</button>
+    <button class="dock-item-btn" data-tab="arsenal"><span data-ic="bot"></span>账号矩阵</button>
+    <button class="dock-item-btn" data-tab="router"><span data-ic="shuffle"></span>模型路由</button>
+    <button class="dock-item-btn" data-tab="logs"><span data-ic="scroll"></span>调用流水</button>
+    <button class="dock-item-btn" data-tab="clients"><span data-ic="key"></span>客户端 Key</button>
+    <button class="dock-item-btn" data-tab="usage"><span data-ic="trend"></span>Token 资产</button>
+    <button class="dock-item-btn" data-tab="growth"><span data-ic="gift"></span>成长中心</button>
+    <button class="dock-item-btn" data-tab="bridges"><span data-ic="link"></span>本地桥</button>
+    <button class="dock-item-btn" data-tab="models"><span data-ic="layers"></span>渠道模型</button>
+    <button class="dock-item-btn" data-tab="settings"><span data-ic="settings"></span>系统设置</button>
+  </nav>
+
 
   <!-- Tab 1: 概览看板 -->
   <div class="tab-pane active" id="tab-dashboard">
@@ -83,21 +143,30 @@
       </div>
     </div>
 
-    <!-- 快速接入指引 -->
+    <!-- 快速接入指引（支持 OpenAI + Anthropic 原生双协议） -->
     <section class="panel">
       <div class="panel-head">
-        <h2><span data-ic="link"></span>客户端接入指引</h2>
+        <h2><span data-ic="link"></span>客户端接入指引（双协议自适应）</h2>
       </div>
       <div style="font-size:13px; line-height:1.8; color:var(--text)">
         <p>在 Cursor、Windsurf、Cherry Studio、NextChat、Claude Code 等工具中配置：</p>
-        <div class="code-block" style="margin:10px 0;">
-          <div><strong>Base URL</strong>: <code id="quickBaseUrl" style="color:var(--primary)">http://127.0.0.1:7863/v1</code></div>
-          <div style="margin-top:4px;"><strong>API Key</strong>: <code id="quickApiKey" style="color:var(--primary)">WildWorkAPI</code> (或在「客户端 Key」生成独立专属 Key)</div>
-          <div style="margin-top:4px;"><strong>模型名推荐</strong>: <code>claude-3-5-sonnet</code>、<code>claude-3-7-sonnet</code>、<code>deepseek-chat</code>、<code>deepseek-reasoner</code>、<code>gpt-4o</code></div>
+        <div class="code-block" style="margin:10px 0; display:flex; flex-direction:column; gap:8px;">
+          <div>
+            <span class="proto-tag openai" style="font-size:10px; padding:2px 6px; border-radius:4px; font-weight:700;">OpenAI 协议</span>
+            <span style="margin-left:6px;"><strong>Base URL</strong>: <code id="quickBaseUrl" style="color:var(--primary)">http://127.0.0.1:7863/v1</code></span>
+          </div>
+          <div>
+            <span class="proto-tag anthropic" style="font-size:10px; padding:2px 6px; border-radius:4px; font-weight:700;">Anthropic 协议</span>
+            <span style="margin-left:6px;"><strong>Base URL</strong>: <code id="quickAnthropicUrl" style="color:#f472b6">http://127.0.0.1:7863</code></span>
+            <span style="font-size:11px; color:var(--muted); margin-left:6px;">(适用 Claude Code / Cline / Roo Code)</span>
+          </div>
+          <div><strong>API Key</strong>: <code id="quickApiKey" style="color:var(--primary)">WildWorkAPI</code> (或在「客户端 Key」生成独立专属 Key)</div>
+          <div><strong>推荐模型</strong>: <code>claude-3-5-sonnet</code>、<code>claude-3-7-sonnet</code>、<code>deepseek-chat</code>、<code>deepseek-reasoner</code>、<code>gpt-4o</code></div>
         </div>
-        <p class="hint"><span data-ic="lightbulb"></span>提示：请求标准模型名将自动触发跨平台智能故障转移（Fallback），免去手动切换渠道前缀。</p>
+        <p class="hint"><span data-ic="lightbulb"></span>提示：请求标准模型名将自动触发跨平台智能故障转移（Fallback），Anthropic 协议端点原生支持，免去任何第三方反代适配器。</p>
       </div>
     </section>
+
 
     <!-- 渠道健康概况 -->
     <section class="panel">

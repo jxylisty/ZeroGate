@@ -746,3 +746,235 @@ html[data-theme="dark"] .heatmap-cell.lvl0 { background: color-mix(in srgb, var(
 .dropdown-item:hover { background: var(--primary-soft); }
 .dropdown-item .di-name { font-weight: 600; }
 .dropdown-item .di-hint { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+/* ═══════════════════════════════════════════════════════════════
+   🌸 赛博悬浮指挥舱 · 全景沉浸（Floating Command Dock Mode）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 全景动漫壁纸与柔光遮罩层 */
+#zgVnBgLayer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: none;
+  pointer-events: none;
+}
+#zgVnBgMask {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 25%, rgba(15, 12, 30, 0.4) 0%, rgba(10, 8, 20, 0.82) 100%);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+html[data-ui-style="visual-novel"] #zgVnBgLayer {
+  display: block;
+}
+html[data-ui-style="visual-novel"] body {
+  background: #0d0e1a;
+  min-height: 100vh;
+}
+
+/* 顶部悬浮控制岛（取代老式死板顶栏） */
+html[data-ui-style="visual-novel"] .topbar {
+  background: rgba(22, 19, 42, 0.72);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 20px;
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
+  padding: 14px 22px;
+  margin-bottom: 22px;
+}
+
+/* 顶部端点双协议药丸（OpenAI + Anthropic） */
+.protocol-pill-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  max-width: 760px;
+}
+.protocol-pill {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.protocol-pill:hover {
+  background: rgba(255, 117, 151, 0.12);
+  border-color: rgba(255, 117, 151, 0.4);
+}
+.protocol-pill .proto-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.proto-tag.openai {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+.proto-tag.anthropic {
+  background: rgba(244, 114, 182, 0.2);
+  color: #f472b6;
+  border: 1px solid rgba(244, 114, 182, 0.4);
+}
+.protocol-pill code {
+  color: #e2e8f0;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* ══════════════ 底部赛博悬浮指挥坞 (Command Dock) ══════════════ */
+#cyberCommandDock {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 17, 38, 0.82);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 24px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55), 0 0 20px rgba(255, 117, 151, 0.2);
+  z-index: 1000;
+  max-width: 96vw;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#cyberCommandDock::-webkit-scrollbar { display: none; }
+
+.dock-item-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 8px 14px;
+  border-radius: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+  position: relative;
+}
+.dock-item-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-2px);
+}
+.dock-item-btn.active {
+  background: linear-gradient(135deg, #ff7597 0%, #c084fc 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 18px rgba(255, 117, 151, 0.45);
+}
+.dock-item-btn .ic {
+  width: 16px;
+  height: 16px;
+}
+
+/* 视觉小说面板透光感 */
+html[data-ui-style="visual-novel"] .panel {
+  background: rgba(24, 21, 44, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+html[data-ui-style="visual-novel"] .stat-card {
+  background: rgba(24, 21, 44, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  position: relative;
+  overflow: hidden;
+}
+html[data-ui-style="visual-novel"] .stat-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #ff7597, #c084fc);
+  opacity: 0.8;
+}
+
+/* 壁纸切换器抽屉/弹层卡片 */
+.wp-selector-card {
+  position: fixed;
+  right: 24px;
+  top: 76px;
+  width: 280px;
+  background: rgba(20, 17, 38, 0.95);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  z-index: 1002;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+.wp-selector-card.open {
+  display: flex;
+}
+.wp-grid-mini {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.wp-thumb {
+  height: 56px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  padding: 3px 6px;
+  transition: all 0.2s;
+}
+.wp-thumb span {
+  font-size: 10px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.wp-thumb:hover {
+  transform: scale(1.03);
+  border-color: #ff7597;
+}
+.wp-thumb.active {
+  border-color: #ff7597;
+  box-shadow: 0 0 0 2px #ff7597;
+}
+

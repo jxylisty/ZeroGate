@@ -223,14 +223,18 @@ function renderTopbar() {
   const host = (state.listen_host === "0.0.0.0" || state.listen_host === "" || state.listen_host === "::")
     ? "127.0.0.1" : state.listen_host;
   const apiURL = `http://${host}:${state.listen_port}/v1`;
-  $("apiAddr").querySelector(".val").textContent = apiURL;
+  const anthropicURL = `http://${host}:${state.listen_port}`;
+  
+  if ($("apiAddr")) $("apiAddr").querySelector(".val").textContent = apiURL;
+  if ($("anthropicAddr")) $("anthropicAddr").querySelector(".val").textContent = anthropicURL;
 
   const key = state.api_key;
-  $("apiKeyDisplay").querySelector(".val").textContent = key === "" ? "（无鉴权）" : key;
+  if ($("apiKeyDisplay")) $("apiKeyDisplay").querySelector(".val").textContent = key === "" ? "（无鉴权）" : key;
 
   // 开机自启开关回写真实状态（注册表为准），避免页面刷新后总显示关闭
-  $("chkAutostart").checked = !!state.autostart;
+  if ($("chkAutostart")) $("chkAutostart").checked = !!state.autostart;
 }
+
 
 function formatExpire(expireAt) {
   // 兜底：旧 state 持久化过上游"永不到期"哨兵值（9999-12-31 = 253402214400），
@@ -1262,14 +1266,16 @@ function bind() {
   if ($("btnRefreshAssets")) $("btnRefreshAssets").onclick = loadAssets;
 }
 
-// ---------- Tab 导航控制 ----------
+// ---------- Tab 导航控制（同时接管原生 nav-tab 与 悬浮 Command Dock） ----------
 function initTabs() {
   const tabs = document.querySelectorAll(".nav-tab");
+  const dockBtns = document.querySelectorAll(".dock-item-btn");
   const panes = document.querySelectorAll(".tab-pane");
   const savedTab = localStorage.getItem("zg_active_tab") || "dashboard";
 
   function switchTab(name) {
     tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+    dockBtns.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     panes.forEach(p => p.classList.toggle("active", p.id === `tab-${name}`));
     localStorage.setItem("zg_active_tab", name);
     if (name === "dashboard") loadDashboard();
@@ -1285,10 +1291,84 @@ function initTabs() {
   tabs.forEach(t => {
     t.addEventListener("click", () => switchTab(t.dataset.tab));
   });
+  dockBtns.forEach(b => {
+    b.addEventListener("click", () => switchTab(b.dataset.tab));
+  });
 
   switchTabFn = switchTab;
   switchTab(savedTab);
+
+  // 初始化壁纸与双协议药丸复制
+  initWallpaperSystem();
+  initProtocolPills();
 }
+
+function initWallpaperSystem() {
+  const wpCard = $("wpCard");
+  const btnToggle = $("btnWpToggle");
+  const btnClose = $("btnCloseWp");
+
+  if (btnToggle && wpCard) {
+    btnToggle.onclick = () => wpCard.classList.toggle("open");
+  }
+  if (btnClose && wpCard) {
+    btnClose.onclick = () => wpCard.classList.remove("open");
+  }
+
+  function setBg(wp) {
+    localStorage.setItem("zg_wallpaper", wp);
+    const layer = $("zgVnBgLayer");
+    if (!layer) return;
+    if (!wp) {
+      layer.style.backgroundImage = "linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)";
+    } else if (wp.startsWith("linear-gradient") || wp.startsWith("radial-gradient")) {
+      layer.style.backgroundImage = wp;
+    } else {
+      layer.style.backgroundImage = `url('${wp}')`;
+    }
+  }
+
+  const cur = localStorage.getItem("zg_wallpaper") || "linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)";
+  setBg(cur);
+
+  document.querySelectorAll(".wp-thumb").forEach(th => {
+    th.onclick = () => {
+      const wp = th.dataset.wp;
+      setBg(wp);
+      toast("已更换全景动漫壁纸");
+      if (wpCard) wpCard.classList.remove("open");
+    };
+  });
+
+  const btnSave = $("btnSaveCustomWp");
+  if (btnSave) {
+    btnSave.onclick = () => {
+      const v = ($("inpCustomWp").value || "").trim();
+      if (!v) { toast("请输入图片网址"); return; }
+      setBg(v);
+      toast("已应用自定义壁纸");
+      if (wpCard) wpCard.classList.remove("open");
+    };
+  }
+}
+
+function initProtocolPills() {
+  const copyPill = (id, label) => {
+    const el = $(id);
+    if (!el) return;
+    el.onclick = () => {
+      const val = el.querySelector(".val") ? el.querySelector(".val").textContent : el.textContent;
+      navigator.clipboard.writeText(val.trim()).then(() => {
+        toast(`已复制 ${label}: ${val.trim()}`);
+      });
+    };
+  };
+
+  copyPill("apiAddrPill", "OpenAI 端点");
+  copyPill("anthropicAddrPill", "Anthropic / Claude 端点");
+  copyPill("apiKeyDisplayPill", "API Key");
+}
+
 
 // ---------- 概览看板数据 ----------
 async function loadDashboard() {
@@ -1324,9 +1404,11 @@ async function loadDashboard() {
     const key = state ? state.api_key : "WildWorkAPI";
     const dispHost = (host === "0.0.0.0" || host === "" || host === "::") ? "127.0.0.1" : host;
     if ($("quickBaseUrl")) $("quickBaseUrl").textContent = `http://${dispHost}:${port}/v1`;
+    if ($("quickAnthropicUrl")) $("quickAnthropicUrl").textContent = `http://${dispHost}:${port}`;
     if ($("quickApiKey")) $("quickApiKey").textContent = key || "（无鉴权）";
   } catch (e) { /* ignore */ }
 }
+
 
 // ---------- 实时调用审计流水 ----------
 let auditLogsTimer = null;
