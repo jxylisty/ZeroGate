@@ -1706,7 +1706,6 @@ async function loadAssets() {
     const res = await fetch("/api/assets");
     if (!res.ok) return;
     const data = await res.json();
-    _lastAssets = data;
     const conv = data.channels.filter(c => c.convertible);
     const convTokens = conv.reduce((s, c) => s + (c.tokens || 0), 0);
     const convCredits = conv.reduce((s, c) => s + (c.credits || 0), 0);
@@ -1737,15 +1736,25 @@ async function loadAssets() {
 // Token 资产大屏与高级图表引擎 (纯原生 SVG，零依赖，高颜值)
 // ============================================================
 
+// unit 标记该渠道余额的计量单位：token = 余额即 token（可折算，消耗取上游 usage 真实用量）；
+// credit = 积分/额度（限免·按次·签到，无法折算 token）。语义对齐 internal/app/app.go
+// GetAssets 的 Convertible：跨族绝不求和（zcode 2.88 亿 token 与 qoder 2100 积分不可相加）。
 const CHANNEL_METAS = {
-  workbuddy: { name: "WorkBuddy", color: "#7c3aed" },
-  traework:  { name: "TraeWork",  color: "#2563eb" },
-  qoder:     { name: "Qoder",     color: "#0891b2" },
-  codebuddy: { name: "CodeBuddy", color: "#16a34a" },
-  zcode:     { name: "ZCode",     color: "#6366f1" },
-  autoclaw:  { name: "AutoClaw",  color: "#0d9488" },
-  atria:     { name: "Atria",     color: "#0284c7" },
+  workbuddy: { name: "WorkBuddy", color: "#7c3aed", unit: "credit" },
+  traework:  { name: "TraeWork",  color: "#2563eb", unit: "credit" },
+  qoder:     { name: "Qoder",     color: "#0891b2", unit: "credit" },
+  codebuddy: { name: "CodeBuddy", color: "#16a34a", unit: "credit" },
+  zcode:     { name: "ZCode",     color: "#6366f1", unit: "token"  },
+  autoclaw:  { name: "AutoClaw",  color: "#0d9488", unit: "credit" },
+  atria:     { name: "Atria",     color: "#0284c7", unit: "token"  },
 };
+
+// 渠道计量族：token 族（余额即 token）与积分族（积分/额度）。未知渠道默认按积分族。
+function unitOf(kind) {
+  const m = CHANNEL_METAS[kind];
+  return (m && m.unit) || "credit";
+}
+function isTokenUnit(kind) { return unitOf(kind) === "token"; }
 
 // 本地时区 YMD（后端按日聚合用本地日期，不能用 toISOString 的 UTC 日期）
 function localYMD(d) {
@@ -1753,9 +1762,8 @@ function localYMD(d) {
   return t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
 }
 
-// 最近一次 usage / assets 响应缓存：积分续航估算需要两者同时在场，任一先到都可重算。
+// 最近一次 usage 响应缓存：续航估算用（loadAssets 与 loadTokenAnalytics 都触发重算）
 let _lastAccounts = [];
-let _lastAssets = null;
 
 async function loadTokenAnalytics() {
   try {
@@ -1945,52 +1953,71 @@ function renderTokenHero(summary, models, channels) {
   }
 }
 
-// 1.5 积分消耗汇总卡片（今日 / 近 7 天 / 近 14 天，正负相抵后的净消耗）
+// 1.5 消耗/变动汇总卡片：积分族与 Token 族分列（计量单位不同，绝不合并求和）
+//   - 积分族：余额为积分/额度，看「积分净变动」（正=消耗，负=签到/赠送入账）
+//   - Token 族：余额即 token，看「真实 Token 消耗」（上游 usage 上报的 tokens[]，
+//     而非余额 delta——后者被套餐重置/发放事件（如 ±3 亿）主导，不是消耗）
 function renderCreditSummary(accounts) {
   const acc = accounts || [];
+  const credit = acc.filter(a => !isTokenUnit(a.kind));
+  const token = acc.filter(a => isTokenUnit(a.kind));
+  const now = new Date();
+  const key = i => localYMD(new Date(now.getTime() - i * 86400 * 1000));
 
-  // 逐日汇总各账号 delta：正=消耗，负=签到入账，求和即当日净消耗
-  const dayDelta = {};
-  acc.forEach(a => (a.daily || []).forEach(d => {
+  // 积分族：逐日净变动
+  const cDelta = {};
+  credit.forEach(a => (a.daily || []).forEach(d => {
     if (!d.day) return;
-    dayDelta[d.day] = (dayDelta[d.day] || 0) + Number(d.delta || 0);
+    cDelta[d.day] = (cDelta[d.day] || 0) + Number(d.delta || 0);
+  }));
+  // Token 族：逐日真实 Token 消耗（总量含缓存命中输入，与 Token 趋势图口径一致）
+  const tToken = {};
+  token.forEach(a => (a.tokens || []).forEach(t => {
+    if (!t.day) return;
+    tToken[t.day] = (tToken[t.day] || 0) + Number(t.total || 0) + Number(t.cache_read || 0);
   }));
 
-  const today = acc.reduce((s, a) => s + Number(a.today || 0), 0);
+  const sumRange = (map, days) => {
+    let s = 0;
+    for (let i = 0; i < days; i++) s += map[key(i)] || 0;
+    return s;
+  };
+  const setV = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  const setS = (id, t) => { const el = $(id); if (el) el.textContent = t; };
 
-  const now = new Date();
-  let sum7 = 0, sum14 = 0;
-  for (let i = 0; i < 14; i++) {
-    const v = dayDelta[localYMD(new Date(now.getTime() - i * 86400 * 1000))] || 0;
-    sum14 += v;
-    if (i < 7) sum7 += v;
-  }
+  // 积分族（单位：积分）
+  const cToday = credit.reduce((s, a) => s + Number(a.today || 0), 0);
+  const c7 = sumRange(cDelta, 7), c14 = sumRange(cDelta, 14);
+  setV("creditToday", fmtTotal(Math.round(cToday)));
+  setV("credit7d", fmtTotal(Math.round(c7)));
+  setV("credit14d", fmtTotal(Math.round(c14)));
+  setS("creditTodaySub", `${key(0)} 当日`);
+  setS("credit7dSub", `日均 ${fmtTotal(Math.round(c7 / 7))}/天`);
+  setS("credit14dSub", `日均 ${fmtTotal(Math.round(c14 / 14))}/天`);
+  const cTip = "积分族（workbuddy/traework/qoder/codebuddy/autoclaw）余额以积分/额度计，无法折算 token。正=消耗，负=签到/赠送入账。";
+  ["creditToday", "credit7d", "credit14d"].forEach(id => { const el = $(id); if (el) el.title = cTip; });
 
-  const setVal = (id, v) => { const el = $(id); if (el) el.textContent = fmtTotal(Math.round(v)); };
-  const setSub = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
-  const netTip = "正负相抵后的净消耗：已扣除签到/赠送等入账（负 delta）";
-
-  setVal("creditToday", today);
-  setVal("credit7d", sum7);
-  setVal("credit14d", sum14);
-
-  setSub("creditTodaySub", `${localYMD(now)} 当日`);
-  setSub("credit7dSub", `日均 ${fmtTotal(Math.round(sum7 / 7))}/天`);
-  setSub("credit14dSub", `日均 ${fmtTotal(Math.round(sum14 / 14))}/天`);
-
-  ["creditToday", "credit7d", "credit14d"].forEach(id => {
-    const el = $(id);
-    if (el) el.title = netTip;
-  });
+  // Token 族（单位：token）
+  const tToday = tToken[key(0)] || 0;
+  const t7 = sumRange(tToken, 7), t14 = sumRange(tToken, 14);
+  setV("tokenToday", fmtTokens(tToday));
+  setV("token7d", fmtTokens(t7));
+  setV("token14d", fmtTokens(t14));
+  setS("tokenTodaySub", `${key(0)} 当日`);
+  setS("token7dSub", `日均 ${fmtTokens(Math.round(t7 / 7))}/天`);
+  setS("token14dSub", `日均 ${fmtTokens(Math.round(t14 / 14))}/天`);
+  const tTip = "Token 族（zcode/atria）余额即 token，消耗取上游 usage 上报的真实 token 用量（非余额变化）。";
+  ["tokenToday", "token7d", "token14d"].forEach(id => { const el = $(id); if (el) el.title = tTip; });
 }
 
-// 1.6 近 14 天每日积分消耗趋势（SVG 柱状图：正 delta 消耗向上、负 delta 入账向下）
+// 1.6 近 14 天积分净变动趋势（仅积分族；token 族余额 delta 被套餐重置污染，不纳入）
+//     SVG 柱状图：正 delta 消耗向上、负 delta 入账向下
 function renderCreditTrend(accounts) {
   const wrap = $("creditTrendChartWrap");
   if (!wrap) return;
 
   const dayMap = {};
-  (accounts || []).forEach(a => {
+  (accounts || []).filter(a => !isTokenUnit(a.kind)).forEach(a => {
     (a.daily || []).forEach(d => {
       if (!d.day) return;
       const m = dayMap[d.day] || (dayMap[d.day] = { delta: 0, remain: 0 });
@@ -2010,7 +2037,7 @@ function renderCreditTrend(accounts) {
   const hasPos = days.some(d => d.delta > 0);
   const hasNeg = days.some(d => d.delta < 0);
   if (!hasPos && !hasNeg) {
-    wrap.innerHTML = `<div class="empty-chart">暂无按日积分数据，跑起业务后这里会显示每日消耗</div>`;
+    wrap.innerHTML = `<div class="empty-chart">暂无积分族按日数据，跑起业务后这里会显示积分净变动</div>`;
     return;
   }
 
@@ -2391,43 +2418,46 @@ function renderTopModels(models, topModels) {
   }).join("");
 }
 
-// 5. 积分即将耗尽账号榜（按到期紧迫度排序，条形=剩余积分占全池比例，越短越告急）
+// 5. 账号余额与到期榜（token 族 / 积分族分组，各自按到期紧迫度排序，条形=组内余额占比）
 function renderLowBalanceAccounts(accounts) {
   const box = $("lowBalanceList");
   if (!box) return;
-  if (!accounts || accounts.length === 0) {
-    box.innerHTML = `<div class="empty-hint">暂无账号积分数据</div>`;
+  const all = (accounts || []).filter(a => Number(a.remain || 0) > 0 || Number(a.expire_at || 0) > 0);
+  if (all.length === 0) {
+    box.innerHTML = `<div class="empty-hint">暂无账号余额数据</div>`;
     return;
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const totalRemain = accounts.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0) || 1;
-
   // 排序：最快到期的优先（长期有效视为最不紧迫）；同日到期则余额少者优先
   const rank = a => (a.expire_at && a.expire_at > 0 && a.expire_at < 4102444800) ? a.expire_at : Infinity;
-  const list = [...accounts].sort((a, b) => {
+  const sortFn = (a, b) => {
     const ra = rank(a), rb = rank(b);
     if (ra !== rb) return ra - rb;
     return Number(a.remain || 0) - Number(b.remain || 0);
-  });
+  };
 
-  const top5 = list.slice(0, 5);
-  const badges = ["top1", "top2", "top3", "", ""];
-
-  box.innerHTML = top5.map((a, idx) => {
-    const gm = groupMeta(a.kind);
-    const exp = formatExpire(a.expire_at);
-    const remain = Math.max(0, Number(a.remain || 0));
-    const pct = Math.max(3, Math.round((remain / totalRemain) * 100));
-    const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
-    const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
-    return `
+  // token 族与积分族分组渲染：单位不同，跨族排序/求和都无意义
+  const group = (title, list, unit) => {
+    if (list.length === 0) return "";
+    const totalRemain = list.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0) || 1;
+    const top = [...list].sort(sortFn).slice(0, 5);
+    const badges = ["top1", "top2", "top3", "", ""];
+    const rows = top.map((a, idx) => {
+      const gm = groupMeta(a.kind);
+      const exp = formatExpire(a.expire_at);
+      const remain = Math.max(0, Number(a.remain || 0));
+      const pct = Math.max(3, Math.round((remain / totalRemain) * 100));
+      const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
+      const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
+      const val = unit === "token" ? `${fmtTokens(remain)} token` : `${fmtTotal(remain)} 积分`;
+      return `
       <div class="rank-item" title="${esc(a.uid)}">
         <span class="rank-num ${badges[idx]}">${idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name"><span class="badge ${gm.cls}">${gm.name}</span> ${esc(a.nickname || shortUid(a.uid))}</span>
-            <span class="rank-val">${fmtTotal(remain)} 积分</span>
+            <span class="rank-val">${val}</span>
           </div>
           <div class="rank-bar-bg">
             <div class="rank-bar-fill" style="width:${pct}%; ${fillCls}"></div>
@@ -2437,9 +2467,14 @@ function renderLowBalanceAccounts(accounts) {
             <code class="prod-uid">${esc(shortUid(a.uid))}</code>
           </div>
         </div>
-      </div>
-    `;
-  }).join("");
+      </div>`;
+    }).join("");
+    return `<div class="rank-group"><div class="rank-group-title">${esc(title)}</div>${rows}</div>`;
+  };
+
+  box.innerHTML =
+    group("Token 族 · 余额(token) 与到期", all.filter(a => isTokenUnit(a.kind)), "token") +
+    group("积分族 · 余额(积分) 与到期", all.filter(a => !isTokenUnit(a.kind)), "credit");
 }
 
 // 5.5 累计白嫖节省金额走势（每日 Token 构成 × priceUSD 逐日折算后累加，SVG 面积折线）
@@ -2537,42 +2572,53 @@ function renderSavingsTrend(auditDaily, tokenModels) {
   `;
 }
 
-// 5.6 资产续航估算（可折算积分余额 ÷ 近 7 日日均消耗 → 预计可用天数）
+// 5.6 资产续航估算（按计量单位分族：Token 族算 token 天数，积分族给净变动）
 function renderRunway() {
   const el = $("assetRunway");
   if (!el) return;
 
   const accounts = _lastAccounts || [];
-  const assets = _lastAssets;
-
-  // 近 7 日净消耗（正负相抵）与有效天数
-  const dayDelta = {};
-  accounts.forEach(a => (a.daily || []).forEach(d => {
-    if (!d.day) return;
-    dayDelta[d.day] = (dayDelta[d.day] || 0) + Number(d.delta || 0);
-  }));
   const now = new Date();
-  let sum7 = 0;
-  for (let i = 0; i < 7; i++) {
-    sum7 += dayDelta[localYMD(new Date(now.getTime() - i * 86400 * 1000))] || 0;
-  }
-  const avg = sum7 / 7;
+  const key = i => localYMD(new Date(now.getTime() - i * 86400 * 1000));
 
-  // 可折算积分余额：优先 /api/assets 的 convertible 合计，缺失时退回账号 remain 之和
-  let balance = null;
-  if (assets && Array.isArray(assets.channels)) {
-    balance = assets.channels.filter(c => c.convertible).reduce((s, c) => s + Number(c.credits || 0), 0);
-  }
-  if (balance == null) {
-    balance = accounts.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
-  }
+  // Token 族：余额(token) ÷ 近 7 日 Token 日均消耗 → 剩余天数
+  const tokenAcc = accounts.filter(a => isTokenUnit(a.kind));
+  const tokenBalance = tokenAcc.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
+  const rToken7 = {};
+  tokenAcc.forEach(a => (a.tokens || []).forEach(t => {
+    if (!t.day) return;
+    rToken7[t.day] = (rToken7[t.day] || 0) + Number(t.total || 0) + Number(t.cache_read || 0);
+  }));
+  let token7 = 0;
+  for (let i = 0; i < 7; i++) token7 += rToken7[key(i)] || 0;
+  const tokenAvg = token7 / 7;
 
-  if (avg <= 0.5) {
-    el.innerHTML = `<span class="runway-ic">${I.clock}</span>按近 7 日均耗估算：消耗极低，积分可长期续航`;
-    return;
+  // 积分族：近 7 日积分净变动（正=消耗，负=入账），积分无法折算 token，仅供参考
+  const creditAcc = accounts.filter(a => !isTokenUnit(a.kind));
+  const creditBalance = creditAcc.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
+  const cDelta = {};
+  creditAcc.forEach(a => (a.daily || []).forEach(d => {
+    if (!d.day) return;
+    cDelta[d.day] = (cDelta[d.day] || 0) + Number(d.delta || 0);
+  }));
+  let credit7 = 0;
+  for (let i = 0; i < 7; i++) credit7 += cDelta[key(i)] || 0;
+
+  const ic = `<span class="runway-ic">${I.clock}</span>`;
+  let html = "";
+  if (tokenBalance > 0 || tokenAvg > 0) {
+    if (tokenAvg <= 0.5) {
+      html += `<div class="asset-runway">${ic}<b>Token 族</b>：现有 ${fmtTokens(tokenBalance)} token，近 7 日消耗极低，可长期续航</div>`;
+    } else {
+      const days = Math.floor(tokenBalance / tokenAvg);
+      html += `<div class="asset-runway">${ic}<b>Token 族</b>：现有 ${fmtTokens(tokenBalance)} token，近 7 日日均耗 <b>${fmtTokens(Math.round(tokenAvg))}</b>，预计续航约 <b>${days}</b> 天</div>`;
+    }
   }
-  const daysLeft = Math.floor(balance / avg);
-  el.innerHTML = `<span class="runway-ic">${I.clock}</span>按近 7 日均耗 <b>${fmtTotal(Math.round(avg))}</b> 积分/天，当前可折算积分预计续航约 <b>${daysLeft}</b> 天`;
+  if (creditBalance > 0 || credit7 !== 0) {
+    const sign = credit7 >= 0 ? "净消耗" : "净入账";
+    html += `<div class="asset-runway">${ic}<b>积分族</b>：现有 ${fmtTotal(creditBalance)} 积分，近 7 日${sign} <b>${fmtTotal(Math.abs(Math.round(credit7)))}</b>（含签到；无法折算 token，仅供参考）</div>`;
+  }
+  el.innerHTML = html || `<div class="asset-runway">${ic}暂无足够的余额 / 消耗数据用于续航估算</div>`;
 }
 
 // 6. 账号 Token 生产力榜单（卡片流可视化：排名徽章 + 占比条形 + 关键数字右对齐）

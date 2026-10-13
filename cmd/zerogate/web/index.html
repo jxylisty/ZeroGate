@@ -333,22 +333,51 @@ document.documentElement.dataset.uiStyle =
       </div>
     </div>
 
-    <!-- 积分消耗汇总（今日 / 近 7 天 / 近 14 天，正负相抵后的净消耗） -->
+    <!-- 消耗/变动汇总：积分族与 Token 族分列（计量单位不同，绝不合并求和） -->
     <div class="credit-summary">
-      <div class="stat-card">
-        <div class="stat-title"><span data-ic="coins"></span>今日积分消耗</div>
-        <div class="stat-val" id="creditToday">0</div>
-        <div class="stat-sub" id="creditTodaySub">—</div>
+      <div class="credit-group">
+        <div class="credit-group-title"><span data-ic="coins"></span>积分族 · 积分净变动
+          <span class="credit-group-note">workbuddy / traework / qoder / codebuddy / autoclaw（积分/额度制，无法折算 token）</span>
+        </div>
+        <div class="credit-cards">
+          <div class="stat-card">
+            <div class="stat-title">今日净变动</div>
+            <div class="stat-val" id="creditToday">0</div>
+            <div class="stat-sub" id="creditTodaySub">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">近 7 天净变动</div>
+            <div class="stat-val" id="credit7d">0</div>
+            <div class="stat-sub" id="credit7dSub">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">近 14 天净变动</div>
+            <div class="stat-val" id="credit14d">0</div>
+            <div class="stat-sub" id="credit14dSub">—</div>
+          </div>
+        </div>
       </div>
-      <div class="stat-card">
-        <div class="stat-title"><span data-ic="trend"></span>近 7 天积分消耗</div>
-        <div class="stat-val" id="credit7d">0</div>
-        <div class="stat-sub" id="credit7dSub">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-title"><span data-ic="calendar"></span>近 14 天积分消耗</div>
-        <div class="stat-val" id="credit14d">0</div>
-        <div class="stat-sub" id="credit14dSub">—</div>
+      <div class="credit-group">
+        <div class="credit-group-title"><span data-ic="trend"></span>Token 族 · Token 消耗
+          <span class="credit-group-note">zcode / atria（余额即 token，取上游 usage 真实用量）</span>
+        </div>
+        <div class="credit-cards">
+          <div class="stat-card">
+            <div class="stat-title">今日消耗</div>
+            <div class="stat-val" id="tokenToday">0</div>
+            <div class="stat-sub" id="tokenTodaySub">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">近 7 天消耗</div>
+            <div class="stat-val" id="token7d">0</div>
+            <div class="stat-sub" id="token7dSub">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">近 14 天消耗</div>
+            <div class="stat-val" id="token14d">0</div>
+            <div class="stat-sub" id="token14dSub">—</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -386,10 +415,10 @@ document.documentElement.dataset.uiStyle =
       <div class="analytics-col chart-col">
         <div class="panel">
           <div class="panel-head">
-            <h2><span data-ic="coins"></span>近 14 天每日积分消耗趋势</h2>
+            <h2><span data-ic="coins"></span>近 14 天积分净变动趋势（积分族）</h2>
             <div class="legend-group">
               <span class="legend-item"><i style="background:var(--chart-credit)"></i>净消耗 (积分)</span>
-              <span class="legend-item"><i style="background:var(--ok)"></i>入账 / 赠送</span>
+              <span class="legend-item"><i style="background:var(--ok)"></i>签到 / 赠送入账</span>
             </div>
           </div>
           <div id="creditTrendChartWrap" class="svg-chart-container">
@@ -444,7 +473,7 @@ document.documentElement.dataset.uiStyle =
           <div class="asset-hero-sub" id="assetHeroCredits"></div>
         </div>
       </div>
-      <div class="asset-runway" id="assetRunway"></div>
+      <div id="assetRunway"></div>
       <div style="overflow-x:auto;">
         <table class="data-table" id="assetsTable">
           <thead>
@@ -478,10 +507,10 @@ document.documentElement.dataset.uiStyle =
       <div class="analytics-col">
         <div class="panel">
           <div class="panel-head">
-            <h2><span data-ic="alert"></span>积分即将耗尽账号</h2>
+            <h2><span data-ic="alert"></span>账号余额与到期（按计量单位分组）</h2>
           </div>
           <div id="lowBalanceList" class="rank-list">
-            <div class="empty-hint">暂无账号积分数据</div>
+            <div class="empty-hint">暂无账号余额数据</div>
           </div>
         </div>
       </div>

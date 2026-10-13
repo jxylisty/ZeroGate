@@ -94,14 +94,24 @@
 .stat-card .stat-val { font-size: 22px; font-weight: 700; color: var(--text); }
 .stat-card .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
-/* 积分消耗汇总（今日 / 近 7 天 / 近 14 天） */
+/* 消耗/变动汇总：积分族与 Token 族分列（计量单位不同，绝不合并求和） */
 .credit-summary {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;
 }
-@media (max-width: 800px) {
+@media (max-width: 900px) {
   .credit-summary { grid-template-columns: 1fr; }
 }
-.credit-summary .stat-card .stat-title .ic { color: var(--chart-credit); }
+.credit-group { min-width: 0; }
+.credit-group-title {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px;
+}
+.credit-group-title .ic { width: 14px; height: 14px; color: var(--chart-credit); }
+.credit-group-note { font-weight: 400; font-size: 11px; color: var(--muted); }
+.credit-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 560px) {
+  .credit-cards { grid-template-columns: 1fr; }
+}
 
 /* ============================================================
    账号矩阵
@@ -533,6 +543,12 @@ html[data-theme="dark"] .heatmap-cell.lvl0 { background: color-mix(in srgb, var(
 .rank-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .rank-meta .tag { display: inline-flex; align-items: center; gap: 4px; }
 .rank-meta .tag .ic { width: 12px; height: 12px; }
+/* 按计量单位分族（token 族 / 积分族），组内排序，跨族不混排 */
+.rank-group + .rank-group { margin-top: 14px; }
+.rank-group-title {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  margin: 4px 0 8px; padding-left: 2px;
+}
 
 /* 资产续航估算 */
 .asset-runway {
