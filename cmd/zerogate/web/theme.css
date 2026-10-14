@@ -12,7 +12,9 @@
   --card: #ffffff;
   --border: #e6e9ef;
   --border-strong: #cfd6e2;
+  --border-soft: #e2e8f0;
   --text: #1a1d23;
+  --text-sub: #64748b;
   --muted: #6b7280;
 
   /* 强调色 */
@@ -86,7 +88,9 @@ html[data-ui-style="visual-novel"] {
   --card: rgba(24, 21, 46, 0.72);
   --border: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 117, 151, 0.35);
+  --border-soft: rgba(255, 255, 255, 0.1);
   --text: #f8fafc;
+  --text-sub: rgba(255, 255, 255, 0.7);
   --muted: #cbd5e1;
   --primary: #ff7597;
   --primary-hover: #ff547d;
@@ -105,7 +109,9 @@ html[data-theme="dark"] {
   --card: #131926;
   --border: #232c3d;
   --border-strong: #33415a;
+  --border-soft: rgba(255, 255, 255, 0.08);
   --text: #e7ebf3;
+  --text-sub: #94a3b8;
   --muted: #8b94a7;
 
   --primary: #6d8df9;
@@ -140,7 +146,9 @@ html[data-theme="dark"] {
     --card: #131926;
     --border: #232c3d;
     --border-strong: #33415a;
+    --border-soft: rgba(255, 255, 255, 0.08);
     --text: #e7ebf3;
+    --text-sub: #94a3b8;
     --muted: #8b94a7;
 
     --primary: #6d8df9;

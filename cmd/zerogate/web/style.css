@@ -1168,28 +1168,44 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   margin-left: 64px;
 }
 
+#zgSidebar.sidebar-collapsed .brand-info,
 #zgSidebar.sidebar-collapsed .sidebar-brand-title,
 #zgSidebar.sidebar-collapsed .sidebar-version,
+#zgSidebar.sidebar-collapsed .nav-group-title,
 #zgSidebar.sidebar-collapsed .sidebar-nav-title,
+#zgSidebar.sidebar-collapsed .sidebar-item-btn > span:not([data-ic]),
 #zgSidebar.sidebar-collapsed .sidebar-text,
 #zgSidebar.sidebar-collapsed .live-text {
-  display: none;
+  display: none !important;
 }
 
 #zgSidebar.sidebar-collapsed .sidebar-brand {
   justify-content: center;
-  padding: 16px 8px;
+  padding: 14px 4px;
+}
+#zgSidebar.sidebar-collapsed .sidebar-brand .logo {
+  margin: 0 auto;
+}
+
+#zgSidebar.sidebar-collapsed .sidebar-nav {
+  padding: 10px 4px;
 }
 
 #zgSidebar.sidebar-collapsed .sidebar-item-btn {
   justify-content: center;
   padding: 10px 0;
+  width: 44px;
+  margin: 3px auto;
+  border-radius: 10px;
 }
 
 #zgSidebar.sidebar-collapsed .sidebar-footer {
-  padding: 12px 6px;
+  padding: 12px 0;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 10px;
 }
 
 /* 侧边栏内部排版 */
@@ -1314,6 +1330,8 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
+}
+
 .sidebar-footer {
   padding: 12px 14px;
   border-top: 1px solid var(--border-soft);
@@ -1326,25 +1344,31 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border-soft);
   color: var(--text-sub);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  outline: none;
 }
 .sidebar-action-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.16);
   color: var(--text);
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
   transform: translateY(-1px);
+}
+.sidebar-action-btn:active {
+  transform: translateY(0);
 }
 .sidebar-action-btn svg {
   width: 16px;
   height: 16px;
+  stroke: currentColor;
 }
 
 .sidebar-live-pill {

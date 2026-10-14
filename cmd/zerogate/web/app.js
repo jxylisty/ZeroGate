@@ -1399,19 +1399,31 @@ function initTabs() {
 
 function initSidebar() {
   const sidebar = $("zgSidebar");
-  const toggleBtn = $("btnToggleSidebar");
+  const toggleBtn = $("btnSidebarCollapse") || $("btnToggleSidebar");
   if (!sidebar) return;
+
+  const updateToggleUI = (collapsed) => {
+    if (!toggleBtn) return;
+    toggleBtn.innerHTML = collapsed ? (I.chevronR || I.chevron) : (I.chevronL || I.arrowL || I.chevron);
+    toggleBtn.title = collapsed ? "展开侧栏" : "折叠侧栏";
+  };
 
   const isCollapsed = localStorage.getItem("zg_sidebar_collapsed") === "true";
   if (isCollapsed) {
     sidebar.classList.add("sidebar-collapsed");
   }
+  updateToggleUI(isCollapsed);
 
   if (toggleBtn) {
-    toggleBtn.onclick = () => {
+    toggleBtn.onclick = (e) => {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
       sidebar.classList.toggle("sidebar-collapsed");
       const coll = sidebar.classList.contains("sidebar-collapsed");
       localStorage.setItem("zg_sidebar_collapsed", coll ? "true" : "false");
+      updateToggleUI(coll);
     };
   }
 }

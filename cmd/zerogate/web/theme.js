@@ -25,6 +25,7 @@
     try { localStorage.setItem(KEY, next); } catch (e) { /* ignore */ }
     root.setAttribute("data-theme", next);
     cur = next;
+    if (window.__updateThemeBtn) window.__updateThemeBtn();
     document.dispatchEvent(new CustomEvent("zg:themechange", { detail: { theme: next } }));
   };
 
@@ -72,6 +73,8 @@ I.play     = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentCol
 I.x        = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 I.copy     = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 I.chevron  = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+I.chevronL = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>';
+I.chevronR = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
 I.arrowL   = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>';
 I.globe    = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>';
 I.claude   = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 12 7-9 7 9-7 9-7-9Z"/><path d="m14 12 7-9"/><path d="m14 12 7 9"/></svg>';
@@ -83,6 +86,15 @@ I.sun      = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentCol
 I.moon     = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
 window.I = I;
 
+// 动态更新主题按钮图标与提示
+window.__updateThemeBtn = function () {
+  var btn = document.getElementById("btnSidebarTheme");
+  if (!btn) return;
+  var isDark = (document.documentElement.getAttribute("data-theme") || "dark") === "dark";
+  btn.innerHTML = isDark ? (I.sun || "") : (I.moon || "");
+  btn.title = isDark ? "切换为浅色模式" : "切换为暗色模式";
+};
+
 // 填充 HTML 中所有 [data-ic] 占位（支持传入指定根节点）
 window.__fillIcons = function (parent) {
   var root = parent || document;
@@ -90,6 +102,7 @@ window.__fillIcons = function (parent) {
     var k = el.getAttribute("data-ic");
     if (I[k]) el.innerHTML = I[k];
   });
+  window.__updateThemeBtn();
 };
 
 if (document.readyState === "loading") {
