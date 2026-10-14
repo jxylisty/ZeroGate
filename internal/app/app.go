@@ -2635,8 +2635,17 @@ func (a *App) FeesInfo() map[string]any {
 	}
 
 	channels := make([]map[string]any, 0)
-	for _, ch := range []string{"workbuddy", "traework", "qoder", "codebuddy", "zcode", "autoclaw"} {
-		if models, ok := groups[ch]; ok {
+	allChList := []string{
+		"workbuddy", "traework", "qoder", "codebuddy", "wbintl",
+		"zcode", "autoclaw", "atria",
+		"copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow",
+	}
+	for _, ch := range allChList {
+		models, ok := groups[ch]
+		if !ok || len(models) == 0 {
+			models = staticChannelModels(ch)
+		}
+		if len(models) > 0 {
 			channels = append(channels, map[string]any{
 				"channel": ch,
 				"models":  models,
@@ -2747,59 +2756,127 @@ func (a *App) savePricingCache() {
 	_ = os.WriteFile(a.pricingFP, raw, 0o644)
 }
 
+// staticChannelModels 单渠道静态兜底模型定义（无动态拉取或拉取失败时兜底）。
+func staticChannelModels(ch string) []map[string]any {
+	switch ch {
+	case "workbuddy":
+		return []map[string]any{
+			{"model": "auto", "rate": 0, "note": "自动路由最优模型 · 按对话扣积分"},
+			{"model": "deepseek-v4.1-flash", "rate": 0, "note": "DeepSeek V4.1 高速版"},
+			{"model": "deepseek-v4-pro", "rate": 0, "note": "DeepSeek V4 深度思考"},
+			{"model": "glm-5.3-flash", "rate": 0, "note": "智谱 GLM-5.3 高速版"},
+			{"model": "kimi-k3", "rate": 0, "note": "Kimi K3 超长上下文"},
+			{"model": "hy3-preview", "rate": 0, "note": "腾讯混元 Hy3 Preview"},
+		}
+	case "traework":
+		return []map[string]any{
+			{"model": "DeepSeek-V4-Pro", "rate": 0, "note": "官方渠道按 token 计费"},
+			{"model": "DeepSeek-V4-Flash", "rate": 0, "note": "官方渠道按 token 计费"},
+			{"model": "glm-5.3", "rate": 0, "note": "智谱旗舰编码模型"},
+			{"model": "Doubao-Seed-2.1-Pro", "rate": 0, "note": "火山豆包 2.1 Pro"},
+			{"model": "qwen3.8-max", "rate": 0, "note": "阿里通义千问 3.8 Max"},
+			{"model": "kimi-k3", "rate": 0, "note": "月之暗面 K3"},
+		}
+	case "qoder":
+		return []map[string]any{
+			{"model": "deepseek-v4-pro", "rate": 0, "note": "按积分扣除 · 智能编程"},
+			{"model": "glm-5.3-flash", "rate": 0, "note": "按积分扣除 · 极速响应"},
+			{"model": "qwen3.8-max", "rate": 0, "note": "千问 3.8 Max"},
+			{"model": "kimi-k3", "rate": 0, "note": "Kimi K3 旗舰"},
+			{"model": "minimax-m3", "rate": 0, "note": "MiniMax M3 编程"},
+		}
+	case "codebuddy":
+		return []map[string]any{
+			{"model": "default-model", "rate": 0, "note": "国际版限免 0 积分"},
+			{"model": "deepseek-v4.1-flash", "rate": 0, "note": "隐藏模型限免 0 积分"},
+			{"model": "hy4-preview", "rate": 0, "note": "混元 4 Preview 限免"},
+			{"model": "fast-model", "rate": 0.34, "note": "高速轻量模型"},
+			{"model": "balanced-model", "rate": 0.59, "note": "平衡主力模型"},
+			{"model": "glm-5.3", "rate": 0.79, "note": "智谱 GLM-5.3"},
+			{"model": "gpt-5.6-terra", "rate": 1.39, "note": "GPT-5.6 Terra"},
+		}
+	case "wbintl":
+		return []map[string]any{
+			{"model": "auto", "rate": 0, "note": "WorkBuddy 国际版 · 自动最优"},
+			{"model": "deepseek-chat", "rate": 0, "note": "国际版直连"},
+			{"model": "claude-3-5-sonnet", "rate": 0, "note": "国际版限免/积分"},
+		}
+	case "zcode":
+		return []map[string]any{
+			{"model": "glm-5.3-flash", "rate": 0, "note": "周末计划免费领 3 亿 Token · 极速编程 ⭐"},
+			{"model": "glm-5.3", "rate": 0, "note": "智谱全能旗舰 · 300M Weekend Build 支持"},
+			{"model": "GLM-5.2", "rate": 0, "note": "1M 超大上下文 · 本地桥直通"},
+			{"model": "GLM-5-Turbo", "rate": 0, "note": "136K 上下文高速响应"},
+		}
+	case "autoclaw":
+		return []map[string]any{
+			{"model": "glm-5.3-flash", "rate": 0, "note": "会员/按量通道 · 实测扣积分（短请求≈1分）⭐"},
+			{"model": "zaicoding_glm-5.3", "rate": 0, "note": "GLM-5.3 编码通道 · 按量计费"},
+			{"model": "zai_auto", "rate": 0, "note": "服务端自动选型路由 · 支持 Vision"},
+			{"model": "zai_auto-fast", "rate": 0, "note": "快速自动路由"},
+		}
+	case "atria":
+		return []map[string]any{
+			{"model": "Atria-Dawn-Preview", "rate": 0, "note": "官方赠送 1 亿 Token · 256K 上下文 · 官方直连 ⭐"},
+		}
+	case "copilot":
+		return []map[string]any{
+			{"model": "gpt-4o", "rate": 0, "note": "本地白嫖服务 127.0.0.1:4141 · OpenAI 兼容"},
+			{"model": "claude-3-5-sonnet", "rate": 0, "note": "Copilot 转代 · 旗舰编程"},
+			{"model": "o1-preview", "rate": 0, "note": "慢思考推理模型"},
+		}
+	case "doubao":
+		return []map[string]any{
+			{"model": "doubao-seed-2-1-pro", "rate": 0, "note": "本地桥 127.0.0.1:7868 · 豆包旗舰 2.1 Pro"},
+			{"model": "doubao-seed-2-1-turbo", "rate": 0, "note": "豆包 2.1 Turbo 高速版"},
+			{"model": "doubao-seed-code", "rate": 0, "note": "豆包专有代码补全模型"},
+		}
+	case "gptgemini":
+		return []map[string]any{
+			{"model": "gemini-3-flash", "rate": 0, "note": "本地白嫖服务 127.0.0.1:8317 · Gemini 3 Flash"},
+			{"model": "gemini-3.1-pro", "rate": 0, "note": "Gemini 3.1 Pro 超长上下文"},
+			{"model": "gpt-5.6-terra", "rate": 0, "note": "GPT-5.6 转发"},
+			{"model": "grok-4.7", "rate": 0, "note": "xAI Grok 最新版"},
+		}
+	case "glmflash":
+		return []map[string]any{
+			{"model": "glm-5.3-flash", "rate": 0, "note": "智谱官方开放平台 · 永久免费层 ⭐"},
+			{"model": "glm-5.3", "rate": 0, "note": "智谱开放平台 API Key 直连"},
+		}
+	case "groq":
+		return []map[string]any{
+			{"model": "llama-3.3-70b-versatile", "rate": 0, "note": "Groq LPU 极速推理云 · 免费层"},
+			{"model": "qwen-2.5-coder-32b", "rate": 0, "note": "通义千问代码版 · 免费极速"},
+		}
+	case "tierflow":
+		return []map[string]any{
+			{"model": "claude-3-5-sonnet", "rate": 0, "note": "tierflow.cn 免费聚合 · Bearer Key"},
+			{"model": "gpt-4o", "rate": 0, "note": "免费聚合通道"},
+			{"model": "deepseek-chat", "rate": 0, "note": "DeepSeek 直连"},
+		}
+	default:
+		return nil
+	}
+}
+
 // staticFeesInfo 静态兜底费率说明（无账号/首次加载时）。
 func staticFeesInfo() map[string]any {
+	channels := make([]map[string]any, 0)
+	for _, ch := range []string{
+		"workbuddy", "traework", "qoder", "codebuddy", "wbintl",
+		"zcode", "autoclaw", "atria",
+		"copilot", "doubao", "gptgemini", "glmflash", "groq", "tierflow",
+	} {
+		if models := staticChannelModels(ch); len(models) > 0 {
+			channels = append(channels, map[string]any{
+				"channel": ch,
+				"models":  models,
+			})
+		}
+	}
 	return map[string]any{
-		"note": "费率随上游平台政策动态变化，请以官方为准；添加账号后点击「刷新费率」拉取实时数据。",
-		"channels": []map[string]any{
-			{
-				"channel": "workbuddy",
-				"models": []map[string]any{
-					{"model": "auto", "rate": 0, "note": "自动路由最优模型"},
-					{"model": "deepseek-v4-*", "rate": 0, "note": "按对话计费"},
-					{"model": "glm-*", "rate": 0, "note": "按对话计费"},
-					{"model": "kimi-* / minimax-* / hy3", "rate": 0, "note": "按对话计费"},
-				},
-			},
-			{
-				"channel": "traework",
-				"models": []map[string]any{
-					{"model": "DeepSeek-*", "rate": 0, "note": "按 token 计费"},
-					{"model": "glm-5*", "rate": 0, "note": "按 token 计费"},
-					{"model": "Doubao-* / qwen-*", "rate": 0, "note": "按 token 计费"},
-				},
-			},
-			{
-				"channel": "qoder",
-				"models": []map[string]any{
-					{"model": "deepseek-v4-*", "rate": 0, "note": "按积分计费"},
-					{"model": "qwen3.* / glm-5.*", "rate": 0, "note": "按积分计费"},
-					{"model": "kimi-* / minimax-* / auto", "rate": 0, "note": "按积分计费"},
-				},
-			},
-			{
-				"channel": "codebuddy",
-				"models": []map[string]any{
-					{"model": "default / fast / balanced / primary / deep-model", "rate": 0, "note": "国际版，按积分倍率计费"},
-					{"model": "o4-mini", "rate": 0, "note": "GPT-4o-Mini"},
-				},
-			},
-			{
-				"channel": "zcode",
-				"models": []map[string]any{
-					{"model": "GLM-5.2", "rate": 0, "note": "1M 上下文，官方赠送 3 亿 units 可用"},
-					{"model": "GLM-5-Turbo", "rate": 0, "note": "高速版，136K 上下文"},
-				},
-			},
-			{
-				"channel": "autoclaw",
-				"models": []map[string]any{
-					{"model": "zai_auto", "rate": 0, "note": "自动路由（实测 deepseek-v4-flash-vision），积分等级低"},
-					{"model": "zai_auto-fast", "rate": 0, "note": "快速自动路由，积分等级中"},
-					{"model": "zaicoding_glm-5.3", "rate": 0, "note": "GLM-5.3 编码，积分等级高"},
-				},
-			},
-		},
+		"note":       "费率随上游平台政策动态变化，请以官方为准；添加账号后点击「刷新费率」拉取实时数据。",
+		"channels":   channels,
 		"disclaimer": "本工具仅聚合转发，不参与定价；渠道费率以各上游官方页面为准。",
 	}
 }

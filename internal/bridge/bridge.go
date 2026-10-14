@@ -278,13 +278,19 @@ type Status struct {
 	LastActT string `json:"last_action_at,omitempty"`
 }
 
-// ProbeAll 探测全部实例。
+// ProbeAll 探测全部实例（并发探活）。
 func (m *Manager) ProbeAll() []Status {
 	insts := m.allInstances()
-	out := make([]Status, 0, len(insts))
-	for _, ins := range insts {
-		out = append(out, m.probe(ins))
+	out := make([]Status, len(insts))
+	var wg sync.WaitGroup
+	for i, ins := range insts {
+		wg.Add(1)
+		go func(idx int, instance Instance) {
+			defer wg.Done()
+			out[idx] = m.probe(instance)
+		}(i, ins)
 	}
+	wg.Wait()
 	return out
 }
 
