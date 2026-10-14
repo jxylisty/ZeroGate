@@ -68,26 +68,59 @@ document.documentElement.dataset.uiStyle =
   <!-- 壁纸切换浮窗 -->
   <div class="wp-selector-card" id="wpCard">
     <div style="font-size:13px;font-weight:700;display:flex;justify-content:space-between;align-items:center;">
-      <span>全景动漫壁纸库</span>
+      <span style="display:flex;align-items:center;gap:6px;">
+        <span data-ic="image" style="color:var(--primary);"></span>
+        <span>二次元少女全景壁纸</span>
+      </span>
       <button id="btnCloseWp" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;">✕</button>
     </div>
+
+    <!-- 精选二次元少女壁纸库 -->
+    <div class="wp-section-title">✨ 精选壁纸 (16:9 高清原画)</div>
     <div class="wp-grid-mini">
-      <div class="wp-thumb" data-wp="linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)" style="background: linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%);">
-        <span>星穹夜幕</span>
+      <div class="wp-thumb" data-wp="./wallpapers/cyberpunk.jpg" style="background-image: url('./wallpapers/cyberpunk.jpg');">
+        <span class="wp-title">赛博黑客少女</span>
+        <span class="wp-desc">Cyberpunk Gateway</span>
       </div>
-      <div class="wp-thumb" data-wp="linear-gradient(135deg, #09203f 0%, #537895 100%)" style="background: linear-gradient(135deg, #09203f 0%, #537895 100%);">
-        <span>深海冷空</span>
+      <div class="wp-thumb" data-wp="./wallpapers/starry.jpg" style="background-image: url('./wallpapers/starry.jpg');">
+        <span class="wp-title">星穹银河少女</span>
+        <span class="wp-desc">Celestial Starry</span>
       </div>
-      <div class="wp-thumb" data-wp="linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%)" style="background: linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%);">
-        <span>晨曦暖樱</span>
+      <div class="wp-thumb" data-wp="./wallpapers/sakura.jpg" style="background-image: url('./wallpapers/sakura.jpg');">
+        <span class="wp-title">暮色樱花少女</span>
+        <span class="wp-desc">Twilight Sakura</span>
       </div>
-      <div class="wp-thumb" data-wp="linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)" style="background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);">
-        <span>赛博流光</span>
+      <div class="wp-thumb" data-wp="./wallpapers/mech_angel.jpg" style="background-image: url('./wallpapers/mech_angel.jpg');">
+        <span class="wp-title">未来机能天使</span>
+        <span class="wp-desc">Futuristic Mech</span>
       </div>
     </div>
+
+    <!-- 视觉微调控制 -->
+    <div class="wp-section-title">🎨 视觉沉浸控制</div>
+    <div class="wp-control-row">
+      <span>暗化遮罩</span>
+      <input type="range" id="inpMaskAlpha" min="0.2" max="0.9" step="0.05" value="0.72" title="调整背景暗角透明度">
+      <span id="txtMaskAlpha" style="font-family:var(--mono);font-size:11px;min-width:32px;">72%</span>
+    </div>
+    <div class="wp-control-row">
+      <span>虚化强度</span>
+      <input type="range" id="inpMaskBlur" min="0" max="16" step="1" value="5" title="调整毛玻璃虚化模糊度">
+      <span id="txtMaskBlur" style="font-family:var(--mono);font-size:11px;min-width:32px;">5px</span>
+    </div>
+
+    <!-- 纯色流光渐变 -->
+    <div class="wp-section-title">🌌 纯色光效</div>
+    <div style="display:flex;gap:6px;">
+      <button class="btn small" data-wp-grad="linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)" style="flex:1;font-size:11px;padding:4px 6px;">星穹</button>
+      <button class="btn small" data-wp-grad="linear-gradient(135deg, #09203f 0%, #537895 100%)" style="flex:1;font-size:11px;padding:4px 6px;">深海</button>
+      <button class="btn small" data-wp-grad="linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%)" style="flex:1;font-size:11px;padding:4px 6px;">暖樱</button>
+      <button class="btn small" data-wp-grad="linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)" style="flex:1;font-size:11px;padding:4px 6px;">极光</button>
+    </div>
+
     <div>
-      <input class="input" id="inpCustomWp" placeholder="自定义图片 URL (https://...)" style="font-size:11px;margin-top:4px;" />
-      <button class="btn small primary" id="btnSaveCustomWp" style="width:100%;margin-top:6px;">应用壁纸</button>
+      <input class="input" id="inpCustomWp" placeholder="自定义图片 URL (https://...)" style="font-size:11px;width:100%;margin-top:2px;" />
+      <button class="btn small primary" id="btnSaveCustomWp" style="width:100%;margin-top:6px;">应用自定义壁纸</button>
     </div>
   </div>
 
@@ -507,7 +540,7 @@ document.documentElement.dataset.uiStyle =
       <div class="analytics-col">
         <div class="panel">
           <div class="panel-head">
-            <h2><span data-ic="alert"></span>账号余额与到期（统一 token 计量）</h2>
+            <h2><span data-ic="alert"></span>账号余额与到期（token / 积分 分别标注）</h2>
           </div>
           <div id="lowBalanceList" class="rank-list">
             <div class="empty-hint">暂无账号余额数据</div>

@@ -1331,33 +1331,92 @@ function initWallpaperSystem() {
   const btnClose = $("btnCloseWp");
 
   if (btnToggle && wpCard) {
-    btnToggle.onclick = () => wpCard.classList.toggle("open");
+    btnToggle.onclick = (e) => {
+      e.stopPropagation();
+      wpCard.classList.toggle("open");
+    };
   }
   if (btnClose && wpCard) {
     btnClose.onclick = () => wpCard.classList.remove("open");
   }
+  document.addEventListener("click", (e) => {
+    if (wpCard && wpCard.classList.contains("open")) {
+      if (!wpCard.contains(e.target) && btnToggle && !btnToggle.contains(e.target)) {
+        wpCard.classList.remove("open");
+      }
+    }
+  });
 
   function setBg(wp) {
+    if (!wp) wp = "./wallpapers/cyberpunk.jpg";
     localStorage.setItem("zg_wallpaper", wp);
     const layer = $("zgVnBgLayer");
     if (!layer) return;
-    if (!wp) {
-      layer.style.backgroundImage = "linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)";
-    } else if (wp.startsWith("linear-gradient") || wp.startsWith("radial-gradient")) {
+    if (wp.startsWith("linear-gradient") || wp.startsWith("radial-gradient")) {
       layer.style.backgroundImage = wp;
+    } else if (wp.startsWith("url(") || wp.startsWith("http") || wp.startsWith("./")) {
+      layer.style.backgroundImage = wp.startsWith("url(") ? wp : `url('${wp}')`;
     } else {
       layer.style.backgroundImage = `url('${wp}')`;
     }
+    document.querySelectorAll(".wp-thumb").forEach(th => {
+      th.classList.toggle("active", th.dataset.wp === wp);
+    });
   }
 
-  const cur = localStorage.getItem("zg_wallpaper") || "linear-gradient(135deg, #131224 0%, #1e1b4b 40%, #2e1065 70%, #4a044e 100%)";
+  // 默认使用第一张超高清二次元少女壁纸（赛博黑客少女）
+  const savedWp = localStorage.getItem("zg_wallpaper");
+  const cur = savedWp || "./wallpapers/cyberpunk.jpg";
   setBg(cur);
 
+  // 遮罩暗化控制
+  const inpAlpha = $("inpMaskAlpha");
+  const txtAlpha = $("txtMaskAlpha");
+  const savedAlpha = localStorage.getItem("zg_mask_alpha") || "0.72";
+  if (inpAlpha) {
+    inpAlpha.value = savedAlpha;
+    document.documentElement.style.setProperty("--vn-mask-alpha", savedAlpha);
+    if (txtAlpha) txtAlpha.textContent = Math.round(savedAlpha * 100) + "%";
+    inpAlpha.oninput = () => {
+      const v = inpAlpha.value;
+      document.documentElement.style.setProperty("--vn-mask-alpha", v);
+      localStorage.setItem("zg_mask_alpha", v);
+      if (txtAlpha) txtAlpha.textContent = Math.round(v * 100) + "%";
+    };
+  }
+
+  // 虚化模糊控制
+  const inpBlur = $("inpMaskBlur");
+  const txtBlur = $("txtMaskBlur");
+  const savedBlur = localStorage.getItem("zg_mask_blur") || "5";
+  if (inpBlur) {
+    inpBlur.value = savedBlur;
+    document.documentElement.style.setProperty("--vn-mask-blur", savedBlur + "px");
+    if (txtBlur) txtBlur.textContent = savedBlur + "px";
+    inpBlur.oninput = () => {
+      const v = inpBlur.value;
+      document.documentElement.style.setProperty("--vn-mask-blur", v + "px");
+      localStorage.setItem("zg_mask_blur", v);
+      if (txtBlur) txtBlur.textContent = v + "px";
+    };
+  }
+
+  // 绑定二次元少女壁纸点击
   document.querySelectorAll(".wp-thumb").forEach(th => {
     th.onclick = () => {
       const wp = th.dataset.wp;
       setBg(wp);
-      toast("已更换全景动漫壁纸");
+      toast("已更换二次元全景壁纸 ✨");
+      if (wpCard) wpCard.classList.remove("open");
+    };
+  });
+
+  // 绑定纯色流光渐变快捷切换
+  document.querySelectorAll("[data-wp-grad]").forEach(btn => {
+    btn.onclick = () => {
+      const g = btn.dataset.wpGrad;
+      setBg(g);
+      toast("已切换流光渐变背景");
       if (wpCard) wpCard.classList.remove("open");
     };
   });
@@ -2418,7 +2477,7 @@ function renderTopModels(models, topModels) {
   }).join("");
 }
 
-// 5. 账号余额与到期榜（统一 token 计量，按到期紧迫度排序，条形=余额占全池比例）
+// 5. 账号余额与到期榜（按渠道真实计量单位标注 token / 积分，条形=剩余占自身额度比，按到期紧迫度排序）
 function renderLowBalanceAccounts(accounts) {
   const box = $("lowBalanceList");
   if (!box) return;
@@ -2437,8 +2496,7 @@ function renderLowBalanceAccounts(accounts) {
     return Number(a.remain || 0) - Number(b.remain || 0);
   };
 
-  // 统一以 token 计量展示（与余额续航口径一致），单一列表、不按族分组
-  const totalRemain = all.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0) || 1;
+  // 单一列表（不分组）；每行按渠道真实计量单位标注：token 族 → token，积分族 → 积分
   const list = [...all].sort(sortFn);
   const badges = ["top1", "top2", "top3", "", ""];
 
@@ -2446,16 +2504,19 @@ function renderLowBalanceAccounts(accounts) {
     const gm = groupMeta(a.kind);
     const exp = formatExpire(a.expire_at);
     const remain = Math.max(0, Number(a.remain || 0));
-    const pct = Math.max(3, Math.round((remain / totalRemain) * 100));
+    const total = Number(a.total || 0);
+    // 条形=剩余占自身额度比例（与单位无关，不做跨族池内比大小）；无 total 视为满额
+    const pct = Math.max(3, Math.min(100, Math.round(total > 0 ? (remain / total) * 100 : 100)));
     const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
     const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
+    const val = isTokenUnit(a.kind) ? `${fmtTokens(remain)} token` : `${fmtTotal(remain)} 积分`;
     return `
       <div class="rank-item" title="${esc(a.uid)}">
         <span class="rank-num ${badges[idx] || ""}">${idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name"><span class="badge ${gm.cls}">${gm.name}</span> ${esc(a.nickname || shortUid(a.uid))}</span>
-            <span class="rank-val">${fmtTokens(remain)} token</span>
+            <span class="rank-val">${val}</span>
           </div>
           <div class="rank-bar-bg">
             <div class="rank-bar-fill" style="width:${pct}%; ${fillCls}"></div>
@@ -2564,7 +2625,7 @@ function renderSavingsTrend(auditDaily, tokenModels) {
   `;
 }
 
-// 5.6 资产续航估算（统一 token 口径：余额合计 ÷ 近 7 日日均 token 消耗 → 预计可用天数）
+// 5.6 资产续航估算（Token 族算 token 续航天数；积分族单列净变动，不与 token 混算）
 function renderRunway() {
   const el = $("assetRunway");
   if (!el) return;
@@ -2573,10 +2634,11 @@ function renderRunway() {
   const now = new Date();
   const key = i => localYMD(new Date(now.getTime() - i * 86400 * 1000));
 
-  // 统一 token 口径：余额合计（含 zcode/atria 等以 token 计的渠道）÷ 近 7 日全渠道 token 日均消耗
-  const balance = accounts.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
+  // Token 族（zcode/atria，余额即 token）：余额 ÷ 近 7 日 Token 日均消耗 → 预计天数
+  const tokenAcc = accounts.filter(a => isTokenUnit(a.kind));
+  const tokenBalance = tokenAcc.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
   const dayTok = {};
-  accounts.forEach(a => (a.tokens || []).forEach(t => {
+  tokenAcc.forEach(a => (a.tokens || []).forEach(t => {
     if (!t.day) return;
     dayTok[t.day] = (dayTok[t.day] || 0) + Number(t.total || 0) + Number(t.cache_read || 0);
   }));
@@ -2584,17 +2646,32 @@ function renderRunway() {
   for (let i = 0; i < 7; i++) tok7 += dayTok[key(i)] || 0;
   const avg = tok7 / 7;
 
+  // 积分族（workbuddy/traework/qoder/codebuddy/autoclaw）：积分余额与净变动，无法折算 token，不参与天数换算
+  const creditAcc = accounts.filter(a => !isTokenUnit(a.kind));
+  const creditBalance = creditAcc.reduce((s, a) => s + Math.max(0, Number(a.remain || 0)), 0);
+  const cDelta = {};
+  creditAcc.forEach(a => (a.daily || []).forEach(d => {
+    if (!d.day) return;
+    cDelta[d.day] = (cDelta[d.day] || 0) + Number(d.delta || 0);
+  }));
+  let credit7 = 0;
+  for (let i = 0; i < 7; i++) credit7 += cDelta[key(i)] || 0;
+
   const ic = `<span class="runway-ic">${I.clock}</span>`;
-  if (balance <= 0 && avg <= 0) {
-    el.innerHTML = `<div class="asset-runway">${ic}暂无足够的余额 / 消耗数据用于续航估算</div>`;
-    return;
+  const lines = [];
+  if (tokenBalance > 0 || avg > 0) {
+    if (avg <= 0.5) {
+      lines.push(`<div class="asset-runway">${ic}<b>Token 族</b>：现有 <b>${fmtTokens(tokenBalance)}</b> token，近 7 日消耗极低，可长期续航</div>`);
+    } else {
+      const days = Math.floor(tokenBalance / avg);
+      lines.push(`<div class="asset-runway">${ic}<b>Token 族</b>：现有 <b>${fmtTokens(tokenBalance)}</b> token，近 7 日日均耗 <b>${fmtTokens(Math.round(avg))}</b>，预计续航约 <b>${days}</b> 天</div>`);
+    }
   }
-  if (avg <= 0.5) {
-    el.innerHTML = `<div class="asset-runway">${ic}现有 <b>${fmtTokens(balance)}</b> token，近 7 日消耗极低，可长期续航</div>`;
-    return;
+  if (creditBalance > 0 || credit7 !== 0) {
+    const sign = credit7 >= 0 ? "净消耗" : "净入账";
+    lines.push(`<div class="asset-runway">${ic}<b>积分族</b>：现有 <b>${fmtTotal(creditBalance)}</b> 积分，近 7 日${sign} <b>${fmtTotal(Math.abs(Math.round(credit7)))}</b>（含签到，无法折算 token）</div>`);
   }
-  const days = Math.floor(balance / avg);
-  el.innerHTML = `<div class="asset-runway">${ic}现有 <b>${fmtTokens(balance)}</b> token，近 7 日日均耗 <b>${fmtTokens(Math.round(avg))}</b>，预计续航约 <b>${days}</b> 天</div>`;
+  el.innerHTML = lines.length ? lines.join("") : `<div class="asset-runway">${ic}暂无足够的余额 / 消耗数据用于续航估算</div>`;
 }
 
 // 6. 账号 Token 生产力榜单（卡片流可视化：排名徽章 + 占比条形 + 关键数字右对齐）
