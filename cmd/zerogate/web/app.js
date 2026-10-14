@@ -1856,7 +1856,7 @@ function renderLogModelCell(l) {
 function renderLogErrorCell(l) {
   const isErr = l.status !== 200 || !!l.error;
   if (!isErr) {
-    return `<div class="audit-ok-cell"><span style="color:var(--ok); font-size:12px;">✓ 正常完成</span></div>`;
+    return `<div class="audit-ok-cell">${I.check}<span>正常完成</span></div>`;
   }
   let errText = l.error || `HTTP ${l.status} 异常响应`;
   errText = errText.replace(/[\r\n]+/g, " ").trim();
@@ -3202,13 +3202,41 @@ function renderSavingsTrend(auditDaily, tokenModels) {
     };
   });
 
+  // 统一统计口径：提取真实用户模型分布的加权单价，避免硬编码高价 FALLBACK 造成 14 天金额远超总看板
+  let wPromptCost = 0, totPrompt = 0;
+  let wCompCost = 0, totComp = 0;
+  let wCacheCost = 0, totCache = 0;
+  Object.entries(tokenModels || {}).forEach(([name, m]) => {
+    const p = modelPrice(name);
+    const pr = Number(m.prompt_tokens || 0);
+    const co = Number(m.completion_tokens || 0);
+    const ca = Number(m.cache_read_tokens || 0);
+    wPromptCost += (pr / 1e6) * p.in;
+    wCompCost += (co / 1e6) * p.out;
+    wCacheCost += (ca / 1e6) * p.cache;
+    totPrompt += pr;
+    totComp += co;
+    totCache += ca;
+  });
+
+  const effInRate = totPrompt > 0 ? (wPromptCost / totPrompt) * 1e6 : 0.15;
+  const effOutRate = totComp > 0 ? (wCompCost / totComp) * 1e6 : 0.60;
+  const effCacheRate = totCache > 0 ? (wCacheCost / totCache) * 1e6 : 0.03;
+
+  const calcDailyUSD = (prompt, comp, cache) => {
+    let c = Math.max(0, Math.min(cache, prompt));
+    if (prompt > 0 && c / prompt < EST_CACHE_MIN_RATE) c = prompt * EST_CACHE_HIT;
+    const plain = prompt - c;
+    return (plain * effInRate + comp * effOutRate + c * effCacheRate) / 1e6;
+  };
+
   const now = new Date();
   const days = [];
   let sumCny = 0;
   for (let i = 13; i >= 0; i--) {
     const key = localYMD(new Date(now.getTime() - i * 86400 * 1000));
     const m = dayMap[key] || { prompt: 0, comp: 0, cache: 0 };
-    const usd = priceUSD("", m.prompt, m.comp, m.cache);
+    const usd = calcDailyUSD(m.prompt, m.comp, m.cache);
     const cny = usd * USD_CNY;
     sumCny += cny;
     days.push({ day: key, label: key.slice(5), usd, cny, tokens: m.prompt + m.comp + m.cache });

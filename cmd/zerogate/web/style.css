@@ -1545,6 +1545,14 @@ html[data-ui-style="visual-novel"] .stat-card::before {
 
 .audit-table th {
   white-space: nowrap;
+  padding: 10px 14px;
+}
+.audit-table td {
+  padding: 10px 14px;
+  vertical-align: middle;
+}
+.audit-table th:nth-child(6), .audit-table td:nth-child(6) {
+  text-align: center;
 }
 .audit-table tr.audit-error-row {
   background: rgba(239, 68, 68, 0.05);
@@ -1556,7 +1564,8 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .audit-model-code {
   font-family: var(--mono);
@@ -1586,7 +1595,7 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   font-family: var(--mono);
 }
 .audit-cost-row, .audit-cost-cell {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
@@ -1605,6 +1614,7 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 .audit-credit-tag svg, .audit-token-tag svg {
   width: 12px;
@@ -1623,12 +1633,30 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 .audit-tok-text {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-sub);
   white-space: nowrap;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.audit-ok-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ok);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.88;
+}
+.audit-ok-cell svg {
+  width: 14px;
+  height: 14px;
+  stroke: var(--ok);
+  flex-shrink: 0;
 }
 .audit-error-action-cell {
   display: flex;
