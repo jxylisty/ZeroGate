@@ -30,8 +30,9 @@ type Entry struct {
 	PromptTokens     int64  `json:"prompt_tokens"`       // 输入 Token
 	CompletionTokens int64  `json:"completion_tokens"`   // 输出 Token
 	CacheTokens      int64  `json:"cache_tokens"`        // 缓存命中 Token
-	TotalTokens      int64  `json:"total_tokens"`        // 总 Token
-	DurationMs       int64  `json:"duration_ms"`         // 耗时毫秒
+	TotalTokens      int64   `json:"total_tokens"`        // 总 Token
+	Credits          float64 `json:"credits,omitempty"`   // 积分/额度消耗（针对某些渠道）
+	DurationMs       int64   `json:"duration_ms"`         // 耗时毫秒
 	TTFTMs           int64  `json:"ttft_ms,omitempty"`   // 首字延迟毫秒（流式=首帧到达；非流式=响应头就绪）
 	Status           int    `json:"status"`              // HTTP 状态码
 	Error            string `json:"error,omitempty"`     // 错误信息摘要

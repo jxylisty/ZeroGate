@@ -1270,6 +1270,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 						CompletionTokens: c,
 						CacheTokens:      cr,
 						TotalTokens:      p + c,
+						Credits:          track.Credits(),
 						DurationMs:       time.Since(startTime).Milliseconds(),
 						TTFTMs:           ttft,
 						Status:           auditStatus,
@@ -1293,6 +1294,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 				return
 			}
 			var p, c, cr, cw int64
+			var creditsVal float64
 			var usageRawSnippet string
 			if u, ok := resp["usage"].(map[string]any); ok {
 				p, _ = asInt(u["prompt_tokens"])
@@ -1318,6 +1320,13 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 				if raw, err := json.Marshal(u); err == nil && len(raw) <= 512 {
 					usageRawSnippet = string(raw)
 				}
+				if cv, ok := asFloat(u["credits"]); ok {
+					creditsVal = cv
+				} else if cv, ok := asFloat(u["cost"]); ok {
+					creditsVal = cv
+				} else if cv, ok := asFloat(u["credit"]); ok {
+					creditsVal = cv
+				}
 				cw, _ = asInt(u["prompt_cache_write_tokens"])
 				if cw == 0 {
 					cw, _ = asInt(u["cache_creation_input_tokens"])
@@ -1341,6 +1350,7 @@ func (h *Handler) serveChat(w http.ResponseWriter, r *http.Request, body []byte,
 					CompletionTokens: c,
 					CacheTokens:      cr,
 					TotalTokens:      p + c,
+					Credits:          creditsVal,
 					DurationMs:       time.Since(startTime).Milliseconds(),
 					TTFTMs:           hdrAt.Sub(startTime).Milliseconds(),
 					Status:           http.StatusOK,
@@ -1485,9 +1495,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // ---------------------------------------------------------------------------
 
 var (
-	usageObjRe = regexp.MustCompile(`"usage":\s*\{(.*?)\}`)
-	usageNumRe = regexp.MustCompile(`"(prompt_tokens|completion_tokens|total_tokens|prompt_cache_hit_tokens|cache_read_input_tokens|cached_tokens|prompt_cache_write_tokens|cache_creation_input_tokens)":\s*(\d+)`)
-	dataObjRe  = regexp.MustCompile(`^data:\s*(\{.*\})\s*$`)
+	usageObjRe     = regexp.MustCompile(`"usage":\s*\{(.*?)\}`)
+	usageNumRe     = regexp.MustCompile(`"(prompt_tokens|completion_tokens|total_tokens|prompt_cache_hit_tokens|cache_read_input_tokens|cached_tokens|prompt_cache_write_tokens|cache_creation_input_tokens)":\s*(\d+)`)
+	usageCreditsRe = regexp.MustCompile(`"(credits|cost|credit)":\s*([0-9.]+)`)
+	dataObjRe      = regexp.MustCompile(`^data:\s*(\{.*\})\s*$`)
 )
 
 // tokenTrackingReader 包裹上游 SSE 响应流：透明转发的同时按行抓取用量。
@@ -1505,6 +1516,7 @@ type tokenTrackingReader struct {
 	total      int64
 	cacheRead  int64
 	cacheWrite int64
+	credits    float64   // 上游返回的积分/额度消耗（针对某些渠道）
 	has        bool
 	usageRaw   string    // 最后一次见到的 usage 原文（审计取证：上游到底报没报缓存）
 	firstByte  time.Time // 首个上游字节到达时刻（TTFT 取证：区分"等首字慢"与"出字慢"）
@@ -1538,6 +1550,9 @@ func (t *tokenTrackingReader) ScanResult() (prompt, completion, cacheRead, cache
 	return t.prompt, t.completion, t.cacheRead, t.cacheWrite, t.has
 }
 
+// Credits 返回流中解析出的积分消耗。
+func (t *tokenTrackingReader) Credits() float64 { return t.credits }
+
 // UsageRaw 返回流中最后一次见到的 usage 原文，供审计取证（上游是否回传缓存字段）。
 func (t *tokenTrackingReader) UsageRaw() string { return t.usageRaw }
 
@@ -1565,6 +1580,11 @@ func (t *tokenTrackingReader) parseLine(line []byte) {
 		for _, kv := range usageNumRe.FindAllSubmatch(m[1], -1) {
 			v, _ := strconv.ParseInt(string(kv[2]), 10, 64)
 			t.applyField(string(kv[1]), v)
+		}
+		if cm := usageCreditsRe.FindSubmatch(m[1]); cm != nil {
+			if cv, err := strconv.ParseFloat(string(cm[2]), 64); err == nil {
+				t.credits = cv
+			}
 		}
 		return
 	}
@@ -1618,6 +1638,11 @@ func (t *tokenTrackingReader) parseLine(line []byte) {
 		} else if cw, ok := obj["cache_creation_input_tokens"].(float64); ok {
 			t.applyField("cache_creation_input_tokens", int64(cw))
 		}
+		if cv, ok := asFloat(obj["credits"]); ok {
+			t.credits = cv
+		} else if cv, ok := asFloat(obj["cost"]); ok {
+			t.credits = cv
+		}
 	}
 }
 
@@ -1653,6 +1678,30 @@ func (t *tokenTrackingReader) applyUsageMap(u map[string]any) {
 		if v, ok := asInt(d["cached_tokens"]); ok && v > t.cacheRead {
 			t.cacheRead = v
 		}
+	}
+	if cr, ok := asFloat(u["credits"]); ok {
+		t.credits = cr
+	} else if cr, ok := asFloat(u["cost"]); ok {
+		t.credits = cr
+	} else if cr, ok := asFloat(u["credit"]); ok {
+		t.credits = cr
+	}
+}
+
+// asFloat 把 JSON 反序列化的数字（float64, int64 或 string）安全转成 float64。
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int64:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case string:
+		fv, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return fv, err == nil
+	default:
+		return 0, false
 	}
 }
 

@@ -329,32 +329,51 @@ document.documentElement.dataset.uiStyle =
   <!-- Tab 4: 实时调用流水 -->
   <div class="tab-pane" id="tab-logs">
     <section class="panel">
-      <div class="panel-head">
-        <h2><span data-ic="scroll"></span>实时调用审计流水</h2>
-        <div class="panel-actions">
-          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer;">
-            <input type="checkbox" id="chkAutoRefreshLogs" checked> 自动刷新 (5s)
+      <div class="panel-head" style="flex-wrap:wrap; gap:12px;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <h2><span data-ic="scroll"></span>实时调用审计流水</h2>
+          <div class="audit-filter-pills" id="auditTypeFilters">
+            <button class="chip active" data-filter="all" id="btnFilterAllLogs">全部流水 <span class="mono-badge" id="badgeAllLogsCount">0</span></button>
+            <button class="chip" data-filter="error" id="btnFilterErrorLogs">仅看异常/报错 <span class="mono-badge danger" id="badgeErrorLogsCount">0</span></button>
+          </div>
+        </div>
+        <div class="panel-actions" style="flex-wrap:wrap; gap:8px;">
+          <select id="selAuditChannel" class="input small" style="width:115px;">
+            <option value="">全部渠道</option>
+          </select>
+          <select id="selAuditStatus" class="input small" style="width:125px;">
+            <option value="">全部状态</option>
+            <option value="error">仅异常 (非200)</option>
+            <option value="502">502 网关错误</option>
+            <option value="409">409 状态冲突</option>
+            <option value="429">429 频率受限</option>
+            <option value="500">500 内部异常</option>
+            <option value="200">200 正常完成</option>
+          </select>
+          <button class="btn small" id="btnCopyLatestError" title="一键复制最近一次异常的 AI 诊断报告">
+            <span data-ic="copy"></span>复制最新报错
+          </button>
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; margin-left:4px;">
+            <input type="checkbox" id="chkAutoRefreshLogs" checked> 自动刷新
           </label>
-          <button class="btn small primary" id="btnRefreshAuditLogs">手动刷新</button>
+          <button class="btn small primary" id="btnRefreshAuditLogs"><span data-ic="refresh"></span>手动刷新</button>
         </div>
       </div>
       <div class="data-table-wrap">
-        <table class="data-table">
+        <table class="data-table audit-table">
           <thead>
             <tr>
-              <th>时间</th>
-              <th>客户端</th>
-              <th>请求模型</th>
-              <th>命中渠道/账号</th>
-              <th>耗时</th>
-              <th>首字</th>
-              <th>Tokens</th>
-              <th>状态</th>
-              <th>详情</th>
+              <th style="width:75px;">时间</th>
+              <th style="width:110px;">客户端</th>
+              <th>渠道与模型调度</th>
+              <th style="width:105px;">耗时 / 首字</th>
+              <th style="width:145px;">计量 / 消耗</th>
+              <th style="width:95px;">状态</th>
+              <th>响应 / 报错详情与排查</th>
             </tr>
           </thead>
           <tbody id="auditLogsBody">
-            <tr><td colspan="8" style="text-align:center; color:var(--muted); padding:20px;">暂无调用记录</td></tr>
+            <tr><td colspan="7" style="text-align:center; color:var(--muted); padding:20px;">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1196,6 +1215,25 @@ document.documentElement.dataset.uiStyle =
     <div class="modal-actions">
       <button class="btn small" id="btnDbClose">关闭</button>
       <button class="btn small primary" id="btnDbRenew">立即保活</button>
+    </div>
+  </div>
+<!-- 调用详情与错误诊断弹层 -->
+<div class="overlay hidden" id="auditDetailOverlay">
+  <div class="modal modal-wide" style="max-width:680px;">
+    <div class="modal-title" style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span data-ic="scroll"></span>调用审计详情与错误诊断
+      </span>
+      <span id="auditDetailStatusPill"></span>
+    </div>
+    <div id="auditDetailContent" style="margin:14px 0;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;">
+      <span id="auditDetailId" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn small primary" id="btnCopyAuditReport">复制 AI 诊断报告</button>
+        <button class="btn small" id="btnCopyAuditRaw">复制原始报错</button>
+        <button class="btn small" id="btnCloseAuditDetail">关闭</button>
+      </div>
     </div>
   </div>
 </div>
