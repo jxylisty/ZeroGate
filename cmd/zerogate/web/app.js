@@ -158,8 +158,11 @@ function resourceExpireText(expireAt) {
   return md + " (剩" + days + "天)";
 }
 
+let activeCreditHoverUID = null;
+
 async function showCreditDetail(e, uid) {
   const el = e.currentTarget;
+  activeCreditHoverUID = uid;
   if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; }
 
   let d = detailCache[uid];
@@ -169,9 +172,12 @@ async function showCreditDetail(e, uid) {
       detailCache[uid] = d;
     } catch (err) { return; }
   }
+  // 核心时序防御：如果异步请求完成时，鼠标已经移开当前账号，则直接丢弃不展示
+  if (activeCreditHoverUID !== uid) return;
   if (!d || !d.items || !d.items.length) return;
 
-  let html = `<table class="detail-table"><thead><tr><th>套餐</th><th>总额</th><th>已用</th><th>剩余</th><th>到期</th></tr></thead><tbody>`;
+  let html = `<div class="credit-tip-head"><span>套餐明细 · ${esc(shortUid(uid))}</span><button class="credit-tip-close" onclick="closeCreditTip(event)">✕</button></div>`;
+  html += `<table class="detail-table"><thead><tr><th>套餐</th><th>总额</th><th>已用</th><th>剩余</th><th>到期</th></tr></thead><tbody>`;
   for (const it of d.items) {
     html += `<tr><td>${esc(it.name)}</td><td>${it.total}</td><td>${it.used}</td><td>${it.remain}</td><td>${esc(resourceExpireText(it.expire_at))}</td></tr>`;
   }
@@ -183,29 +189,51 @@ async function showCreditDetail(e, uid) {
     tip.id = "creditTip";
     tip.className = "credit-tip";
     document.body.appendChild(tip);
+    tip.addEventListener("mouseenter", () => {
+      if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; }
+    });
+    tip.addEventListener("mouseleave", () => {
+      closeCreditTip();
+    });
   }
   tip.innerHTML = html;
   tip.style.display = "block";
+  tip.classList.add("visible");
 
   const rect = el.getBoundingClientRect();
-  let left = rect.left, top = rect.bottom + 4;
-  if (top + 200 > window.innerHeight) top = rect.top - 200;
-  if (left + 280 > window.innerWidth) left = window.innerWidth - 290;
-  tip.style.left = left + "px";
-  tip.style.top = top + "px";
+  let left = rect.left, top = rect.bottom + 6;
+  if (top + 220 > window.innerHeight) top = Math.max(10, rect.top - 220);
+  if (left + 300 > window.innerWidth) left = window.innerWidth - 310;
+  tip.style.left = Math.max(8, left) + "px";
+  tip.style.top = Math.max(8, top) + "px";
 }
 
 function hideCreditDetail() {
+  activeCreditHoverUID = null;
   detailTimer = setTimeout(() => {
-    const tip = $("creditTip");
-    if (tip) tip.style.display = "none";
+    closeCreditTip();
   }, 200);
+}
+
+function closeCreditTip(e) {
+  if (e) e.stopPropagation();
+  activeCreditHoverUID = null;
+  if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; }
   const tip = $("creditTip");
   if (tip) {
-    tip.onmouseenter = () => { if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; } };
-    tip.onmouseleave = () => { tip.style.display = "none"; };
+    tip.classList.remove("visible");
+    tip.style.display = "none";
   }
 }
+
+// 页面滚动与点击外部时自动平滑隐藏悬浮窗
+window.addEventListener("scroll", () => closeCreditTip(), { passive: true });
+document.addEventListener("pointerdown", (e) => {
+  const tip = $("creditTip");
+  if (tip && tip.style.display !== "none" && !tip.contains(e.target) && !e.target.closest(".acct-credits")) {
+    closeCreditTip();
+  }
+});
 
 // ---------- 渲染 ----------
 function render() {
@@ -217,9 +245,23 @@ function render() {
 }
 
 function renderTopbar() {
-  $("ver").textContent = "v" + state.version;
-  $("serverLine").textContent = state.running ? "服务运行中" : "服务未启动";
-  $("aboutVer").textContent = state.version;
+  if ($("ver")) $("ver").textContent = "v" + state.version;
+  if ($("verTop")) $("verTop").textContent = "v" + state.version;
+  if ($("serverLine")) $("serverLine").textContent = state.running ? "服务运行中" : "服务未启动";
+  if ($("sidebarStatusText")) $("sidebarStatusText").textContent = state.running ? (state.listen_port + " 运行中") : "服务未启动";
+  const statusPill = $("sidebarStatusPill");
+  if (statusPill) {
+    statusPill.style.color = state.running ? "var(--ok)" : "var(--danger)";
+    statusPill.style.background = state.running ? "var(--ok-soft)" : "var(--danger-soft)";
+  }
+  if ($("sysRunStatusTag")) {
+    $("sysRunStatusTag").textContent = state.running ? "🟢 服务正常运行中" : "🔴 服务未启动";
+    $("sysRunStatusTag").className = state.running ? "tag ok" : "tag danger";
+  }
+  if ($("sysEnvDesc")) {
+    $("sysEnvDesc").textContent = `ZeroGate Core v${state.version} · 多渠道聚合中枢 · 监听 127.0.0.1:${state.listen_port}`;
+  }
+  if ($("aboutVer")) $("aboutVer").textContent = state.version;
 
   const host = (state.listen_host === "0.0.0.0" || state.listen_host === "" || state.listen_host === "::")
     ? "127.0.0.1" : state.listen_host;
@@ -441,8 +483,30 @@ function acctCardHTML(a) {
     </div>
     <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
     <div class="acct-mid">
-      <div class="acct-credits" onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()">${a.credits}<span>积分</span></div>
+      ${(() => {
+        const isTok = (a.group === "zcode" || a.group === "atria");
+        if (isTok) {
+          const formatted = fmtTokens(a.credits);
+          return `<div class="acct-credits is-token" onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()" title="${Number(a.credits || 0).toLocaleString()} Token">
+            ${formatted}<span>Token</span>
+          </div>`;
+        }
+        return `<div class="acct-credits" onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()" title="${Number(a.credits || 0).toLocaleString()} 积分">
+          ${Number(a.credits || 0).toLocaleString()}<span>积分</span>
+        </div>`;
+      })()}
       <div class="acct-tags">
+        ${(() => {
+          if (a.group === "zcode" || a.group === "atria") {
+            return `<span class="tag ratio-tag" title="官方按 Token 计量，1 积分 = 1 Token">💎 1分 = 1 Token</span>`;
+          }
+          if (a.group === "workbuddy") return `<span class="tag ratio-tag" title="普通模型约 1~2 积分/次">⚡ ~1-2分/次</span>`;
+          if (a.group === "traework") return `<span class="tag ratio-tag" title="每日重置额度">🔄 每日重置</span>`;
+          if (a.group === "qoder") return `<span class="tag ratio-tag" title="按量扣减积分">⚡ 按量扣减</span>`;
+          if (a.group === "codebuddy") return `<span class="tag ratio-tag" title="国际版按倍率扣分">⚡ 倍率扣分</span>`;
+          if (a.group === "autoclaw") return `<span class="tag ratio-tag" title="短请求≈1分">⚡ 短请求≈1分</span>`;
+          return "";
+        })()}
         ${expireTag}
         ${checkinTag}
       </div>
@@ -1288,16 +1352,18 @@ function bind() {
   if ($("btnRefreshAssets")) $("btnRefreshAssets").onclick = loadAssets;
 }
 
-// ---------- Tab 导航控制（同时接管原生 nav-tab 与 悬浮 Command Dock） ----------
+// ---------- Tab 导航控制（同时接管原生 nav-tab、侧边栏 sidebar 与 悬浮 Command Dock） ----------
 function initTabs() {
   const tabs = document.querySelectorAll(".nav-tab");
   const dockBtns = document.querySelectorAll(".dock-item-btn");
+  const sidebarBtns = document.querySelectorAll(".sidebar-item-btn");
   const panes = document.querySelectorAll(".tab-pane");
   const savedTab = localStorage.getItem("zg_active_tab") || "dashboard";
 
   function switchTab(name) {
     tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === name));
     dockBtns.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+    sidebarBtns.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     panes.forEach(p => p.classList.toggle("active", p.id === `tab-${name}`));
     localStorage.setItem("zg_active_tab", name);
     if (name === "dashboard") loadDashboard();
@@ -1308,6 +1374,7 @@ function initTabs() {
     else if (name === "growth") initGrowthTab();
     else if (name === "bridges") loadBridges();
     else if (name === "models") loadFees();
+    else if (name === "settings") loadSettingsView();
   }
 
   tabs.forEach(t => {
@@ -1316,13 +1383,182 @@ function initTabs() {
   dockBtns.forEach(b => {
     b.addEventListener("click", () => switchTab(b.dataset.tab));
   });
+  sidebarBtns.forEach(b => {
+    b.addEventListener("click", () => switchTab(b.dataset.tab));
+  });
 
   switchTabFn = switchTab;
   switchTab(savedTab);
 
-  // 初始化壁纸与双协议药丸复制
+  // 初始化壁纸、侧边栏、布局模式与双协议药丸复制
   initWallpaperSystem();
   initProtocolPills();
+  initSidebar();
+  initLayoutMode();
+}
+
+function initSidebar() {
+  const sidebar = $("zgSidebar");
+  const toggleBtn = $("btnToggleSidebar");
+  if (!sidebar) return;
+
+  const isCollapsed = localStorage.getItem("zg_sidebar_collapsed") === "true";
+  if (isCollapsed) {
+    sidebar.classList.add("sidebar-collapsed");
+  }
+
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      sidebar.classList.toggle("sidebar-collapsed");
+      const coll = sidebar.classList.contains("sidebar-collapsed");
+      localStorage.setItem("zg_sidebar_collapsed", coll ? "true" : "false");
+    };
+  }
+}
+
+function initLayoutMode() {
+  const container = $("zgAppContainer");
+  if (!container) return;
+  const mode = localStorage.getItem("zg_layout_mode") || "sidebar";
+  container.className = `layout-${mode}`;
+}
+
+function loadSettingsView() {
+  // 1. 布局模式切换（侧边栏 vs 底部 Dock）
+  const curLayout = localStorage.getItem("zg_layout_mode") || "sidebar";
+  const layoutChips = document.querySelectorAll("#settingLayoutSwitch .chip");
+  layoutChips.forEach(chip => {
+    chip.classList.toggle("active", chip.dataset.layout === curLayout);
+    chip.onclick = () => {
+      const mode = chip.dataset.layout;
+      localStorage.setItem("zg_layout_mode", mode);
+      const container = $("zgAppContainer");
+      if (container) container.className = `layout-${mode}`;
+      layoutChips.forEach(c => c.classList.toggle("active", c.dataset.layout === mode));
+      toast(`已切换至${mode === "sidebar" ? "现代侧边栏" : "底部赛博 Command Dock"}布局`);
+    };
+  });
+
+  // 2. 主题切换
+  const curTheme = document.body.classList.contains("light-theme") ? "light" : "dark";
+  const themeChips = document.querySelectorAll("#settingThemeSwitch .chip");
+  themeChips.forEach(chip => {
+    chip.classList.toggle("active", chip.dataset.theme === curTheme);
+    chip.onclick = () => {
+      const theme = chip.dataset.theme;
+      if (theme === "light") {
+        document.body.classList.add("light-theme");
+      } else {
+        document.body.classList.remove("light-theme");
+      }
+      localStorage.setItem("zg_theme", theme);
+      themeChips.forEach(c => c.classList.toggle("active", c.dataset.theme === theme));
+      document.dispatchEvent(new CustomEvent("zg:themechange", { detail: { theme } }));
+      toast(`已切换为${theme === "light" ? "浅色" : "深色二次元"}模式`);
+    };
+  });
+
+  // 3. 设置中的壁纸缩略图与滑块同步
+  const savedWp = localStorage.getItem("zg_wallpaper") || "./wallpapers/cyberpunk.jpg";
+  document.querySelectorAll(".wp-grid-mini .wp-thumb").forEach(th => {
+    th.classList.toggle("active", th.dataset.wp === savedWp);
+    th.onclick = () => {
+      const wp = th.dataset.wp;
+      localStorage.setItem("zg_wallpaper", wp);
+      const layer = $("zgVnBgLayer");
+      if (layer) layer.style.backgroundImage = `url('${wp}')`;
+      document.querySelectorAll(".wp-thumb").forEach(t => t.classList.toggle("active", t.dataset.wp === wp));
+      toast("已更换壁纸 ✨");
+    };
+  });
+
+  const inpAlphaSet = $("inpMaskAlphaSetting");
+  const txtAlphaSet = $("txtMaskAlphaSetting");
+  const savedAlpha = localStorage.getItem("zg_mask_alpha") || "0.72";
+  if (inpAlphaSet) {
+    inpAlphaSet.value = savedAlpha;
+    if (txtAlphaSet) txtAlphaSet.textContent = Math.round(savedAlpha * 100) + "%";
+    inpAlphaSet.oninput = () => {
+      const v = inpAlphaSet.value;
+      document.documentElement.style.setProperty("--vn-mask-alpha", v);
+      localStorage.setItem("zg_mask_alpha", v);
+      if (txtAlphaSet) txtAlphaSet.textContent = Math.round(v * 100) + "%";
+      const inpAlphaMain = $("inpMaskAlpha");
+      if (inpAlphaMain) inpAlphaMain.value = v;
+    };
+  }
+
+  const inpBlurSet = $("inpMaskBlurSetting");
+  const txtBlurSet = $("txtMaskBlurSetting");
+  const savedBlur = localStorage.getItem("zg_mask_blur") || "5";
+  if (inpBlurSet) {
+    inpBlurSet.value = savedBlur;
+    if (txtBlurSet) txtBlurSet.textContent = savedBlur + "px";
+    inpBlurSet.oninput = () => {
+      const v = inpBlurSet.value;
+      document.documentElement.style.setProperty("--vn-mask-blur", v + "px");
+      localStorage.setItem("zg_mask_blur", v);
+      if (txtBlurSet) txtBlurSet.textContent = v + "px";
+      const inpBlurMain = $("inpMaskBlur");
+      if (inpBlurMain) inpBlurMain.value = v;
+    };
+  }
+
+  // 4. 网关服务与端点配置
+  if (state) {
+    if ($("cfgListenHost") && !$("cfgListenHost").value) $("cfgListenHost").value = state.listen_host || "127.0.0.1";
+    if ($("cfgListenPort") && !$("cfgListenPort").value) $("cfgListenPort").value = state.listen_port || 7863;
+    if ($("cfgApiKey") && !$("cfgApiKey").value) $("cfgApiKey").value = state.api_key || "WildWorkAPI";
+    if ($("chkAutostart")) $("chkAutostart").checked = !!state.autostart;
+    if ($("sysEnvDesc")) $("sysEnvDesc").textContent = `ZeroGate Core v2.0.1 · 多渠道聚合中枢 · ${state.listen_host || "127.0.0.1"}:${state.listen_port || 7863}`;
+  }
+
+  if ($("btnSaveListenCfg")) {
+    $("btnSaveListenCfg").onclick = async () => {
+      const host = ($("cfgListenHost").value || "").trim() || "127.0.0.1";
+      const port = parseInt($("cfgListenPort").value, 10) || 7863;
+      try {
+        await api("/api/config/listen", { host, port });
+        toast("监听配置已保存（端点改动在重启后生效）");
+        await loadState();
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  if ($("btnSaveApiKeyCfg")) {
+    $("btnSaveApiKeyCfg").onclick = async () => {
+      const key = ($("cfgApiKey").value || "").trim();
+      if (!key) { toast("API Key 不能为空"); return; }
+      try {
+        await api("/api/config/api_key", { key });
+        toast("主 API-Key 已保存");
+        await loadState();
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  // 5. 缓存与数据维护
+  if ($("btnRefreshFeesCache")) {
+    $("btnRefreshFeesCache").onclick = async () => {
+      await loadFees();
+      toast("渠道模型价格与费率缓存已刷新");
+    };
+  }
+
+  if ($("btnClearLocalCache")) {
+    $("btnClearLocalCache").onclick = () => {
+      confirmDialog("确定要清除前端本地个性化缓存吗？这会恢复默认壁纸和布局设置。", () => {
+        localStorage.removeItem("zg_wallpaper");
+        localStorage.removeItem("zg_mask_alpha");
+        localStorage.removeItem("zg_mask_blur");
+        localStorage.removeItem("zg_layout_mode");
+        localStorage.removeItem("zg_sidebar_collapsed");
+        localStorage.removeItem("zg_theme");
+        toast("本地配置已重置，正在重新应用默认值…");
+        setTimeout(() => location.reload(), 800);
+      });
+    };
+  }
 }
 
 function initWallpaperSystem() {
@@ -1765,28 +2001,57 @@ async function loadAssets() {
     const res = await fetch("/api/assets");
     if (!res.ok) return;
     const data = await res.json();
-    const conv = data.channels.filter(c => c.convertible);
-    const convTokens = conv.reduce((s, c) => s + (c.tokens || 0), 0);
-    const convCredits = conv.reduce((s, c) => s + (c.credits || 0), 0);
-    $("assetHeroTokens").textContent = fmtTotal(convTokens) + " tokens";
-    $("assetHeroCredits").textContent =
-      `来自 ${conv.map(c => c.channel).join(" + ")} · 合计 ${fmtTotal(convCredits)} 积分 · 1 积分 = 1 token（实测口径）`;
-    $("assetsUpdatedAt").textContent = "更新于 " + (data.updated_at || "");
-    const tb = $("assetsTable").querySelector("tbody");
-    tb.innerHTML = data.channels.map(c => {
-      const meta = CHANNEL_METAS[c.channel] || { name: c.channel, color: "#64748b" };
-      const tok = c.convertible ? fmtTotal(c.tokens) : '<span style="color:var(--muted)">不可折算</span>';
-      const note = c.note ? `<span class="assets-note">${esc(c.note)}</span>` : "";
-      const acct = `${c.healthy}/${c.accounts}`;
-      return `
-        <tr>
-          <td><span class="badge" style="background:${meta.color}1a; color:${meta.color};">${esc(meta.name)}</span></td>
-          <td>${acct}${c.healthy < c.accounts ? ' <span class="assets-note">(健康/总数)</span>' : ""}</td>
-          <td><strong>${fmtTotal(c.credits)}</strong></td>
-          <td>${tok}</td>
-          <td>${note}</td>
-        </tr>`;
-    }).join("");
+    const channels = data.channels || [];
+
+    // 1. Token 核心储备库 (zcode, atria 等实测 1:1 Token 渠道)
+    const tokenChs = channels.filter(c => c.convertible || c.channel === "zcode" || c.channel === "atria");
+    const totalTokens = tokenChs.reduce((s, c) => s + (c.tokens || c.credits || 0), 0);
+    const heroTokEl = $("assetHeroTokens");
+    if (heroTokEl) heroTokEl.textContent = fmtTotal(totalTokens) + " Token";
+    const heroCredEl = $("assetHeroCredits");
+    if (heroCredEl) {
+      heroCredEl.textContent = `来自 ${tokenChs.map(c => (CHANNEL_METAS[c.channel] && CHANNEL_METAS[c.channel].name) || c.channel).join(" + ")} · 1 积分 = 1 Token（直通官方）`;
+    }
+
+    const tokTb = $("tokenAssetsBody");
+    if (tokTb) {
+      tokTb.innerHTML = tokenChs.map(c => {
+        const meta = CHANNEL_METAS[c.channel] || { name: c.channel, color: "#6366f1" };
+        const acct = `${c.healthy}/${c.accounts}`;
+        const note = c.note || "1 积分 = 1 Token · 直通上游";
+        return `
+          <tr>
+            <td><span class="badge" style="background:${meta.color}1a; color:${meta.color};">${esc(meta.name)}</span></td>
+            <td><strong>${acct}</strong> 账号在线</td>
+            <td><strong style="color:var(--ok); font-family:var(--mono); font-size:14px;">${fmtTotal(c.tokens || c.credits)}</strong> Token</td>
+            <td><span class="assets-note">${esc(note)}</span></td>
+          </tr>`;
+      }).join("") || `<tr><td colspan="4" style="text-align:center; color:var(--muted); padding:16px;">暂无 Token 储备渠道</td></tr>`;
+    }
+
+    // 2. 各渠道配额与积分池 (workbuddy, traework, qoder, codebuddy, autoclaw)
+    const creditChs = channels.filter(c => !c.convertible && c.channel !== "zcode" && c.channel !== "atria");
+    const totalCredits = creditChs.reduce((s, c) => s + (c.credits || 0), 0);
+    const heroCreditsTotalEl = $("assetHeroCreditsTotal");
+    if (heroCreditsTotalEl) heroCreditsTotalEl.textContent = fmtTotal(totalCredits) + " 积分/额度";
+    if ($("assetsUpdatedAt")) $("assetsUpdatedAt").textContent = "更新于 " + (data.updated_at || "");
+
+    const credTb = $("creditAssetsBody");
+    if (credTb) {
+      credTb.innerHTML = creditChs.map(c => {
+        const meta = CHANNEL_METAS[c.channel] || { name: c.channel, color: "#64748b" };
+        const acct = `${c.healthy}/${c.accounts}`;
+        const note = c.note || "按量扣除 / 每日配额制";
+        return `
+          <tr>
+            <td><span class="badge" style="background:${meta.color}1a; color:${meta.color};">${esc(meta.name)}</span></td>
+            <td><strong>${acct}</strong> 账号在线</td>
+            <td><strong style="color:var(--chart-credit); font-family:var(--mono); font-size:14px;">${fmtTotal(c.credits)}</strong></td>
+            <td><span class="assets-note">${esc(note)}</span></td>
+          </tr>`;
+      }).join("") || `<tr><td colspan="4" style="text-align:center; color:var(--muted); padding:16px;">暂无积分渠道</td></tr>`;
+    }
+
     renderRunway();
   } catch (e) { /* 面板加载失败静默 */ }
 }
@@ -2174,34 +2439,58 @@ function renderCreditTrend(accounts) {
   `;
 }
 
+// 统一按日 Token 用量对账汇总（统一趋势图与热力图的统计口径，彻底解决两图数据不一致问题）
+function buildUnifiedDailyTokenMap(auditDaily, accounts) {
+  const map = {};
+
+  // 1. 优先以审计日志 auditDaily 为网关级全量事实源
+  (auditDaily || []).forEach(d => {
+    if (!d.day) return;
+    const prompt = Number(d.prompt || 0);
+    const comp = Number(d.completion || 0);
+    const cache = Number(d.cache || 0);
+    // 后端 audit 的 d.total 为 prompt + comp，包含 cache 的全口径消耗为 prompt + comp + cache
+    const total = prompt + comp + cache;
+    map[d.day] = { prompt, comp, cache, total };
+  });
+
+  // 2. 从 accounts.tokens 聚合各账号的按日明细（对同一天进行账号间累加求和）
+  const acctDayMap = {};
+  (accounts || []).forEach(a => {
+    (a.tokens || []).forEach(t => {
+      if (!t.day) return;
+      const p = Number(t.prompt || 0);
+      const c = Number(t.completion || 0);
+      const k = Number(t.cache_read || 0) + Number(t.cache_write || 0);
+      const tot = (t.total != null && Number(t.total) > 0) ? Number(t.total) : (p + c + k);
+      if (!acctDayMap[t.day]) {
+        acctDayMap[t.day] = { prompt: 0, comp: 0, cache: 0, total: 0 };
+      }
+      acctDayMap[t.day].prompt += p;
+      acctDayMap[t.day].comp += c;
+      acctDayMap[t.day].cache += k;
+      acctDayMap[t.day].total += tot;
+    });
+  });
+
+  // 3. 合并：若该日 audit 无数据（或 total 为 0），取 accounts 聚合；若两者皆有，取较大值以兼顾历史补录
+  for (const [day, val] of Object.entries(acctDayMap)) {
+    if (!map[day] || map[day].total === 0) {
+      map[day] = val;
+    } else if (val.total > map[day].total) {
+      map[day] = val;
+    }
+  }
+
+  return map;
+}
+
 // 2. 近 14 天 Token 每日消耗趋势（SVG 堆叠柱状图）
 function renderTokenTrend(auditDaily, accounts) {
   const wrap = $("tokenTrendChartWrap");
   if (!wrap) return;
 
-  const dayMap = {};
-
-  // 来源 A: auditDaily（audit_daily.json 落盘的按日聚合，含历史明细）
-  (auditDaily || []).forEach(d => {
-    if (!d.day) return;
-    dayMap[d.day] = dayMap[d.day] || { prompt: 0, comp: 0, cache: 0, total: 0 };
-    dayMap[d.day].prompt += Number(d.prompt || 0);
-    dayMap[d.day].comp += Number(d.completion || 0);
-    dayMap[d.day].cache += Number(d.cache || 0);
-    dayMap[d.day].total += Number(d.total || 0);
-  });
-
-  // 来源 B: accounts.tokens（各账号自带的按日历史，与 A 取 max 合并避免双计）
-  (accounts || []).forEach(a => {
-    (a.tokens || []).forEach(t => {
-      if (!t.day) return;
-      dayMap[t.day] = dayMap[t.day] || { prompt: 0, comp: 0, cache: 0, total: 0 };
-      dayMap[t.day].prompt = Math.max(dayMap[t.day].prompt, Number(t.prompt || 0));
-      dayMap[t.day].comp = Math.max(dayMap[t.day].comp, Number(t.completion || 0));
-      dayMap[t.day].cache = Math.max(dayMap[t.day].cache, Number(t.cache_read || 0));
-      dayMap[t.day].total = Math.max(dayMap[t.day].total, Number(t.total || 0));
-    });
-  });
+  const dayMap = buildUnifiedDailyTokenMap(auditDaily, accounts);
 
   // 生成近 14 天序列（本地时区日期，与后端 audit_daily.json 的日 key 对齐）
   const days = [];
@@ -2212,7 +2501,7 @@ function renderTokenTrend(auditDaily, accounts) {
     days.push({ day: key, label: key.slice(5), ...item });
   }
 
-  const maxTotal = Math.max(...days.map(d => d.total + d.cache), 1000);
+  const maxTotal = Math.max(...days.map(d => d.total), 1000);
 
   const W = 740, H = 220;
   const padLeft = 55, padRight = 15, padTop = 20, padBottom = 28;
@@ -2245,7 +2534,7 @@ function renderTokenTrend(auditDaily, accounts) {
     const cY = pY - cHeight;
     const kY = cY - kHeight;
 
-    const tip = `${d.day}\n总计: ${fmtTokens(d.total + d.cache)}\n输入: ${fmtTokens(d.prompt)}\n输出: ${fmtTokens(d.comp)}\n缓存: ${fmtTokens(d.cache)}`;
+    const tip = `${d.day}\n总计消耗: ${fmtTokens(d.total)}\n输入: ${fmtTokens(d.prompt)}\n输出: ${fmtTokens(d.comp)}\n缓存: ${fmtTokens(d.cache)}`;
 
     bars += `
       <g class="chart-bar-group">
@@ -2266,23 +2555,12 @@ function renderTokenTrend(auditDaily, accounts) {
   `;
 }
 
-// 2.5 Token 日历热力图（GitHub 贡献图风格：从最早有数据的周画起，最多 26 周，色阶=当日 Token 量）
+// 2.5 Token 日历热力图（GitHub 贡献图风格：与趋势图 100% 同口径对账）
 function renderTokenHeatmap(auditDaily, accounts) {
   const wrap = $("tokenHeatmapWrap");
   if (!wrap) return;
 
-  // 与趋势图同口径的双数据源合并
-  const dayMap = {};
-  (auditDaily || []).forEach(d => {
-    if (!d.day) return;
-    dayMap[d.day] = (dayMap[d.day] || 0) + Number(d.total || 0);
-  });
-  (accounts || []).forEach(a => {
-    (a.tokens || []).forEach(t => {
-      if (!t.day) return;
-      dayMap[t.day] = Math.max(dayMap[t.day] || 0, Number(t.total || 0));
-    });
-  });
+  const dayMap = buildUnifiedDailyTokenMap(auditDaily, accounts);
 
   // 区间：从最早有数据的日子的所在周（周日）往后画到今天，前置最多 2 周空格做上下文，总长最多 26 周
   const WEEK_MAX = 26, LEAD_WEEKS = 2;
@@ -2306,8 +2584,8 @@ function renderTokenHeatmap(auditDaily, accounts) {
   const totalDays = Math.round((today - gridStart) / 86400e3) + 1;
   const nWeeks = Math.min(WEEK_MAX, Math.ceil(totalDays / 7));
 
-  const tokensOf = d => dayMap[localYMD(d)] || 0;
-  const allVals = Object.values(dayMap).filter(v => v > 0).sort((a, b) => a - b);
+  const tokensOf = d => (dayMap[localYMD(d)] ? dayMap[localYMD(d)].total : 0);
+  const allVals = Object.values(dayMap).map(v => v.total).filter(v => v > 0).sort((a, b) => a - b);
   const q = p => allVals.length ? allVals[Math.min(allVals.length - 1, Math.floor(allVals.length * p))] : 0;
   const t1 = Math.max(q(0.25), 1), t2 = Math.max(q(0.5), t1 + 1), t3 = Math.max(q(0.75), t2 + 1);
   const level = v => v <= 0 ? 0 : v < t1 ? 1 : v < t2 ? 2 : v < t3 ? 3 : 4;
@@ -2530,12 +2808,11 @@ function renderLowBalanceAccounts(accounts) {
   }).join("");
 }
 
-// 5.5 累计白嫖节省金额走势（每日 Token 构成 × priceUSD 逐日折算后累加，SVG 面积折线）
+// 5.5 近 14 天每日白嫖节省金额走势（每日 Token 消耗 × priceUSD 逐日折算为人民币，SVG 柱状图 + 14 天均线）
 function renderSavingsTrend(auditDaily, tokenModels) {
   const wrap = $("savingsTrendChartWrap");
   if (!wrap) return;
 
-  // 每日 Token 构成（audit_daily 落盘，含 prompt/completion/cache）
   const dayMap = {};
   (auditDaily || []).forEach(d => {
     if (!d.day) return;
@@ -2548,79 +2825,83 @@ function renderSavingsTrend(auditDaily, tokenModels) {
 
   const now = new Date();
   const days = [];
+  let sumCny = 0;
   for (let i = 13; i >= 0; i--) {
     const key = localYMD(new Date(now.getTime() - i * 86400 * 1000));
     const m = dayMap[key] || { prompt: 0, comp: 0, cache: 0 };
-    // 单日节省：无按日模型明细，按全局口径 + 中档单价折算（与 Hero 兜底同逻辑）
     const usd = priceUSD("", m.prompt, m.comp, m.cache);
-    days.push({ day: key, label: key.slice(5), usd, tokens: m.prompt + m.comp + m.cache });
+    const cny = usd * USD_CNY;
+    sumCny += cny;
+    days.push({ day: key, label: key.slice(5), usd, cny, tokens: m.prompt + m.comp + m.cache });
   }
 
-  const anyData = days.some(d => d.usd > 0.0001);
+  const anyData = days.some(d => d.cny > 0.01);
   if (!anyData) {
-    wrap.innerHTML = `<div class="empty-chart">暂无按日 Token 数据，跑起业务后这里会显示累计节省走势</div>`;
+    wrap.innerHTML = `<div class="empty-chart">暂无按日 Token 数据，跑起业务后这里会显示每日白嫖节省金额（折合人民币）</div>`;
     return;
   }
 
-  let cum = 0;
-  days.forEach(d => { cum += d.usd; d.cum = cum; });
-  const maxCum = cum || 1;
+  const avgCny = sumCny / 14;
+  const maxCny = Math.max(...days.map(d => d.cny), avgCny * 1.3, 10);
 
   const W = 740, H = 220;
-  const padLeft = 60, padRight = 15, padTop = 20, padBottom = 28;
+  const padLeft = 60, padRight = 15, padTop = 24, padBottom = 28;
   const chartW = W - padLeft - padRight;
   const chartH = H - padTop - padBottom;
 
-  const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
-  const cOk = cssVar("--ok");
+  const cGrid = cssVar("--chart-grid") || "rgba(255,255,255,0.08)";
+  const cLabel = cssVar("--chart-label") || "rgba(255,255,255,0.5)";
+  const cOk = cssVar("--ok") || "#10b981";
+  const cAvg = "#f59e0b"; // 均线琥珀金
 
-  const stepW = chartW / Math.max(1, days.length - 1);
-  const xOf = i => padLeft + i * stepW;
-  const yOf = v => padTop + chartH - (v / maxCum) * chartH;
+  const stepW = chartW / days.length;
+  const barW = Math.max(16, Math.min(30, stepW * 0.62));
+  const yOf = v => padTop + chartH - (v / maxCny) * chartH;
 
   let grid = "";
   for (let step = 0; step <= 4; step++) {
-    const v = (maxCum / 4) * step;
+    const v = (maxCny / 4) * step;
     const y = yOf(v);
     grid += `
       <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
-      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">¥${(v * USD_CNY).toFixed(1)}</text>
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">¥${v.toFixed(1)}</text>
     `;
   }
 
-  const pts = days.map((d, i) => `${xOf(i)},${yOf(d.cum)}`).join(" ");
-  const areaPath = `M ${xOf(0)},${padTop + chartH} L ${days.map((d, i) => `${xOf(i)},${yOf(d.cum)}`).join(" L ")} L ${xOf(days.length - 1)},${padTop + chartH} Z`;
-
-  let dots = "";
+  let bars = "";
   days.forEach((d, i) => {
-    const tip = `${d.day}\n当日节省 ¥${(d.usd * USD_CNY).toFixed(2)}\n累计节省 ¥${(d.cum * USD_CNY).toFixed(2)}`;
-    dots += `
+    const x = padLeft + i * stepW + (stepW - barW) / 2;
+    const barH = (d.cny / maxCny) * chartH;
+    const y = padTop + chartH - barH;
+    const tip = `${d.day}\n今日白嫖节省: ¥${d.cny.toFixed(2)} (折合 $${d.usd.toFixed(2)})\n当日 Token: ${fmtTokens(d.tokens)}`;
+    bars += `
       <g class="chart-bar-group">
         <title>${esc(tip)}</title>
-        <circle cx="${xOf(i)}" cy="${yOf(d.cum)}" r="6" fill="transparent" />
-        <circle cx="${xOf(i)}" cy="${yOf(d.cum)}" r="2.5" fill="${cOk}" />
+        <rect x="${x}" y="${y}" width="${barW}" height="${Math.max(2, barH)}" fill="${cOk}" rx="3" opacity="0.88" />
+        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
       </g>
     `;
   });
 
-  let xLabels = "";
-  days.forEach((d, i) => {
-    xLabels += `<text x="${xOf(i)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>`;
-  });
+  // 14 天均线
+  const avgY = yOf(avgCny);
+  const avgLine = `
+    <g>
+      <title>14 天日均节省: ¥${avgCny.toFixed(2)}</title>
+      <line x1="${padLeft}" y1="${avgY}" x2="${W - padRight}" y2="${avgY}" stroke="${cAvg}" stroke-dasharray="6,4" stroke-width="1.5" />
+      <text x="${W - padRight - 4}" y="${avgY - 6}" text-anchor="end" font-size="10" fill="${cAvg}" font-weight="600">14天日均: ¥${avgCny.toFixed(2)}</text>
+    </g>
+  `;
 
   wrap.innerHTML = `
+    <div style="display:flex;justify-content:space-between;padding:0 8px 6px;font-size:11px;color:var(--muted);">
+      <span>近 14 天累计节省: <b style="color:var(--ok);font-size:12px;">¥${sumCny.toFixed(2)}</b> (约 $${(sumCny / USD_CNY).toFixed(2)})</span>
+      <span>14 天日均: <b style="color:${cAvg};font-size:12px;">¥${avgCny.toFixed(2)} / 天</b></span>
+    </div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
-      <defs>
-        <linearGradient id="savingsGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="${cOk}" stop-opacity="0.35" />
-          <stop offset="100%" stop-color="${cOk}" stop-opacity="0" />
-        </linearGradient>
-      </defs>
       ${grid}
-      <path d="${areaPath}" fill="url(#savingsGrad)" stroke="none" />
-      <polyline points="${pts}" fill="none" stroke="${cOk}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-      ${dots}
-      ${xLabels}
+      ${bars}
+      ${avgLine}
     </svg>
   `;
 }
@@ -3032,11 +3313,11 @@ function bridgeCardHTML(st) {
   // 已在运行（含进程在但接口未就绪）时不再给「启动」：避免与「停止」并列的
   // 矛盾操作，也防止重复拉起第二个进程；要重启就先停止再启动。
   const startBtn = (st.online || st.running) ? "" :
-    `<button class="btn small primary" onclick="bridgeStart('${esc(st.id)}')">启动</button>`;
+    `<button class="btn small primary" onclick="bridgeStart(this, '${esc(st.id)}')">启动</button>`;
   // 可停止 = 非外部托管，且（本面板拉起在跑，或端口型服务在线——后者即使 daemon
   // 重启丢了句柄，后端也能按监听端口定位 PID 兜底杀掉）。
   const stopBtn = (!st.no_stop && (st.running || (st.online && st.port)))
-    ? `<button class="btn small danger" onclick="bridgeStop('${esc(st.id)}')">停止</button>`
+    ? `<button class="btn small danger" onclick="bridgeStop(this, '${esc(st.id)}')">停止</button>`
     : "";
   return `
     <div class="bridge-card${st.online ? " is-online" : ""}">
@@ -3056,7 +3337,32 @@ function bridgeCardHTML(st) {
 function renderBridges(list) {
   const wrap = $("bridgeList");
   if (!wrap) return;
-  let html = "";
+
+  const isSaturday = (new Date()).getDay() === 6;
+  const satBanner = isSaturday
+    ? `
+      <div class="bridge-claim-banner active">
+        <div class="bcb-icon">🎁</div>
+        <div class="bcb-content">
+          <div class="bcb-title">今日周六 · ZCode 周末计划免费 3 亿 Token 领取日！</div>
+          <div class="bcb-desc">请前往 ZCode 控制台领取本周 3 亿免费 Token，并启动下方「ZCode 桥 (端口 8000)」无缝注入网关。</div>
+        </div>
+        <div class="bcb-actions">
+          <button class="btn small primary" onclick="bridgeStart(null, 'zcode')">一键启动 ZCode 桥</button>
+        </div>
+      </div>
+    `
+    : `
+      <div class="bridge-claim-banner">
+        <div class="bcb-icon">💡</div>
+        <div class="bcb-content">
+          <div class="bcb-title">ZCode 周末 3 亿 Token 计划提醒</div>
+          <div class="bcb-desc">每逢周六 ZCode 开放免费领取 300,000,000 Token 周末 Build 额度。当前非周六，可在周六开放时一键注入。</div>
+        </div>
+      </div>
+    `;
+
+  let html = satBanner;
   for (const g of BRIDGE_GROUPS) {
     const items = list.filter((x) => x.group === g.key);
     if (!items.length) continue;
@@ -3085,23 +3391,35 @@ async function loadBridges() {
   }
 }
 
-async function bridgeStart(id) {
+async function bridgeStart(btn, id) {
+  if (typeof btn === "string") { id = btn; btn = null; }
+  if (btn) {
+    btn.classList.add("is-loading");
+    btn.disabled = true;
+    btn.textContent = "启动中…";
+  }
   try {
     const r = await api("/api/bridges/start", { id });
     if (r.error) toast(`${r.status && r.status.name ? r.status.name : id}：${r.error}`);
     else if (r.status && r.status.online) toast(`${r.status.name} 已在线`);
     else toast(`${r.status && r.status.name ? r.status.name : id} 启动指令已发出，等待就绪`);
   } catch (e) { toast(e.message); }
-  loadBridges();
+  await loadBridges();
 }
 
-function bridgeStop(id) {
+function bridgeStop(btn, id) {
+  if (typeof btn === "string") { id = btn; btn = null; }
   confirmDialog("确定停止该服务？停止后依赖它的功能将不可用。", async () => {
+    if (btn) {
+      btn.classList.add("is-loading");
+      btn.disabled = true;
+      btn.textContent = "停止中…";
+    }
     try {
       const r = await api("/api/bridges/stop", { id });
       toast(r.error || `${r.status && r.status.name ? r.status.name : id} 已停止`);
     } catch (e) { toast(e.message); }
-    loadBridges();
+    await loadBridges();
   });
 }
 

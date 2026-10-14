@@ -19,51 +19,115 @@ document.documentElement.dataset.uiStyle =
 <!-- 🌸 视觉小说全景壁纸与暗角遮罩层 -->
 <div id="zgVnBgLayer"><div id="zgVnBgMask"></div></div>
 
-<div id="app">
+<div id="zgAppContainer" class="layout-sidebar">
 
-  <!-- 顶部悬浮控制岛 -->
-  <header class="topbar">
-    <div class="brand">
+  <!-- 🌸 现代化左侧导航侧边栏 -->
+  <aside id="zgSidebar">
+    <div class="sidebar-brand">
       <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
-      <div class="brand-text">
-        <div class="title">ZeroGate <span class="ver" id="ver"></span></div>
+      <div class="brand-info">
+        <div class="brand-title">ZeroGate <span class="ver" id="ver"></span></div>
+        <div class="brand-status-pill" id="sidebarStatusPill" title="服务监听在 127.0.0.1:7863">
+          <span class="status-pulse"></span>
+          <span class="status-text" id="sidebarStatusText">7863 运行中</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 侧边栏导航分组 -->
+    <nav class="sidebar-nav" id="sidebarNav">
+      <div class="nav-group-title">监控中心</div>
+      <button class="sidebar-item-btn active" data-tab="dashboard">
+        <span data-ic="grid"></span><span>概览看板</span>
+      </button>
+      <button class="sidebar-item-btn" data-tab="usage">
+        <span data-ic="trend"></span><span>Token 资产</span>
+      </button>
+
+      <div class="nav-group-title">账号与调度</div>
+      <button class="sidebar-item-btn" data-tab="arsenal">
+        <span data-ic="bot"></span><span>账号矩阵</span>
+      </button>
+      <button class="sidebar-item-btn" data-tab="router">
+        <span data-ic="shuffle"></span><span>模型路由</span>
+      </button>
+      <button class="sidebar-item-btn" data-tab="models">
+        <span data-ic="layers"></span><span>渠道模型</span>
+      </button>
+
+      <div class="nav-group-title">服务与流水</div>
+      <button class="sidebar-item-btn" data-tab="bridges">
+        <span data-ic="link"></span><span>本地桥服务</span>
+      </button>
+      <button class="sidebar-item-btn" data-tab="clients">
+        <span data-ic="key"></span><span>客户端 Key</span>
+      </button>
+      <button class="sidebar-item-btn" data-tab="logs">
+        <span data-ic="scroll"></span><span>实时流水</span>
+      </button>
+
+      <div class="nav-group-title">系统中心</div>
+      <button class="sidebar-item-btn" data-tab="growth">
+        <span data-ic="gift"></span><span>成长中心</span>
+      </button>
+      <button class="sidebar-item-btn" data-tab="settings">
+        <span data-ic="settings"></span><span>系统设置</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="sidebar-action-btn" id="btnSidebarCollapse" title="折叠/展开侧栏">
+        <span data-ic="chevron"></span>
+      </button>
+      <button class="sidebar-action-btn" id="btnSidebarTheme" onclick="window.__toggleTheme()" title="切换明暗主题">
+        <span data-ic="sun"></span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- 右侧主工作区容器 -->
+  <main id="zgMain">
+    <!-- 顶部操作条（包含端点药丸与壁纸切换） -->
+    <header class="topbar">
+      <!-- 品牌文本（兼容只读模式或轻量状态） -->
+      <div class="brand-text" id="topbarBrandText" style="display:none;">
+        <div class="title">ZeroGate <span class="ver" id="verTop"></span></div>
         <div class="sub" id="serverLine"></div>
       </div>
-    </div>
 
-    <!-- 双协议端点速显（OpenAI + Anthropic） -->
-    <div class="protocol-pill-group">
-      <div class="protocol-pill" id="apiAddrPill" title="点击复制 OpenAI 格式端点">
-        <span class="proto-tag openai">OpenAI</span>
-        <code id="apiAddr"><span class="val">http://127.0.0.1:7863/v1</span></code>
-        <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
-        <span data-ic="pencil" id="btnEditApiConfig" class="icon-edit" style="width:13px;height:13px;margin-left:4px;" title="配置监听主机与端口"></span>
+      <!-- 双协议端点速显（OpenAI + Anthropic） -->
+      <div class="protocol-pill-group">
+        <div class="protocol-pill" id="apiAddrPill" title="点击复制 OpenAI 格式端点">
+          <span class="proto-tag openai">OpenAI</span>
+          <code id="apiAddr"><span class="val">http://127.0.0.1:7863/v1</span></code>
+          <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
+          <span data-ic="pencil" id="btnEditApiConfig" class="icon-edit" style="width:13px;height:13px;margin-left:4px;" title="配置监听主机与端口"></span>
+        </div>
+        <div class="protocol-pill" id="anthropicAddrPill" title="点击复制 Anthropic 格式端点（Claude Code/Cline 专用）">
+          <span class="proto-tag anthropic">Claude</span>
+          <code id="anthropicAddr"><span class="val">http://127.0.0.1:7863</span></code>
+          <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
+        </div>
+        <div class="protocol-pill" id="apiKeyDisplayPill" style="max-width:180px;" title="点击复制 API-Key">
+          <span style="font-size:10px;color:var(--muted);font-weight:700;">KEY</span>
+          <code id="apiKeyDisplay"><span class="val"></span></code>
+          <span data-ic="pencil" id="btnEditApiKey" class="icon-edit" style="width:13px;height:13px;" title="修改密钥"></span>
+        </div>
       </div>
-      <div class="protocol-pill" id="anthropicAddrPill" title="点击复制 Anthropic 格式端点（Claude Code/Cline 专用）">
-        <span class="proto-tag anthropic">Claude</span>
-        <code id="anthropicAddr"><span class="val">http://127.0.0.1:7863</span></code>
-        <span data-ic="copy" style="color:var(--muted);width:13px;height:13px;"></span>
-      </div>
-      <div class="protocol-pill" id="apiKeyDisplayPill" style="max-width:180px;" title="点击复制 API-Key">
-        <span style="font-size:10px;color:var(--muted);font-weight:700;">KEY</span>
-        <code id="apiKeyDisplay"><span class="val"></span></code>
-        <span data-ic="pencil" id="btnEditApiKey" class="icon-edit" style="width:13px;height:13px;" title="修改密钥"></span>
-      </div>
-    </div>
 
-    <div class="top-icons">
-      <button class="icon-link" id="btnWpToggle" title="壁纸与二次元风格切换">
-        <span data-ic="image"></span>
-      </button>
-      <span class="icon-link" id="btnDoubao" title="豆包保活续期"><span data-ic="heart"></span></span>
-      <span class="icon-link" id="btnHelp" title="帮助"><span data-ic="help"></span></span>
-      <span class="icon-link" id="btnAbout" title="关于"><span data-ic="info"></span></span>
-      <button class="icon-link theme-toggle" id="btnTheme" title="切换深浅主题" onclick="window.__toggleTheme()">
-        <svg class="ic ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
-        <svg class="ic ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
-      </button>
-    </div>
-  </header>
+      <div class="top-icons">
+        <button class="icon-link" id="btnWpToggle" title="壁纸与二次元风格切换">
+          <span data-ic="image"></span>
+        </button>
+        <span class="icon-link" id="btnDoubao" title="豆包保活续期"><span data-ic="heart"></span></span>
+        <span class="icon-link" id="btnHelp" title="帮助"><span data-ic="help"></span></span>
+        <span class="icon-link" id="btnAbout" title="关于"><span data-ic="info"></span></span>
+        <button class="icon-link theme-toggle" id="btnTheme" title="切换深浅主题" onclick="window.__toggleTheme()">
+          <svg class="ic ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+          <svg class="ic ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </button>
+      </div>
+    </header>
 
   <!-- 壁纸切换浮窗 -->
   <div class="wp-selector-card" id="wpCard">
@@ -462,7 +526,11 @@ document.documentElement.dataset.uiStyle =
       <div class="analytics-col chart-col">
         <div class="panel">
           <div class="panel-head">
-            <h2><span data-ic="trend"></span>累计白嫖节省金额走势</h2>
+            <h2><span data-ic="trend"></span>近 14 天每日节省金额走势 (折合人民币)</h2>
+            <div class="legend-group">
+              <span class="legend-item"><i style="background:var(--ok)"></i>每日节省 (¥)</span>
+              <span class="legend-item"><i style="background:var(--chart-label)"></i>14日均线</span>
+            </div>
           </div>
           <div id="savingsTrendChartWrap" class="svg-chart-container">
             <div class="empty-chart">加载中…</div>
@@ -490,40 +558,73 @@ document.documentElement.dataset.uiStyle =
       </div>
     </section>
 
-    <!-- 剩余资产总览（积分 → token 折算） -->
-    <section class="panel">
-      <div class="panel-head">
-        <h2><span data-ic="wallet"></span>剩余资产 · 积分折算 Token</h2>
-        <div style="display:flex; align-items:center; gap:8px;">
-          <span style="font-size:11px; color:var(--muted);" id="assetsUpdatedAt"></span>
-          <button class="btn small" id="btnRefreshAssets"><span data-ic="refresh" style="width:13px;height:13px;"></span>重算</button>
-        </div>
+    <!-- 剩余资产独立分池（Token 核心储备库 与 渠道积分额度池） -->
+    <div class="analytics-row" style="margin-bottom:20px;">
+      <!-- 池 1: Token 真实储备库 (ZCode, Atria) -->
+      <div class="analytics-col">
+        <section class="panel" style="height:100%;margin-bottom:0;">
+          <div class="panel-head">
+            <h2><span data-ic="wallet"></span>Token 核心储备池 <span class="tag ok" style="font-size:11px;">直通 Token</span></h2>
+            <button class="btn small" id="btnRefreshAssets"><span data-ic="refresh" style="width:13px;height:13px;"></span>刷新</button>
+          </div>
+          <div class="asset-hero" style="padding:14px 18px;margin-bottom:12px;">
+            <div class="asset-hero-main">
+              <div class="asset-hero-lbl">有效 Token 储备总量 (zcode + atria)</div>
+              <div class="asset-hero-val" id="assetHeroTokens">—</div>
+              <div class="asset-hero-sub" id="assetHeroCredits">含 ZCode 周末计划 3 亿 + Atria 官方 Key 1 亿</div>
+            </div>
+          </div>
+          <div id="assetRunway" style="margin-bottom:10px;"></div>
+          <div class="data-table-wrap">
+            <table class="data-table" id="tokenAssetsTable">
+              <thead>
+                <tr>
+                  <th>渠道</th>
+                  <th>健康账号</th>
+                  <th>Token 余额</th>
+                  <th>官方计费口径</th>
+                </tr>
+              </thead>
+              <tbody id="tokenAssetsBody">
+                <tr><td colspan="4" style="text-align:center; color:var(--muted); padding:16px;">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
-      <div class="asset-hero">
-        <div class="asset-hero-main">
-          <div class="asset-hero-lbl">可折算 Token 资产（zcode + atria 精确）</div>
-          <div class="asset-hero-val" id="assetHeroTokens">—</div>
-          <div class="asset-hero-sub" id="assetHeroCredits"></div>
-        </div>
+
+      <!-- 池 2: 各渠道配额与积分池 (WorkBuddy, TraeWork, Qoder, CodeBuddy, AutoClaw) -->
+      <div class="analytics-col">
+        <section class="panel" style="height:100%;margin-bottom:0;">
+          <div class="panel-head">
+            <h2><span data-ic="coins"></span>各渠道积分与配额池 <span class="tag neutral" style="font-size:11px;">按次 / 积分</span></h2>
+            <span style="font-size:11px; color:var(--muted);" id="assetsUpdatedAt"></span>
+          </div>
+          <div class="asset-hero" style="padding:14px 18px;margin-bottom:12px;">
+            <div class="asset-hero-main">
+              <div class="asset-hero-lbl">可用积分与额度总量 (各渠道独立计量)</div>
+              <div class="asset-hero-val" id="assetHeroCreditsTotal" style="color:var(--chart-credit);">—</div>
+              <div class="asset-hero-sub">WorkBuddy · TraeWork · Qoder · CodeBuddy · AutoClaw</div>
+            </div>
+          </div>
+          <div class="data-table-wrap">
+            <table class="data-table" id="creditAssetsTable">
+              <thead>
+                <tr>
+                  <th>渠道</th>
+                  <th>健康账号</th>
+                  <th>可用积分/额度</th>
+                  <th>渠道扣减与消耗特征</th>
+                </tr>
+              </thead>
+              <tbody id="creditAssetsBody">
+                <tr><td colspan="4" style="text-align:center; color:var(--muted); padding:16px;">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
-      <div id="assetRunway"></div>
-      <div style="overflow-x:auto;">
-        <table class="data-table" id="assetsTable">
-          <thead>
-            <tr>
-              <th>渠道</th>
-              <th>账号</th>
-              <th>积分余额</th>
-              <th>折算 Token</th>
-              <th>折算口径</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td colspan="5" style="text-align:center; color:var(--muted); padding:16px;">加载中…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+    </div>
 
     <!-- 模型榜单与客户端榜单 -->
     <div class="analytics-row">
@@ -707,31 +808,165 @@ document.documentElement.dataset.uiStyle =
     </section>
   </div>
 
-  <!-- Tab 9: 系统设置 -->
+  <!-- Tab 9: 系统设置（全功能配置中心） -->
   <div class="tab-pane" id="tab-settings">
-    <!-- 自动签到 + 开机自启 -->
+    <!-- 1. 🎨 界面外观与个性化 -->
     <section class="panel">
-      <div class="panel-head"><h2><span data-ic="calendar"></span>自动签到</h2></div>
+      <div class="panel-head">
+        <h2><span data-ic="image"></span>界面外观与个性化</h2>
+      </div>
+      <div class="settings-grid">
+        <!-- 导航布局方案 -->
+        <div class="setting-item">
+          <div class="setting-label">
+            <strong>导航布局方案</strong>
+            <div class="setting-desc">选择左侧专业工作台侧边栏或底部赛博悬浮指挥坞</div>
+          </div>
+          <div class="setting-ctrl">
+            <div class="chip-row" id="settingLayoutSwitch">
+              <button class="chip active" data-layout="sidebar">左侧现代侧栏 (推荐)</button>
+              <button class="chip" data-layout="dock">底部悬浮指挥坞</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 主题切换 -->
+        <div class="setting-item">
+          <div class="setting-label">
+            <strong>主题风格</strong>
+            <div class="setting-desc">切换浅色日间模式或暗色二次元深邃模式</div>
+          </div>
+          <div class="setting-ctrl">
+            <div class="chip-row" id="settingThemeSwitch">
+              <button class="chip" data-theme="light">浅色模式</button>
+              <button class="chip" data-theme="dark">深色模式</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 壁纸切换与微调 -->
+        <div class="setting-item full-width">
+          <div class="setting-label">
+            <strong>二次元全景高清壁纸 (16:9)</strong>
+            <div class="setting-desc">点击即时应用壁纸并保存至浏览器配置</div>
+          </div>
+          <div class="wp-grid-mini" style="margin:12px 0;">
+            <div class="wp-thumb" data-wp="./wallpapers/cyberpunk.jpg" style="background-image: url('./wallpapers/cyberpunk.jpg');">
+              <span class="wp-title">赛博黑客少女</span>
+            </div>
+            <div class="wp-thumb" data-wp="./wallpapers/starry.jpg" style="background-image: url('./wallpapers/starry.jpg');">
+              <span class="wp-title">星穹银河少女</span>
+            </div>
+            <div class="wp-thumb" data-wp="./wallpapers/sakura.jpg" style="background-image: url('./wallpapers/sakura.jpg');">
+              <span class="wp-title">暮色樱花少女</span>
+            </div>
+            <div class="wp-thumb" data-wp="./wallpapers/mech_angel.jpg" style="background-image: url('./wallpapers/mech_angel.jpg');">
+              <span class="wp-title">未来机能天使</span>
+            </div>
+          </div>
+          <div class="settings-slider-row">
+            <span>暗化遮罩:</span>
+            <input type="range" id="inpMaskAlphaSetting" min="0.2" max="0.9" step="0.05" value="0.72">
+            <span id="txtMaskAlphaSetting" class="mono-badge">72%</span>
+            <span style="margin-left:16px;">毛玻璃虚化:</span>
+            <input type="range" id="inpMaskBlurSetting" min="0" max="16" step="1" value="5">
+            <span id="txtMaskBlurSetting" class="mono-badge">5px</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. 🌐 网关核心与端点密钥 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="shuffle"></span>网关服务与端点配置</h2>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <div class="setting-label">
+            <strong>服务监听配置</strong>
+            <div class="setting-desc">主 API 监听 Host 与 Port（默认 127.0.0.1:7863）</div>
+          </div>
+          <div class="setting-ctrl row" style="gap:8px;">
+            <input class="input" id="cfgListenHost" placeholder="127.0.0.1" style="width:120px;" />
+            <input class="input" id="cfgListenPort" type="number" placeholder="7863" style="width:80px;" />
+            <button class="btn small primary" id="btnSaveListenCfg">保存端点</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <strong>主 API-Key 密钥</strong>
+            <div class="setting-desc">网关鉴权主密钥（修改后需重启生效，Bearer Key）</div>
+          </div>
+          <div class="setting-ctrl row" style="gap:8px;">
+            <input class="input" id="cfgApiKey" placeholder="WildWorkAPI" style="width:200px;font-family:var(--mono);" />
+            <button class="btn small primary" id="btnSaveApiKeyCfg">保存 Key</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. ⏰ 自动化任务与计划排程 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="calendar"></span>自动化任务与计划排程</h2>
+      </div>
       <div class="config-grid">
         <div class="config-left">
           <div class="row wrap">
             <div id="timesBox" class="times"></div>
             <button class="icon-btn" id="btnAddTime" title="增加一个签到时间"><span data-ic="plus"></span></button>
           </div>
-          <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+          <div class="hint">自动签到时间节点 · 保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+          <div style="margin-top:14px;">
+            <div class="row wrap">
+              <div id="growthTimesBox" class="times"></div>
+              <button class="icon-btn" id="btnAddGrowthTime" title="增加一个成长中心任务时间"><span data-ic="plus"></span></button>
+            </div>
+            <div class="hint">成长中心（旅行/盲盒）自动执行 · 下次 <span id="nextGrowth">-</span></div>
+          </div>
         </div>
         <div class="config-right">
-          <div class="row">
+          <div class="row" style="margin-bottom:12px;">
             <span>开机自启</span>
             <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
           </div>
-          <div class="hint">程序随系统启动自动运行</div>
+          <div class="hint">随 Windows 系统登录静默自启（托盘常驻，无黑框）</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. 📦 系统信息与运行维护 -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span data-ic="info"></span>系统信息与健康维护</h2>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <div class="setting-label">
+            <strong>当前运行环境</strong>
+            <div class="setting-desc" id="sysEnvDesc">ZeroGate Core v2.0.1 · 多渠道聚合中枢 · 127.0.0.1:7863</div>
+          </div>
+          <div class="setting-ctrl">
+            <span class="tag ok" id="sysRunStatusTag">🟢 服务正常运行中</span>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-label">
+            <strong>缓存与数据维护</strong>
+            <div class="setting-desc">快速刷新渠道模型价格缓存或重置前端本地个性化配置</div>
+          </div>
+          <div class="setting-ctrl row" style="gap:8px;">
+            <button class="btn small" id="btnRefreshFeesCache">刷新模型费率</button>
+            <button class="btn small danger" id="btnClearLocalCache">重置界面缓存</button>
+          </div>
         </div>
       </div>
     </section>
   </div>
 
   <div class="footer">ZeroGate — 个人专用多渠道聚合中转站 · 右键托盘图标退出</div>
+  </main>
 </div>
 
 <!-- 添加账号确认弹层 -->
