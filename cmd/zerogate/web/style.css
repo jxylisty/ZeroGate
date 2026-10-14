@@ -175,12 +175,50 @@
 /* 积分明细浮层 */
 .credit-tip {
   position: fixed; display: none; z-index: 150;
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 10px 12px;
-  box-shadow: var(--shadow-md); font-size: 12px; min-width: 260px;
+  background: rgba(18, 15, 36, 0.95); backdrop-filter: blur(16px);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px; padding: 12px 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), 0 0 16px rgba(255, 117, 151, 0.1);
+  font-size: 12px; min-width: 280px;
+}
+.credit-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+  font-weight: 600;
+  color: var(--text);
+  font-size: 13px;
+}
+.credit-tip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-soft);
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.credit-tip-close:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+  transform: scale(1.05);
+}
+.credit-tip-close svg {
+  width: 12px;
+  height: 12px;
 }
 .detail-table { width: 100%; border-collapse: collapse; }
-.detail-table th, .detail-table td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border); }
+.detail-table th, .detail-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-soft); }
 .detail-table th { color: var(--muted); font-weight: 500; font-size: 11px; }
 .detail-table td:last-child { font-weight: 600; }
 
@@ -836,21 +874,23 @@ html[data-ui-style="visual-novel"] .topbar {
 .protocol-pill-group {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex: 1;
-  max-width: 760px;
+  max-width: none;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .protocol-pill {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
-  padding: 6px 12px;
-  display: flex;
+  padding: 6px 14px;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: auto;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   cursor: pointer;
 }
@@ -880,10 +920,7 @@ html[data-ui-style="visual-novel"] .topbar {
 .protocol-pill code {
   color: #e2e8f0;
   font-family: var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
 }
 
 /* ══════════════ 底部赛博悬浮指挥坞 (Command Dock) ══════════════ */
@@ -1277,11 +1314,37 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
-}
-
 .sidebar-footer {
   padding: 12px 14px;
   border-top: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+.sidebar-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-soft);
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sidebar-action-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+.sidebar-action-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .sidebar-live-pill {
@@ -1437,6 +1500,7 @@ html[data-ui-style="visual-novel"] .stat-card::before {
 .ratio-tag {
   display: inline-flex;
   align-items: center;
+  gap: 3px;
   padding: 1px 6px;
   font-size: 10px;
   border-radius: 4px;
@@ -1444,6 +1508,11 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   color: #10b981;
   margin-left: 6px;
   font-family: var(--mono);
+}
+.ratio-tag svg {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
 }
 
 /* ============================================================
@@ -1492,36 +1561,50 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   border-radius: 4px;
   font-family: var(--mono);
 }
-.audit-cost-cell {
+.audit-cost-row, .audit-cost-cell {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
+  white-space: nowrap;
+  flex-wrap: nowrap;
 }
 .audit-credit-tag {
   background: rgba(245, 158, 11, 0.15);
   color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  border-radius: 4px;
-  padding: 1px 6px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 6px;
+  padding: 1px 7px;
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.audit-credit-tag svg, .audit-token-tag svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
 }
 .audit-token-tag {
   background: rgba(16, 185, 129, 0.12);
   color: #10b981;
   border: 1px solid rgba(16, 185, 129, 0.25);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 10px;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .audit-tok-text {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-sub);
+  white-space: nowrap;
 }
 .audit-error-action-cell {
   display: flex;

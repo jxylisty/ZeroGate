@@ -176,7 +176,7 @@ async function showCreditDetail(e, uid) {
   if (activeCreditHoverUID !== uid) return;
   if (!d || !d.items || !d.items.length) return;
 
-  let html = `<div class="credit-tip-head"><span>套餐明细 · ${esc(shortUid(uid))}</span><button class="credit-tip-close" onclick="closeCreditTip(event)">✕</button></div>`;
+  let html = `<div class="credit-tip-head"><span>套餐明细 · ${esc(shortUid(uid))}</span><button class="credit-tip-close" onclick="closeCreditTip(event)" title="关闭">${I.x}</button></div>`;
   html += `<table class="detail-table"><thead><tr><th>套餐</th><th>总额</th><th>已用</th><th>剩余</th><th>到期</th></tr></thead><tbody>`;
   for (const it of d.items) {
     html += `<tr><td>${esc(it.name)}</td><td>${it.total}</td><td>${it.used}</td><td>${it.remain}</td><td>${esc(resourceExpireText(it.expire_at))}</td></tr>`;
@@ -255,7 +255,7 @@ function renderTopbar() {
     statusPill.style.background = state.running ? "var(--ok-soft)" : "var(--danger-soft)";
   }
   if ($("sysRunStatusTag")) {
-    $("sysRunStatusTag").textContent = state.running ? "🟢 服务正常运行中" : "🔴 服务未启动";
+    $("sysRunStatusTag").textContent = state.running ? "服务正常运行中" : "服务未启动";
     $("sysRunStatusTag").className = state.running ? "tag ok" : "tag danger";
   }
   if ($("sysEnvDesc")) {
@@ -498,13 +498,13 @@ function acctCardHTML(a) {
       <div class="acct-tags">
         ${(() => {
           if (a.group === "zcode" || a.group === "atria") {
-            return `<span class="tag ratio-tag" title="官方按 Token 计量，1 积分 = 1 Token">💎 1分 = 1 Token</span>`;
+            return `<span class="tag ratio-tag" title="官方按 Token 计量，1 积分 = 1 Token">${I.coins} 1分 = 1 Token</span>`;
           }
-          if (a.group === "workbuddy") return `<span class="tag ratio-tag" title="普通模型约 1~2 积分/次">⚡ ~1-2分/次</span>`;
-          if (a.group === "traework") return `<span class="tag ratio-tag" title="每日重置额度">🔄 每日重置</span>`;
-          if (a.group === "qoder") return `<span class="tag ratio-tag" title="按量扣减积分">⚡ 按量扣减</span>`;
-          if (a.group === "codebuddy") return `<span class="tag ratio-tag" title="国际版按倍率扣分">⚡ 倍率扣分</span>`;
-          if (a.group === "autoclaw") return `<span class="tag ratio-tag" title="短请求≈1分">⚡ 短请求≈1分</span>`;
+          if (a.group === "workbuddy") return `<span class="tag ratio-tag" title="普通模型约 1~2 积分/次">${I.zap} ~1-2分/次</span>`;
+          if (a.group === "traework") return `<span class="tag ratio-tag" title="每日重置额度">${I.refresh} 每日重置</span>`;
+          if (a.group === "qoder") return `<span class="tag ratio-tag" title="按量扣减积分">${I.zap} 按量扣减</span>`;
+          if (a.group === "codebuddy") return `<span class="tag ratio-tag" title="国际版按倍率扣分">${I.zap} 倍率扣分</span>`;
+          if (a.group === "autoclaw") return `<span class="tag ratio-tag" title="短请求≈1分">${I.zap} 短请求≈1分</span>`;
           return "";
         })()}
         ${expireTag}
@@ -1769,31 +1769,45 @@ function extractLogCredits(l) {
 function renderLogCostCell(l) {
   const meta = CHANNEL_METAS[l.channel];
   const isCreditChan = (meta && meta.unit === "credit") || (!isTokenUnit(l.channel) && l.channel !== "zcode" && l.channel !== "atria");
-  const credits = extractLogCredits(l);
+  const parsedCredits = extractLogCredits(l);
 
   if (isCreditChan) {
-    let creditBadge = "";
-    if (credits !== null && credits > 0) {
-      const numStr = credits < 1 ? credits.toFixed(2) : String(credits);
-      creditBadge = `<span class="audit-credit-tag">⚡ ${numStr} 积分</span>`;
-    } else if (credits === 0) {
-      creditBadge = `<span class="audit-credit-tag" style="background:rgba(245,158,11,0.08);color:#d97706;border-color:rgba(245,158,11,0.25);">⚡ 0 积分 (限免)</span>`;
-    } else {
-      creditBadge = `<span class="audit-credit-tag" style="background:rgba(245,158,11,0.12);color:#f59e0b;">⚡ 积分渠道</span>`;
+    let num = 1; // 积分渠道默认单次调用基准扣 1 积分
+    let isFree = false;
+    if (parsedCredits !== null) {
+      num = parsedCredits;
+      if (num === 0) isFree = true;
+    } else if (l.status !== 200 && !l.total_tokens) {
+      num = 0;
     }
-    const tokSub = l.total_tokens ? `${fmtTotal(l.total_tokens)} tok (${fmtTotal(l.prompt_tokens || 0)}/${fmtTotal(l.completion_tokens || 0)})` : "0 tok";
+
+    let creditBadge = "";
+    if (isFree || num === 0) {
+      creditBadge = `<span class="audit-credit-tag" style="background:rgba(245,158,11,0.08);color:#d97706;border-color:rgba(245,158,11,0.25);">${I.coins} 0 积分 (限免)</span>`;
+    } else {
+      const numStr = num < 1 ? num.toFixed(2) : String(num);
+      creditBadge = `<span class="audit-credit-tag">${I.coins} ${numStr} 积分</span>`;
+    }
+
+    const tokStr = l.total_tokens ? `${fmtTotal(l.total_tokens)} tok` : "0 tok";
+    const tokTitle = `输入: ${fmtTotal(l.prompt_tokens || 0)} / 输出: ${fmtTotal(l.completion_tokens || 0)}${l.cache_tokens ? ` / 缓存: ${fmtTotal(l.cache_tokens)}` : ""}`;
     return `
-      <div class="audit-cost-cell">${creditBadge}</div>
-      <div class="audit-tok-text" title="输入: ${l.prompt_tokens || 0} / 输出: ${l.completion_tokens || 0}">${tokSub}</div>
+      <div class="audit-cost-row">
+        ${creditBadge}
+        <span class="audit-tok-text" title="${tokTitle}">${tokStr}</span>
+      </div>
     `;
   }
 
   // Token 渠道（zcode, atria 等）
   const totalTok = fmtTokens(l.total_tokens || 0);
   const cacheSub = l.cache_tokens ? ` · 缓 ${fmtTotal(l.cache_tokens)}` : "";
+  const tokTitle = `输入: ${fmtTotal(l.prompt_tokens || 0)} / 输出: ${fmtTotal(l.completion_tokens || 0)}${cacheSub}`;
   return `
-    <div class="audit-cost-cell"><span class="audit-token-tag">${totalTok} Token</span></div>
-    <div class="audit-tok-text" title="输入: ${l.prompt_tokens || 0} / 输出: ${l.completion_tokens || 0}">${fmtTotal(l.prompt_tokens || 0)} / ${fmtTotal(l.completion_tokens || 0)}${cacheSub}</div>
+    <div class="audit-cost-row">
+      <span class="audit-token-tag">${I.coins} ${totalTok} Token</span>
+      ${l.cache_tokens ? `<span class="audit-tok-text" title="${tokTitle}">(缓 ${fmtTotal(l.cache_tokens)})</span>` : ""}
+    </div>
   `;
 }
 
@@ -2679,7 +2693,7 @@ function renderCreditSummary(accounts) {
 }
 
 // 1.6 近 14 天积分净变动趋势（仅积分族；token 族余额 delta 被套餐重置污染，不纳入）
-//     SVG 柱状图：正 delta 消耗向上、负 delta 入账向下
+//     SVG 柱状图：正 delta 消耗向上、负 delta 入账向下（使用高端渐变色彩与柔和基准线）
 function renderCreditTrend(accounts) {
   const wrap = $("creditTrendChartWrap");
   if (!wrap) return;
@@ -2717,7 +2731,7 @@ function renderCreditTrend(accounts) {
   const chartW = W - padLeft - padRight;
   const chartH = H - padTop - padBottom;
 
-  // 0 轴位置：有正有负按比例分割；仅单侧时贴边，把空间全让给实际方向
+  // 0 轴位置
   let zeroY = padTop + chartH, scalePos = 0, scaleNeg = 0;
   if (hasPos && hasNeg) {
     const total = maxPos + maxNeg || 1;
@@ -2732,24 +2746,23 @@ function renderCreditTrend(accounts) {
   }
   const yOf = v => v >= 0 ? zeroY - v * scalePos : zeroY + (-v) * scaleNeg;
 
-  const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
-  const cCredit = cssVar("--chart-credit") || cssVar("--danger");
-  const cOk = cssVar("--ok");
+  const cGridLine = "rgba(255, 255, 255, 0.05)";
+  const cLabel = cssVar("--chart-label") || "rgba(255, 255, 255, 0.45)";
 
   let grid = "";
   const ticks = [];
-  if (hasPos) { ticks.push(maxPos, maxPos / 2); }
-  if (hasNeg) { ticks.push(-maxNeg, -maxNeg / 2); }
+  if (hasPos) ticks.push(maxPos);
+  if (hasNeg) ticks.push(-maxNeg);
   ticks.forEach(v => {
     const y = yOf(v);
     grid += `
-      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
-      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">${fmtTotal(Math.round(Math.abs(v)))}</text>
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGridLine}" stroke-width="1" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}" font-family="var(--mono)">${fmtTotal(Math.round(Math.abs(v)))}</text>
     `;
   });
 
   const stepW = chartW / days.length;
-  const barW = Math.max(16, Math.min(30, stepW * 0.62));
+  const barW = Math.max(16, Math.min(28, stepW * 0.58));
   let bars = "";
   days.forEach((d, i) => {
     const x = padLeft + i * stepW + (stepW - barW) / 2;
@@ -2759,25 +2772,35 @@ function renderCreditTrend(accounts) {
     const tip = `${d.day}\n${dTxt}\n当日末余额 ${fmtTotal(Math.round(d.remain))}`;
     let rect = "";
     if (d.delta > 0) {
-      const h = d.delta * scalePos;
-      rect = `<rect x="${x}" y="${zeroY - h}" width="${barW}" height="${h}" fill="${cCredit}" rx="2" />`;
+      const h = Math.max(3, d.delta * scalePos);
+      rect = `<rect x="${x}" y="${zeroY - h}" width="${barW}" height="${h}" fill="url(#gradCreditExpense)" rx="4" />`;
     } else if (d.delta < 0) {
-      const h = (-d.delta) * scaleNeg;
-      rect = `<rect x="${x}" y="${zeroY}" width="${barW}" height="${h}" fill="${cOk}" rx="2" />`;
+      const h = Math.max(3, (-d.delta) * scaleNeg);
+      rect = `<rect x="${x}" y="${zeroY}" width="${barW}" height="${h}" fill="url(#gradCreditIncome)" rx="4" />`;
     }
     bars += `
       <g class="chart-bar-group">
         <title>${esc(tip)}</title>
         ${rect}
-        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
+        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}" font-family="var(--mono)">${d.label}</text>
       </g>
     `;
   });
 
   wrap.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="gradCreditIncome" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#34d399" stop-opacity="0.95" />
+          <stop offset="100%" stop-color="#059669" stop-opacity="0.65" />
+        </linearGradient>
+        <linearGradient id="gradCreditExpense" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#fb7185" stop-opacity="0.95" />
+          <stop offset="100%" stop-color="#e11d48" stop-opacity="0.75" />
+        </linearGradient>
+      </defs>
       ${grid}
-      <line x1="${padLeft}" y1="${zeroY}" x2="${W - padRight}" y2="${zeroY}" stroke="${cssVar("--border-strong") || cGrid}" stroke-width="1" />
+      <line x1="${padLeft}" y1="${zeroY}" x2="${W - padRight}" y2="${zeroY}" stroke="rgba(255, 255, 255, 0.12)" stroke-width="1.2" />
       ${bars}
     </svg>
   `;
@@ -2859,8 +2882,8 @@ function renderTokenTrend(auditDaily, accounts) {
     const yVal = Math.round((maxTotal / 4) * step);
     const y = padTop + chartH - (step / 4) * chartH;
     gridLines += `
-      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
-      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">${fmtTokens(yVal)}</text>
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-width="1" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}" font-family="var(--mono)">${fmtTokens(yVal)}</text>
     `;
   }
 
@@ -3193,24 +3216,24 @@ function renderSavingsTrend(auditDaily, tokenModels) {
   const chartW = W - padLeft - padRight;
   const chartH = H - padTop - padBottom;
 
-  const cGrid = cssVar("--chart-grid") || "rgba(255,255,255,0.08)";
-  const cLabel = cssVar("--chart-label") || "rgba(255,255,255,0.5)";
-  const cOk = cssVar("--ok") || "#10b981";
+  const cGridLine = "rgba(255, 255, 255, 0.05)";
+  const cLabel = cssVar("--chart-label") || "rgba(255, 255, 255, 0.45)";
   const cAvg = "#f59e0b"; // 均线琥珀金
 
   const stepW = chartW / days.length;
-  const barW = Math.max(16, Math.min(30, stepW * 0.62));
+  const barW = Math.max(16, Math.min(28, stepW * 0.58));
   const yOf = v => padTop + chartH - (v / maxCny) * chartH;
 
   let grid = "";
-  for (let step = 0; step <= 4; step++) {
-    const v = (maxCny / 4) * step;
+  // 3 条极淡实线，精简虚线干扰
+  [0, 0.5, 1].forEach(pct => {
+    const v = maxCny * pct;
     const y = yOf(v);
     grid += `
-      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-dasharray="4" />
-      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}">¥${v.toFixed(1)}</text>
+      <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGridLine}" stroke-width="1" />
+      <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}" font-family="var(--mono)">¥${v.toFixed(1)}</text>
     `;
-  }
+  });
 
   let bars = "";
   days.forEach((d, i) => {
@@ -3221,8 +3244,8 @@ function renderSavingsTrend(auditDaily, tokenModels) {
     bars += `
       <g class="chart-bar-group">
         <title>${esc(tip)}</title>
-        <rect x="${x}" y="${y}" width="${barW}" height="${Math.max(2, barH)}" fill="${cOk}" rx="3" opacity="0.88" />
-        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
+        <rect x="${x}" y="${y}" width="${barW}" height="${Math.max(3, barH)}" fill="url(#gradSavingsBar)" rx="4" />
+        <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}" font-family="var(--mono)">${d.label}</text>
       </g>
     `;
   });
@@ -3232,7 +3255,7 @@ function renderSavingsTrend(auditDaily, tokenModels) {
   const avgLine = `
     <g>
       <title>14 天日均节省: ¥${avgCny.toFixed(2)}</title>
-      <line x1="${padLeft}" y1="${avgY}" x2="${W - padRight}" y2="${avgY}" stroke="${cAvg}" stroke-dasharray="6,4" stroke-width="1.5" />
+      <line x1="${padLeft}" y1="${avgY}" x2="${W - padRight}" y2="${avgY}" stroke="${cAvg}" stroke-dasharray="4,4" stroke-width="1.2" opacity="0.85" />
       <text x="${W - padRight - 4}" y="${avgY - 6}" text-anchor="end" font-size="10" fill="${cAvg}" font-weight="600">14天日均: ¥${avgCny.toFixed(2)}</text>
     </g>
   `;
@@ -3243,6 +3266,12 @@ function renderSavingsTrend(auditDaily, tokenModels) {
       <span>14 天日均: <b style="color:${cAvg};font-size:12px;">¥${avgCny.toFixed(2)} / 天</b></span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="gradSavingsBar" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.95" />
+          <stop offset="100%" stop-color="#10b981" stop-opacity="0.75" />
+        </linearGradient>
+      </defs>
       ${grid}
       ${bars}
       ${avgLine}
