@@ -105,14 +105,20 @@ async function loadState() {
   if (readOnly) applyReadOnlyMode();
 }
 
-// applyReadOnlyMode 只读大屏模式：仅保留 Token 资产大屏，隐藏其余 Tab 与管理入口。
+// applyReadOnlyMode 只读大屏模式：仅保留 Token 资产大屏 + 调用流水，隐藏其余 Tab 与管理入口。
 function applyReadOnlyMode() {
-  const allowed = new Set(["usage"]);
+  const allowed = new Set(["usage", "logs"]);
   document.querySelectorAll(".nav-tab").forEach(t => {
     if (!allowed.has(t.dataset.tab)) t.style.display = "none";
   });
+  document.querySelectorAll(".dock-item-btn").forEach(t => {
+    if (!allowed.has(t.dataset.tab)) t.style.display = "none";
+  });
+  document.querySelectorAll(".sidebar-item-btn").forEach(t => {
+    if (!allowed.has(t.dataset.tab)) t.style.display = "none";
+  });
   document.querySelectorAll(".tab-pane").forEach(p => {
-    if (p.id !== "tab-usage") p.classList.remove("active");
+    if (p.id !== "tab-usage" && p.id !== "tab-logs") p.classList.remove("active");
   });
   const topInfo = document.querySelector(".top-info");
   if (topInfo) topInfo.style.display = "none";

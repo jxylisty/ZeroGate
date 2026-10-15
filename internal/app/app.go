@@ -2019,11 +2019,25 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 }
 
 // HandleReadOnlyAPI 注册只读 Token 大屏所需的最小 API 路由（供 ListenDashboard 只读监听）。
-// 只挂匿名读端点：token_usage / audit 汇总与明细 / usage / assets。
+// 只挂匿名读端点：token_usage / audit 汇总与明细 / 流水 / usage / assets。
 // 刻意不挂 /api/state（含 API-Key）、登录、账号操作、路由重定向等管理端点，
 // 确保局域网内只能“看大屏”，拿不到任何敏感信息或控制能力。
+// 注意：/api/audit/logs 返回的 key_snippet 本身是掩码（internal/audit），无泄漏风险。
 func (a *App) HandleReadOnlyAPI(mux *http.ServeMux) {
 	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /api/audit/logs", func(w http.ResponseWriter, r *http.Request) {
+		if a.auditRec == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}})
+			return
+		}
+		limit := 100
+		if lStr := r.URL.Query().Get("limit"); lStr != "" {
+			if n, err := strconv.Atoi(lStr); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"logs": a.auditRec.Recent(limit)})
+	})
 	apiMux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.GetAssets())
 	})
