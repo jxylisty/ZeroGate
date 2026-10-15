@@ -105,10 +105,19 @@
   }
 
   // 按 输入/输出/缓存命中 用量折算官方 API 美元成本（单价 USD/1M）。
+  // 价格表与实现统一在 utils.js（window.priceUSD），此处仅做委托，避免双份价格表漂移。
   const EST_CACHE_HIT = 0.9;
   const EST_CACHE_MIN_RATE = 0.3;
+  function lookupPrice(model) {
+    const name = String(model || "").toLowerCase().replace(/\./g, "-");
+    for (const p of (window.MODEL_PRICES || [])) {
+      if (name.includes(p.re)) return p;
+    }
+    return { in: 0.5, cache: 0.1, out: 2.0 };
+  }
   function priceUSD(model, prompt, completion, cacheRead) {
-    const p = (typeof lookupPrice === "function") ? lookupPrice(model) : FALLBACK_PRICE;
+    if (!model) return 0;
+    const p = lookupPrice(model);
     let cache = Math.max(0, Math.min(cacheRead, prompt));
     if (prompt > 0 && cache / prompt < EST_CACHE_MIN_RATE) cache = prompt * EST_CACHE_HIT;
     const plainInput = prompt - cache;
@@ -793,7 +802,7 @@
     let wCompCost = 0, totComp = 0;
     let wCacheCost = 0, totCache = 0;
     Object.entries(tokenModels || {}).forEach(([name, m]) => {
-      const p = (typeof lookupPrice === "function") ? lookupPrice(name) : FALLBACK_PRICE;
+      const p = lookupPrice(name);
       const pr = Number(m.prompt_tokens || 0);
       const co = Number(m.completion_tokens || 0);
       const ca = Number(m.cache_read_tokens || 0);

@@ -84,6 +84,13 @@
   }
   window.fmtTotal = fmtTotal;
 
+  // 本地 YYYY-MM-DD 格式化（analytics 等图表按日聚合使用）
+  function localYMD(t) {
+    const d = t ? new Date(t) : new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  window.localYMD = localYMD;
+
   function isTokenUnit(kind) {
     return kind === "zcode" || kind === "atria";
   }
