@@ -761,24 +761,58 @@ function fallbackCopy(text, ok) {
   document.body.removeChild(ta);
 }
 
+// 按钮/操作图标通用防抖与 Loading 动画辅助函数
+function setElLoading(target, loading) {
+  if (!target) return;
+  if (loading) {
+    target.classList.add("is-loading", "spin");
+    if (target.style) target.style.pointerEvents = "none";
+    if (typeof target.disabled !== "undefined") target.disabled = true;
+  } else {
+    target.classList.remove("is-loading", "spin");
+    if (target.style) target.style.pointerEvents = "";
+    if (typeof target.disabled !== "undefined") target.disabled = false;
+  }
+}
+
 // ---------- 账号操作 ----------
-async function checkin(uid) {
+async function checkin(uid, e) {
+  const ev = e || window.event;
+  const target = ev ? (ev.currentTarget || (ev.target && ev.target.closest(".icon-op")) || ev.target) : null;
+  if (target && target.classList.contains("is-loading")) return;
+  setElLoading(target, true);
   try {
     const r = await api("/api/account/checkin", { uid });
     toast(r.ok ? `签到成功：${r.msg}（剩余 ${r.remain}）` : `签到：${r.msg}`);
     loadState();
-  } catch (e) { toast(e.message); }
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    setElLoading(target, false);
+  }
 }
 
-async function refreshOne(uid) {
+async function refreshOne(uid, e) {
+  const ev = e || window.event;
+  const target = ev ? (ev.currentTarget || (ev.target && ev.target.closest(".icon-op")) || ev.target) : null;
+  if (target && target.classList.contains("is-loading")) return;
+  setElLoading(target, true);
   try {
     const r = await api("/api/account/refresh", { uid });
     toast(`刷新成功：剩余积分 ${r.remain}`);
     loadState();
-  } catch (e) { toast(e.message); }
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    setElLoading(target, false);
+  }
 }
 
-async function growth(uid) {
+async function growth(uid, e) {
+  const ev = e || window.event;
+  const target = ev ? (ev.currentTarget || (ev.target && ev.target.closest(".icon-op")) || ev.target) : null;
+  if (target && target.classList.contains("is-loading")) return;
+  setElLoading(target, true);
   try {
     const r = await api("/api/account/growth", { uid });
     const parts = [];
@@ -787,7 +821,11 @@ async function growth(uid) {
     if (r.tasks) parts.push("任务：" + r.tasks);
     toast(parts.join(" · ") || "成长中心执行完成");
     loadState();
-  } catch (e) { toast(e.message); }
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    setElLoading(target, false);
+  }
 }
 
 async function toggleDisable(uid, currentlyDisabled) {
@@ -1012,13 +1050,22 @@ async function runDoubaoRenew() {
 function closeDoubaoDialog() { $("doubaoOverlay").classList.add("hidden"); }
 
 async function refreshAll() {
-  $("btnRefreshAll").disabled = true;
+  const btn = $("btnRefreshAll");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.classList.add("is-loading");
+  const oldHTML = btn.innerHTML;
+  btn.innerHTML = `${I.refresh} <span>刷新中…</span>`;
   try {
     const r = await api("/api/account/refresh_all", {});
     toast(r.busy ? "已有刷新任务进行中" : `积分刷新完成：成功 ${r.ok} / 失败 ${r.failed}`);
     loadState();
-  } catch (e) { toast(e.message); } finally {
-    $("btnRefreshAll").disabled = false;
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("is-loading");
+    btn.innerHTML = oldHTML;
   }
 }
 
@@ -2505,10 +2552,106 @@ async function resetRedirects() {
   });
 }
 
+// ---------- 弹窗快捷键与交互系统（Esc 关闭、点击遮罩背景关闭、自动聚焦与回车确认） ----------
+function closeTopOverlay() {
+  // 1. 关闭套餐详情提示
+  const tip = $("creditTip");
+  if (tip && tip.style.display === "block") {
+    closeCreditTip();
+    return true;
+  }
+  // 2. 关闭壁纸抽屉
+  const wpCard = $("wpCard");
+  if (wpCard && wpCard.classList.contains("open")) {
+    wpCard.classList.remove("open");
+    return true;
+  }
+  // 3. 关闭处于打开状态的 Modal 遮罩层
+  const overlays = Array.from(document.querySelectorAll(".overlay:not(.hidden)"));
+  if (overlays.length > 0) {
+    const topOverlay = overlays[overlays.length - 1];
+    const cancelBtn = topOverlay.querySelector('button[id$="Cancel"], [id^="btnCancel"], .btn-cancel, .modal-actions button:not(.primary)');
+    if (cancelBtn) {
+      cancelBtn.click();
+    } else {
+      topOverlay.classList.add("hidden");
+    }
+    return true;
+  }
+  return false;
+}
+
+function initModalEnhancements() {
+  // 全局 Esc 快捷键支持
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || e.keyCode === 27) {
+      if (closeTopOverlay()) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+  });
+
+  // 所有弹窗统一增加：点击遮罩层背景关闭 + 回车快捷提交 + 打开时自动聚焦输入框
+  document.querySelectorAll(".overlay").forEach((ov) => {
+    // 为每个 modal 补齐 Esc 快捷键徽标（如果尚未添加）
+    const modal = ov.querySelector(".modal");
+    if (modal && !modal.querySelector(".modal-esc-hint")) {
+      const hint = document.createElement("span");
+      hint.className = "modal-esc-hint";
+      hint.title = "按 Esc 键或点击遮罩外部可快速关闭";
+      hint.textContent = "Esc";
+      modal.appendChild(hint);
+    }
+
+    // 点击遮罩层背景关闭
+    ov.addEventListener("click", (e) => {
+      if (e.target === ov) {
+        const cancelBtn = ov.querySelector('button[id$="Cancel"], [id^="btnCancel"], .btn-cancel, .modal-actions button:not(.primary)');
+        if (cancelBtn) {
+          cancelBtn.click();
+        } else {
+          ov.classList.add("hidden");
+        }
+      }
+    });
+
+    // 弹窗打开时的自动聚焦
+    const observer = new MutationObserver(() => {
+      if (!ov.classList.contains("hidden")) {
+        const firstInput = ov.querySelector("input:not([disabled]):not([type=hidden]), textarea:not([disabled])");
+        if (firstInput) {
+          setTimeout(() => {
+            firstInput.focus();
+            if (firstInput.select && typeof firstInput.select === "function") {
+              firstInput.select();
+            }
+          }, 80);
+        }
+      }
+    });
+    observer.observe(ov, { attributes: true, attributeFilter: ["class"] });
+
+    // 弹窗内按 Enter 键快捷提交（跳过 textarea 换行）
+    ov.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) {
+        if (e.target && e.target.tagName === "INPUT") {
+          const primaryBtn = ov.querySelector(".modal-actions .btn.primary, .btn.primary");
+          if (primaryBtn && !primaryBtn.disabled) {
+            e.preventDefault();
+            primaryBtn.click();
+          }
+        }
+      }
+    });
+  });
+}
+
 // ---------- 初始化 ----------
 (async function init() {
   if (window.__fillIcons) window.__fillIcons();
   initTabs();
+  initModalEnhancements();
   try {
     bind();
   } catch (err) {

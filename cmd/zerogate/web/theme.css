@@ -84,14 +84,14 @@
 /* 🌸 视觉小说沉浸模式覆盖（Anime Visual Novel Dock Mode） */
 html[data-ui-style="visual-novel"] {
   --bg: transparent;
-  --bg-sub: rgba(20, 18, 38, 0.65);
-  --card: rgba(24, 21, 46, 0.72);
-  --border: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 117, 151, 0.35);
-  --border-soft: rgba(255, 255, 255, 0.1);
-  --text: #f8fafc;
-  --text-sub: rgba(255, 255, 255, 0.7);
-  --muted: #cbd5e1;
+  --bg-sub: rgba(20, 18, 38, 0.72);
+  --card: rgba(24, 21, 46, 0.82);
+  --border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 117, 151, 0.42);
+  --border-soft: rgba(255, 255, 255, 0.12);
+  --text: #ffffff;
+  --text-sub: rgba(255, 255, 255, 0.88);
+  --muted: #e2e8f0;
   --primary: #ff7597;
   --primary-hover: #ff547d;
   --primary-soft: rgba(255, 117, 151, 0.2);
@@ -100,6 +100,15 @@ html[data-ui-style="visual-novel"] {
   --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 18px 46px rgba(0, 0, 0, 0.6);
   color-scheme: dark;
+}
+
+/* VN 模式下半透明卡片文字微阴影，杜绝高亮壁纸下的文字对比度失衡 */
+html[data-ui-style="visual-novel"] .panel,
+html[data-ui-style="visual-novel"] .modal,
+html[data-ui-style="visual-novel"] .acct-card,
+html[data-ui-style="visual-novel"] .stat-card,
+html[data-ui-style="visual-novel"] .topbar {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 
@@ -272,7 +281,20 @@ code, pre, kbd { font-family: var(--mono); }
   box-shadow: 0 6px 20px rgba(239, 68, 68, 0.45);
 }
 .btn.small { padding: 5px 11px; font-size: 12px; border-radius: 7px; }
-.btn:disabled { opacity: .5; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
+.btn:disabled, .btn.disabled, .btn.is-loading {
+  opacity: .55;
+  cursor: not-allowed !important;
+  pointer-events: none;
+  transform: none !important;
+  box-shadow: none !important;
+}
+.btn.is-loading .ic, .icon-op.is-loading .ic, .icon-op.spin .ic {
+  animation: zgSpin 0.75s linear infinite !important;
+}
+@keyframes zgSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 /* ---------- 输入 ---------- */
 .input, .select {
@@ -380,15 +402,24 @@ code, pre, kbd { font-family: var(--mono); }
 
 /* ---------- 弹层 ---------- */
 .overlay {
-  position: fixed; inset: 0; background: rgba(8, 6, 18, .55);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  display: flex; align-items: center; justify-content: center; z-index: 100;
-  animation: zgFadeIn .15s ease-out;
+  position: fixed; inset: 0; background: rgba(8, 6, 18, .62);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+  animation: zgFadeIn .18s ease-out;
+  cursor: pointer;
 }
 .modal {
-  background: var(--card); border: 1px solid var(--border); border-radius: 18px;
-  padding: 22px 24px; width: 440px; max-width: 92vw; box-shadow: var(--shadow-lg);
+  background: var(--card); border: 1px solid var(--border); border-radius: 20px;
+  padding: 24px 26px; width: 460px; max-width: 92vw; box-shadow: var(--shadow-lg);
   animation: zgPopIn .24s cubic-bezier(.16, 1, .3, 1);
+  cursor: default;
+  position: relative;
+}
+.modal-esc-hint {
+  position: absolute; right: 18px; top: 18px;
+  font-size: 11px; color: var(--muted); background: var(--bg-sub);
+  padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border);
+  font-family: var(--mono); pointer-events: none; user-select: none;
 }
 
 /* ---------- toast ---------- */
