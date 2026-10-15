@@ -156,10 +156,62 @@
 .acct-card .acct-credits { font-size: 18px; font-weight: 700; cursor: pointer; }
 .acct-card .acct-credits span { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 2px; }
 .acct-card .acct-checkin { font-size: 11px; }
-.acct-card .acct-ops { display: flex; gap: 4px; justify-content: flex-end; }
+.acct-card .acct-ops {
+  display: flex;
+  gap: 3px;
+  justify-content: flex-end;
+  opacity: 0.35;
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s ease;
+}
+.acct-card:hover .acct-ops,
+.acct-card .acct-ops:focus-within {
+  opacity: 1;
+}
+
+/* 账号卡片右上角 5 个小操作按钮减负：无边框半透明图标，悬浮发光 */
+.acct-card .icon-op {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin: 0;
+  box-shadow: none;
+}
+.acct-card .icon-op:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  transform: translateY(-1px) scale(1.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.acct-card .icon-op.danger:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #f87171;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.35);
+}
+.acct-card .icon-op.warn:hover {
+  background: rgba(251, 191, 36, 0.22);
+  border-color: rgba(251, 191, 36, 0.45);
+  color: #fbbf24;
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.35);
+}
+.acct-card .icon-op.off {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
 .acct-card .acct-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-/* 图标操作按钮 */
+/* 全局通用图标操作按钮 */
 .icon-op {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px;
@@ -998,31 +1050,41 @@ html[data-ui-style="visual-novel"] .topbar {
   height: 16px;
 }
 
-/* 视觉小说面板透光感 */
-html[data-ui-style="visual-novel"] .panel {
-  background: rgba(24, 21, 44, 0.75);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+/* ══════════════ 晚霞琉璃风卡片质感 (Anime Sunset Acrylic Style) ══════════════ */
+html[data-ui-style="visual-novel"] .panel,
+html[data-ui-style="visual-novel"] .stat-card,
+html[data-ui-style="visual-novel"] .acct-card,
+html[data-ui-style="visual-novel"] .growth-stat-card,
+html[data-ui-style="visual-novel"] .growth-acct-card,
+html[data-ui-style="visual-novel"] .bridge-card,
+html[data-ui-style="visual-novel"] .fee-card,
+html[data-ui-style="visual-novel"] .modal {
+  background:
+    radial-gradient(circle at top left, rgba(236, 72, 153, 0.12), transparent 60%),
+    rgba(18, 16, 28, 0.62) !important;
+  backdrop-filter: blur(20px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
   border-radius: 20px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-}
-html[data-ui-style="visual-novel"] .stat-card {
-  background: rgba(24, 21, 44, 0.75);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 18px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
   position: relative;
   overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+html[data-ui-style="visual-novel"] .panel:hover,
+html[data-ui-style="visual-novel"] .stat-card:hover,
+html[data-ui-style="visual-novel"] .acct-card:hover,
+html[data-ui-style="visual-novel"] .growth-acct-card:hover,
+html[data-ui-style="visual-novel"] .bridge-card:hover {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.48), 0 0 24px rgba(236, 72, 153, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
+  transform: translateY(-2px);
+}
+
+/* 彻底移除生硬顶边横线 */
 html[data-ui-style="visual-novel"] .stat-card::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, #ff7597, #c084fc);
-  opacity: 0.85;
+  display: none !important;
 }
 
 /* 壁纸切换器抽屉/弹层卡片 */
@@ -1184,7 +1246,9 @@ html[data-ui-style="visual-novel"] .stat-card::before {
   min-width: 0;
   margin-left: 220px;
   transition: margin-left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  padding-bottom: 60px;
+  padding-bottom: 120px !important;
+  mask-image: linear-gradient(to bottom, #000 88%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 88%, transparent 100%);
 }
 
 /* 折叠状态 */

@@ -38,7 +38,7 @@
           const note = c.note || "1 积分 = 1 Token · 直通上游";
           return `
             <tr>
-              <td><span class="badge" style="background:${meta.color}1a; color:${meta.color};">${esc(meta.name)}</span></td>
+              <td><span class="badge" style="--badge-c:${meta.color};">${esc(meta.name)}</span></td>
               <td><strong>${acct}</strong> 账号在线</td>
               <td><strong style="color:var(--ok); font-family:var(--mono); font-size:14px;">${fmtTotal(c.tokens || c.credits)}</strong> Token</td>
               <td><span class="assets-note">${esc(note)}</span></td>
@@ -61,7 +61,7 @@
           const note = c.note || "按量扣除 / 每日配额制";
           return `
             <tr>
-              <td><span class="badge" style="background:${meta.color}1a; color:${meta.color};">${esc(meta.name)}</span></td>
+              <td><span class="badge" style="--badge-c:${meta.color};">${esc(meta.name)}</span></td>
               <td><strong>${acct}</strong> 账号在线</td>
               <td><strong style="color:var(--chart-credit); font-family:var(--mono); font-size:14px;">${fmtTotal(c.credits)}</strong></td>
               <td><span class="assets-note">${esc(note)}</span></td>
@@ -292,7 +292,7 @@
     }
     const yOf = v => v >= 0 ? zeroY - v * scalePos : zeroY + (-v) * scaleNeg;
 
-    const cGridLine = "rgba(255, 255, 255, 0.05)";
+    const cGridLine = "rgba(255, 255, 255, 0.04)";
     const cLabel = cssVar("--chart-label") || "rgba(255, 255, 255, 0.45)";
 
     let grid = "";
@@ -302,7 +302,7 @@
     ticks.forEach(v => {
       const y = yOf(v);
       grid += `
-        <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGridLine}" stroke-width="1" />
+        <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGridLine}" stroke-width="1" stroke-dasharray="3,3" />
         <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}" font-family="var(--mono)">${fmtTotal(Math.round(Math.abs(v)))}</text>
       `;
     });
@@ -319,10 +319,10 @@
       let rect = "";
       if (d.delta > 0) {
         const h = Math.max(3, d.delta * scalePos);
-        rect = `<rect x="${x}" y="${zeroY - h}" width="${barW}" height="${h}" fill="url(#gradCreditExpense)" rx="4" />`;
+        rect = `<rect x="${x}" y="${zeroY - h}" width="${barW}" height="${h}" fill="url(#gradCreditExpense)" rx="6" />`;
       } else if (d.delta < 0) {
         const h = Math.max(3, (-d.delta) * scaleNeg);
-        rect = `<rect x="${x}" y="${zeroY}" width="${barW}" height="${h}" fill="url(#gradCreditIncome)" rx="4" />`;
+        rect = `<rect x="${x}" y="${zeroY}" width="${barW}" height="${h}" fill="url(#gradCreditIncome)" rx="6" />`;
       }
       bars += `
         <g class="chart-bar-group">
@@ -420,13 +420,13 @@
     const chartH = H - padTop - padBottom;
 
     let gridLines = "";
-    const cGrid = cssVar("--chart-grid"), cLabel = cssVar("--chart-label");
-    const cP = cssVar("--chart-prompt"), cC = cssVar("--chart-comp"), cK = cssVar("--chart-cache");
+    const cGrid = "rgba(255, 255, 255, 0.04)";
+    const cLabel = cssVar("--chart-label") || "rgba(255, 255, 255, 0.45)";
     for (let step = 0; step <= 4; step++) {
       const yVal = Math.round((maxTotal / 4) * step);
       const y = padTop + chartH - (step / 4) * chartH;
       gridLines += `
-        <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-width="1" />
+        <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGrid}" stroke-width="1" stroke-dasharray="3,3" />
         <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}" font-family="var(--mono)">${fmtTokens(yVal)}</text>
       `;
     }
@@ -450,9 +450,9 @@
       bars += `
         <g class="chart-bar-group">
           <title>${esc(tip)}</title>
-          <rect x="${x}" y="${pY}" width="${barW}" height="${pHeight}" fill="${cP}" rx="2" />
-          <rect x="${x}" y="${cY}" width="${barW}" height="${cHeight}" fill="${cC}" rx="2" />
-          <rect x="${x}" y="${kY}" width="${barW}" height="${kHeight}" fill="${cK}" rx="2" />
+          <rect x="${x}" y="${pY}" width="${barW}" height="${Math.max(2, pHeight)}" fill="url(#gradSunsetPrompt)" rx="6" />
+          <rect x="${x}" y="${cY}" width="${barW}" height="${Math.max(2, cHeight)}" fill="url(#gradSunsetComp)" rx="6" />
+          <rect x="${x}" y="${kY}" width="${barW}" height="${Math.max(2, kHeight)}" fill="url(#gradSunsetCache)" rx="6" />
           <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}">${d.label}</text>
         </g>
       `;
@@ -460,6 +460,20 @@
 
     wrap.innerHTML = `
       <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="gradSunsetPrompt" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.95" />
+            <stop offset="100%" stop-color="#8B5CF6" stop-opacity="0.15" />
+          </linearGradient>
+          <linearGradient id="gradSunsetCache" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#F472B6" stop-opacity="0.95" />
+            <stop offset="100%" stop-color="#FB923C" stop-opacity="0.85" />
+          </linearGradient>
+          <linearGradient id="gradSunsetComp" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#EC4899" stop-opacity="0.95" />
+            <stop offset="100%" stop-color="#EC4899" stop-opacity="0.25" />
+          </linearGradient>
+        </defs>
         ${gridLines}
         ${bars}
       </svg>
@@ -841,7 +855,7 @@
       const v = maxCny * pct;
       const y = yOf(v);
       grid += `
-        <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGridLine}" stroke-width="1" />
+        <line x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}" stroke="${cGridLine}" stroke-width="1" stroke-dasharray="3,3" />
         <text x="${padLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="${cLabel}" font-family="var(--mono)">¥${v.toFixed(1)}</text>
       `;
     });
@@ -855,7 +869,7 @@
       bars += `
         <g class="chart-bar-group">
           <title>${esc(tip)}</title>
-          <rect x="${x}" y="${y}" width="${barW}" height="${Math.max(3, barH)}" fill="url(#gradSavingsBar)" rx="4" />
+          <rect x="${x}" y="${y}" width="${barW}" height="${Math.max(3, barH)}" fill="url(#gradSavingsBar)" rx="6" />
           <text x="${x + barW / 2}" y="${H - 10}" text-anchor="middle" font-size="10" fill="${cLabel}" font-family="var(--mono)">${d.label}</text>
         </g>
       `;
@@ -878,8 +892,8 @@
       <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:100%; display:block;" preserveAspectRatio="xMidYMid meet">
         <defs>
           <linearGradient id="gradSavingsBar" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.95" />
-            <stop offset="100%" stop-color="#10b981" stop-opacity="0.75" />
+            <stop offset="0%" stop-color="#F472B6" stop-opacity="0.95" />
+            <stop offset="100%" stop-color="#FB923C" stop-opacity="0.75" />
           </linearGradient>
         </defs>
         ${grid}

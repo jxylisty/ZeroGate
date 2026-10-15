@@ -680,7 +680,7 @@ async function loadDashboard() {
       const keys = Object.keys(channels);
       badgeBox.innerHTML = keys.length ? keys.map(k => {
         const meta = groupMeta(k);
-        return `<span class="badge ${meta.cls}" style="font-size:12px; padding:4px 10px;">${meta.name}: ${channels[k]} 个账号</span>`;
+        return `<span class="badge ${meta.cls}">${meta.name}: ${channels[k]} 个账号</span>`;
       }).join("") : `<span class="tag neutral">暂无账号</span>`;
     }
 
