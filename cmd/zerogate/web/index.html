@@ -1235,6 +1235,8 @@ document.documentElement.dataset.uiStyle =
       <button class="btn small primary" id="btnDbRenew">立即保活</button>
     </div>
   </div>
+</div>
+
 <!-- 调用详情与错误诊断弹层 -->
 <div class="overlay hidden" id="auditDetailOverlay">
   <div class="modal modal-wide" style="max-width:680px;">
@@ -1258,6 +1260,13 @@ document.documentElement.dataset.uiStyle =
 
 <div id="toast" class="toast hidden"></div>
 
+<script src="./modules/utils.js?v={{timestamp}}"></script>
+<script src="./modules/api.js?v={{timestamp}}"></script>
+<script src="./modules/audit.js?v={{timestamp}}"></script>
+<script src="./modules/accounts.js?v={{timestamp}}"></script>
+<script src="./modules/analytics.js?v={{timestamp}}"></script>
+<script src="./modules/router.js?v={{timestamp}}"></script>
+<script src="./modules/growth.js?v={{timestamp}}"></script>
 <script src="./app.js?v={{timestamp}}"></script>
 </body>
 </html>
