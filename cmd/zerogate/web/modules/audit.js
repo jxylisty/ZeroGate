@@ -136,6 +136,14 @@
     const prevScrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
     const isNearTop = prevScrollTop <= 35;
 
+    // 绑定滚动监听（防重复绑定）
+    if (scrollContainer && !scrollContainer.dataset.scrollBound) {
+      scrollContainer.dataset.scrollBound = "true";
+      scrollContainer.addEventListener("scroll", () => {
+        isUserScrolling = scrollContainer.scrollTop > 40;
+      }, { passive: true });
+    }
+
     const selChannel = $("selAuditChannel") ? $("selAuditChannel").value : "";
     const selStatus = $("selAuditStatus") ? $("selAuditStatus").value : "";
 
@@ -156,7 +164,7 @@
     });
 
     if (!filtered.length) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--muted); padding:30px;">未发现符合条件的调用记录</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--muted); padding:30px;"><div class="empty-hint" style="margin:10px auto; max-width:280px;">${I.scroll || ""}<span>未发现符合条件的调用记录</span></div></td></tr>`;
       return;
     }
 
@@ -191,7 +199,7 @@
 
     if (window.__fillIcons) window.__fillIcons(tbody);
 
-    // 智能滚动恢复：若用户正在查看历史，不强制回顶；若在顶部则保持吸顶
+    // 智能滚动恢复：若在顶部则保持吸顶，若在历史区则保持用户滚动位置
     if (scrollContainer) {
       if (isNearTop) {
         scrollContainer.scrollTop = 0;
@@ -221,7 +229,9 @@
     }).join("");
   }
 
-  // 7. 拉取流水数据（带固定环形缓冲区拦截）
+  let lastLogsSignature = "";
+
+  // 7. 拉取流水数据（带固定环形缓冲区与防抖拦截）
   async function loadAuditLogs(isManual = false) {
     const btn = $("btnRefreshAuditLogs");
     const ic = btn ? btn.querySelector("[data-ic]") : null;
@@ -237,6 +247,26 @@
       if (fetched.length > MAX_LOGS) {
         fetched = fetched.slice(0, MAX_LOGS);
       }
+
+      // 生成特征指纹，比对是否有数据变化
+      const curSignature = fetched.length ? `${fetched.length}:${fetched[0].id || ""}:${fetched[0].status || ""}` : "empty";
+      const hasChanged = curSignature !== lastLogsSignature;
+
+      // 文本选择保护：如果用户正用鼠标选中表格内的文字（准备复制排查），不强行刷新打断选区
+      const selection = window.getSelection();
+      const isSelectingInTable = selection && selection.toString().trim().length > 0 &&
+        $("auditLogsBody") && $("auditLogsBody").contains(selection.anchorNode);
+
+      if (!isManual && !hasChanged) {
+        // 无新记录，跳过重绘
+        return;
+      }
+      if (!isManual && isSelectingInTable) {
+        // 用户正在选中文本复制，暂缓本次重绘
+        return;
+      }
+
+      lastLogsSignature = curSignature;
       allAuditLogs = fetched;
 
       const totalCount = allAuditLogs.length;
