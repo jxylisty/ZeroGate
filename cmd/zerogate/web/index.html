@@ -24,14 +24,19 @@ document.documentElement.dataset.uiStyle =
   <!-- 🌸 现代化左侧导航侧边栏 -->
   <aside id="zgSidebar">
     <div class="sidebar-brand">
-      <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
-      <div class="brand-info">
-        <div class="brand-title">ZeroGate <span class="ver" id="ver"></span></div>
-        <div class="brand-status-pill" id="sidebarStatusPill" title="服务监听在 127.0.0.1:7863">
-          <span class="status-pulse"></span>
-          <span class="status-text" id="sidebarStatusText">7863 运行中</span>
+      <div class="sidebar-brand-left">
+        <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
+        <div class="brand-info">
+          <div class="brand-title">ZeroGate <span class="ver" id="ver"></span></div>
+          <div class="brand-status-pill" id="sidebarStatusPill" title="服务监听在 127.0.0.1:7863">
+            <span class="status-pulse"></span>
+            <span class="status-text" id="sidebarStatusText">7863 运行中</span>
+          </div>
         </div>
       </div>
+      <button class="sidebar-drawer-close" id="btnSidebarDrawerClose" title="关闭菜单">
+        <span data-ic="x"></span>
+      </button>
     </div>
 
     <!-- 侧边栏导航分组 -->
@@ -84,11 +89,24 @@ document.documentElement.dataset.uiStyle =
       </button>
     </div>
   </aside>
+  <div id="zgSidebarBackdrop" class="sidebar-backdrop"></div>
 
   <!-- 右侧主工作区容器 -->
   <main id="zgMain">
     <!-- 顶部操作条（包含端点药丸与壁纸切换） -->
     <header class="topbar">
+      <!-- 移动端汉堡菜单 + 品牌信息 -->
+      <button class="sidebar-mobile-toggle" id="btnMobileSidebarToggle" title="打开导航菜单">
+        <span data-ic="menu"></span>
+      </button>
+      <div class="brand-mobile" id="topbarMobileBrand">
+        <img class="logo-sm" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
+        <div class="brand-mobile-info">
+          <div class="brand-mobile-title">ZeroGate <span class="ver" id="verMobile"></span></div>
+          <div class="brand-mobile-status" id="mobileStatusText">7863 运行中</div>
+        </div>
+      </div>
+
       <!-- 品牌文本（兼容只读模式或轻量状态） -->
       <div class="brand-text" id="topbarBrandText" style="display:none;">
         <div class="title">ZeroGate <span class="ver" id="verTop"></span></div>

@@ -127,6 +127,7 @@ function applyReadOnlyMode() {
   const title = document.querySelector(".brand .title");
   if (title) title.innerHTML = 'ZeroGate <span class="ver">只读大屏</span>';
   if ($("serverLine")) $("serverLine").textContent = "Token 资产大屏（只读）";
+  if ($("mobileStatusText")) $("mobileStatusText").textContent = "只读大屏";
   if (switchTabFn) switchTabFn("usage");
 }
 
@@ -253,8 +254,13 @@ function render() {
 function renderTopbar() {
   if ($("ver")) $("ver").textContent = "v" + state.version;
   if ($("verTop")) $("verTop").textContent = "v" + state.version;
+  if ($("verMobile")) $("verMobile").textContent = "v" + state.version;
   if ($("serverLine")) $("serverLine").textContent = state.running ? "服务运行中" : "服务未启动";
   if ($("sidebarStatusText")) $("sidebarStatusText").textContent = state.running ? (state.listen_port + " 运行中") : "服务未启动";
+  if ($("mobileStatusText")) {
+    $("mobileStatusText").textContent = state.running ? (state.listen_port + " 运行中") : "未启动";
+    $("mobileStatusText").style.color = state.running ? "var(--ok)" : "var(--danger)";
+  }
   const statusPill = $("sidebarStatusPill");
   if (statusPill) {
     statusPill.style.color = state.running ? "var(--ok)" : "var(--danger)";
@@ -1372,6 +1378,16 @@ function initTabs() {
     sidebarBtns.forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     panes.forEach(p => p.classList.toggle("active", p.id === `tab-${name}`));
     localStorage.setItem("zg_active_tab", name);
+
+    // 移动端切页体验优化：平滑回顶并将当前 Dock 按钮居中
+    if (window.innerWidth <= 768) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    const activeDock = document.querySelector(`.dock-item-btn[data-tab="${name}"]`);
+    if (activeDock && typeof activeDock.scrollIntoView === "function") {
+      activeDock.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    }
+
     if (name === "dashboard") loadDashboard();
     else if (name === "usage") { loadTokenAnalytics(); loadAssets(); }
     else if (name === "logs") loadAuditLogs();
@@ -1396,11 +1412,69 @@ function initTabs() {
   switchTabFn = switchTab;
   switchTab(savedTab);
 
-  // 初始化壁纸、侧边栏、布局模式与双协议药丸复制
+  // 初始化壁纸、侧边栏、移动抽屉、布局模式与双协议药丸复制
   initWallpaperSystem();
   initProtocolPills();
   initSidebar();
+  initMobileDrawer();
   initLayoutMode();
+}
+
+function initMobileDrawer() {
+  const sidebar = $("zgSidebar");
+  const backdrop = $("zgSidebarBackdrop");
+  const toggleBtn = $("btnMobileSidebarToggle");
+  const closeBtn = $("btnSidebarDrawerClose");
+
+  const openDrawer = () => {
+    if (sidebar) sidebar.classList.add("drawer-open");
+    if (backdrop) backdrop.classList.add("active");
+  };
+  const closeDrawer = () => {
+    if (sidebar) sidebar.classList.remove("drawer-open");
+    if (backdrop) backdrop.classList.remove("active");
+  };
+
+  if (toggleBtn) {
+    toggleBtn.onclick = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      if (sidebar && sidebar.classList.contains("drawer-open")) {
+        closeDrawer();
+      } else {
+        openDrawer();
+      }
+    };
+  }
+
+  if (closeBtn) {
+    closeBtn.onclick = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      closeDrawer();
+    };
+  }
+
+  if (backdrop) {
+    backdrop.onclick = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      closeDrawer();
+    };
+  }
+
+  // 点击侧栏任意选项，在移动端自动平滑收起抽屉
+  document.querySelectorAll(".sidebar-item-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (window.innerWidth <= 768) {
+        closeDrawer();
+      }
+    });
+  });
+
+  // 按 ESC 键关闭侧栏抽屉
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && sidebar && sidebar.classList.contains("drawer-open")) {
+      closeDrawer();
+    }
+  });
 }
 
 function initSidebar() {
