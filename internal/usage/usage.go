@@ -45,7 +45,9 @@ type AccountUsage struct {
 	Nickname       string       `json:"nickname"`
 	Remain         int64        `json:"remain"`
 	Total          int64        `json:"total"`
-	ExpireAt       int64        `json:"expire_at,omitempty"` // 最早到期套餐时间（Unix 秒）；0=长期有效
+	ExpireAt       int64        `json:"expire_at,omitempty"`       // 最早到期套餐时间（Unix 秒）；0=长期有效
+	ExpiringRemain int64        `json:"expiring_remain,omitempty"` // 最早临期套餐剩余量（0 或空=无分包或未分包）
+	ExpiringName   string       `json:"expiring_name,omitempty"`   // 最早临期套餐名称
 	Used           int64        `json:"used"`                // 最新快照的 总量-剩余
 	Delta          int64        `json:"delta"`               // 与上一快照差值（正=消耗，负=入账签到）
 	Today          int64        `json:"today"`               // 今日净消耗（正=消耗，负=入账签到）
@@ -84,6 +86,8 @@ type Recorder struct {
 type account struct {
 	UID, Kind, Nickname string
 	ExpireAt            int64
+	ExpiringRemain      int64
+	ExpiringName        string
 	Snapshots           []Snapshot
 	Tokens              map[string]*TokenDay // 按天
 	Models              map[string]*modelAcc // 按模型累计（计价用）
@@ -191,10 +195,17 @@ func (r *Recorder) SetCheckin(uid string, ok bool, at, msg string) {
 
 // SetExpire 同步最早到期套餐时间（expireAt Unix 秒；0=长期有效）。
 func (r *Recorder) SetExpire(uid string, expireAt int64) {
+	r.SetExpireDetail(uid, expireAt, 0, "")
+}
+
+// SetExpireDetail 同步最早到期套餐时间、临期额度及套餐代表名称。
+func (r *Recorder) SetExpireDetail(uid string, expireAt, expiringRemain int64, expiringName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if acc := r.byUID[uid]; acc != nil {
 		acc.ExpireAt = expireAt
+		acc.ExpiringRemain = expiringRemain
+		acc.ExpiringName = expiringName
 	}
 }
 
@@ -303,8 +314,10 @@ func (r *Recorder) Report() []AccountUsage {
 	for _, acc := range r.byUID {
 		au := AccountUsage{
 			UID: acc.UID, Kind: acc.Kind, Nickname: acc.Nickname,
-			ExpireAt:      acc.ExpireAt,
-			LastCheckinOK: acc.LastCheckinOK, LastCheckinAt: acc.LastCheckinAt,
+			ExpireAt:       acc.ExpireAt,
+			ExpiringRemain: acc.ExpiringRemain,
+			ExpiringName:   acc.ExpiringName,
+			LastCheckinOK:  acc.LastCheckinOK, LastCheckinAt: acc.LastCheckinAt,
 			LastCheckinMsg: acc.LastCheckinMsg,
 		}
 		if n := len(acc.Snapshots); n > 0 {

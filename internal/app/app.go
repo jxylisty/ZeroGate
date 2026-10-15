@@ -196,7 +196,8 @@ func (a *App) captureUsage() {
 			var expireAt int64
 			if r, items, err := rt.Upstream.UserResourceDetail(au); err == nil {
 				remain = r
-				expireAt = provider.EarliestExpire(items)
+				expAt, expRemain, expName := provider.EarliestExpireDetail(items)
+				expireAt = expAt
 				var sum int64
 				for _, it := range items {
 					sum += it.Total
@@ -205,7 +206,10 @@ func (a *App) captureUsage() {
 					total = sum
 				}
 				rt.Pool.SetCreditsExpire(st.UID, remain, expireAt)
-				a.usage.SetExpire(st.UID, expireAt)
+				rt.Pool.SetResourceItems(st.UID, items)
+				if a.usage != nil {
+					a.usage.SetExpireDetail(st.UID, expireAt, expRemain, expName)
+				}
 			}
 			a.usage.Record(rt.Kind.String(), st.UID, st.Nickname, remain, total)
 			a.usage.SetCheckin(st.UID, st.LastCheckinOK, fmtTime(st.LastCheckinAt), st.LastCheckinMsg)
@@ -1250,8 +1254,12 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		log.Printf("credits refresh failed platform=%s uid=%s err=%v", rt.Kind, uid, err)
 		return 0, err
 	}
-	rt.Pool.SetCreditsExpire(uid, remain, provider.EarliestExpire(items))
+	expAt, expRemain, expName := provider.EarliestExpireDetail(items)
+	rt.Pool.SetCreditsExpire(uid, remain, expAt)
 	rt.Pool.SetResourceItems(uid, items)
+	if a.usage != nil {
+		a.usage.SetExpireDetail(uid, expAt, expRemain, expName)
+	}
 	log.Printf("credits refresh success platform=%s uid=%s remain=%d", rt.Kind, uid, remain)
 	return remain, nil
 }
@@ -1284,8 +1292,12 @@ func (a *App) RefreshAll() RefreshSummary {
 				continue
 			}
 			if remain, items, err := rt.Upstream.UserResourceDetail(au); err == nil {
-				rt.Pool.SetCreditsExpire(st.UID, remain, provider.EarliestExpire(items))
+				expAt, expRemain, expName := provider.EarliestExpireDetail(items)
+				rt.Pool.SetCreditsExpire(st.UID, remain, expAt)
 				rt.Pool.SetResourceItems(st.UID, items)
+				if a.usage != nil {
+					a.usage.SetExpireDetail(st.UID, expAt, expRemain, expName)
+				}
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: remain})
 			} else {
@@ -1636,6 +1648,8 @@ type AccountView struct {
 	Nickname       string                  `json:"nickname"`
 	Credits        int64                   `json:"credits"`
 	ExpireAt       int64                   `json:"expire_at"`                // 最早到期套餐时间（Unix 秒，0=长期有效）
+	ExpiringRemain int64                   `json:"expiring_remain,omitempty"` // 最早临期套餐剩余量
+	ExpiringName   string                  `json:"expiring_name,omitempty"`   // 最早临期套餐名称
 	ResourceItems  []provider.ResourceItem `json:"resource_items,omitempty"` // 积分分类明细（含到期时间）
 	IsNext         bool                    `json:"is_next"`                  // 是否为当前渠道第一顺位（zcode 按真实轮转顺序）
 	BridgeDown     bool                    `json:"bridge_down,omitempty"`    // 桥接账号：bridgeUrl 端口连不上（桥未启动）
@@ -1853,13 +1867,19 @@ func (a *App) accountViews() []AccountView {
 	out := make([]AccountView, 0, len(items))
 	for _, it := range items {
 		s := it.s
+		expAt, expRemain, expName := provider.EarliestExpireDetail(s.ResourceItems)
+		if s.ExpireAt > 0 && expAt == 0 {
+			expAt = s.ExpireAt
+		}
 		out = append(out, AccountView{
 			UID:            s.UID,
 			Group:          it.kind,
 			Mode:           it.mode,
 			Nickname:       s.Nickname,
 			Credits:        s.Credits,
-			ExpireAt:       s.ExpireAt,
+			ExpireAt:       expAt,
+			ExpiringRemain: expRemain,
+			ExpiringName:   expName,
 			ResourceItems:  s.ResourceItems,
 			IsNext:         it.isNext,
 			BridgeDown:     it.bridgeDown,

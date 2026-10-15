@@ -95,9 +95,10 @@ func (e *entry) healthy(now time.Time) bool {
 
 // stateFile 持久化格式。
 type accountState struct {
-	Credits        int64     `json:"credits"`
-	ExpireAt       int64     `json:"expire_at,omitempty"`
-	Disabled       bool      `json:"disabled"`
+	Credits        int64                   `json:"credits"`
+	ExpireAt       int64                   `json:"expire_at,omitempty"`
+	ResourceItems  []provider.ResourceItem `json:"resource_items,omitempty"`
+	Disabled       bool                    `json:"disabled"`
 	Reason         string    `json:"reason,omitempty"`
 	Until          time.Time `json:"until,omitempty"`
 	BanCount       int       `json:"ban_count,omitempty"`
@@ -510,6 +511,7 @@ func (p *Pool) load() {
 			placeholder:    true,
 			credits:        s.Credits,
 			expireAt:       s.ExpireAt,
+			resourceItems:  s.ResourceItems,
 			disabled:       s.Disabled,
 			reason:         s.Reason,
 			until:          s.Until,
@@ -528,6 +530,7 @@ func (p *Pool) snapshotLocked() stateFile {
 		sf.Accounts[uid] = accountState{
 			Credits:        e.credits,
 			ExpireAt:       e.expireAt,
+			ResourceItems:  e.resourceItems,
 			Disabled:       e.disabled,
 			Reason:         e.reason,
 			Until:          e.until,

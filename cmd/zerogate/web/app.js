@@ -316,6 +316,76 @@ function formatExpire(expireAt) {
   }
 }
 
+// 获取账号临期套餐详情（支持多套餐提取最早到期额度与名称，双重兜底缓存）
+function getExpiringDetail(a) {
+  let expireAt = Number(a.expire_at || 0);
+  let expRemain = Number(a.expiring_remain || 0);
+  let expName = a.expiring_name || "";
+
+  const extractFromItems = (items) => {
+    if (!Array.isArray(items) || items.length === 0) return null;
+    let earliest = 0, eRemain = 0, eName = "";
+    for (const it of items) {
+      const r = Number(it.remain || 0);
+      const exp = Number(it.expire_at || 0);
+      if (r <= 0 || exp <= 0 || exp >= 4102444800) continue;
+      if (!earliest || exp < earliest) {
+        earliest = exp;
+        eRemain = r;
+        eName = it.name || "";
+      } else if (exp === earliest) {
+        eRemain += r;
+      }
+    }
+    return earliest ? { expireAt: earliest, expRemain: eRemain, expName: eName } : null;
+  };
+
+  if ((!expRemain || !expName) && Array.isArray(a.resource_items) && a.resource_items.length > 0) {
+    const res = extractFromItems(a.resource_items);
+    if (res) {
+      if (!expireAt) expireAt = res.expireAt;
+      if (!expRemain) expRemain = res.expRemain;
+      if (!expName) expName = res.expName;
+    }
+  }
+
+  if ((!expRemain || !expName) && window.state && Array.isArray(window.state.accounts)) {
+    const acc = window.state.accounts.find(x => x.uid === a.uid);
+    if (acc) {
+      if (!expireAt && acc.expire_at) expireAt = Number(acc.expire_at);
+      if (!expRemain && acc.expiring_remain) expRemain = Number(acc.expiring_remain);
+      if (!expName && acc.expiring_name) expName = acc.expiring_name;
+      if ((!expRemain || !expName) && Array.isArray(acc.resource_items)) {
+        const res = extractFromItems(acc.resource_items);
+        if (res) {
+          if (!expireAt) expireAt = res.expireAt;
+          if (!expRemain) expRemain = res.expRemain;
+          if (!expName) expName = res.expName;
+        }
+      }
+    }
+  }
+
+  if ((!expRemain || !expName) && detailCache[a.uid] && Array.isArray(detailCache[a.uid].items)) {
+    const res = extractFromItems(detailCache[a.uid].items);
+    if (res) {
+      if (!expireAt) expireAt = res.expireAt;
+      if (!expRemain) expRemain = res.expRemain;
+      if (!expName) expName = res.expName;
+    }
+  }
+
+  return { expireAt, expRemain, expName };
+}
+
+// 精简套餐展示名（去除活动批次与括号编号，保留核心特征）
+function shortPkgName(name) {
+  if (!name) return "临期包";
+  let s = String(name).replace(/\(.*?\)/g, "").replace(/（.*?）/g, "").replace(/【.*?】/g, "").replace(/\[.*?\]/g, "").trim();
+  if (s.length > 8) s = s.slice(0, 7) + "…";
+  return s || "临期包";
+}
+
 // ---------- 账号矩阵：模式分区 + 渠道手风琴 ----------
 // mode 由后端 /api/state 下发：proxy 反代 / bridge 桥接（zcode-proxy）/ direct 直连 API。
 // 缺省回退按渠道判定，与后端 channelDefaultMode 保持一致。
@@ -455,8 +525,20 @@ function acctCardHTML(a) {
     ? `<span class="tag ${a.last_checkin_ok ? "ok" : "bad"}">${a.last_checkin_ok ? "签到成功" : "签到失败"}</span>`
     : (noCheckin ? '<span class="tag neutral">无签到</span>' : '<span class="tag neutral">未签到</span>');
 
-  const exp = formatExpire(a.expire_at);
-  const expireTag = `<span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>`;
+  const expDetail = getExpiringDetail(a);
+  const curExpAt = expDetail.expireAt || a.expire_at;
+  const exp = formatExpire(curExpAt);
+  const curRemain = Number(a.credits || 0);
+  const isPartialExp = curExpAt > 0 && curExpAt < 4102444800 && expDetail.expRemain > 0 && expDetail.expRemain < curRemain;
+  const isTokAcct = (a.group === "zcode" || a.group === "atria");
+  const unitAcct = isTokAcct ? "token" : "积分";
+
+  let expireTag = `<span class="tag ${exp.cls}" onclick="showCreditDetail(event, '${esc(a.uid)}')" title="${esc(exp.full)} · 点击查看明细" style="cursor:pointer;">${I.clock} ${esc(exp.text)}</span>`;
+  if (isPartialExp) {
+    const expFmt = isTokAcct ? fmtTokens(expDetail.expRemain) : fmtTotal(expDetail.expRemain);
+    const safeFmt = isTokAcct ? fmtTokens(curRemain - expDetail.expRemain) : fmtTotal(curRemain - expDetail.expRemain);
+    expireTag = `<span class="tag ${exp.cls} exp-part-badge" onclick="showCreditDetail(event, '${esc(a.uid)}')" title="${esc(exp.full)} · 仅此套餐临期（${expDetail.expRemain} ${unitAcct}），其余 ${safeFmt} ${unitAcct} 有效；点击查看明细" style="cursor:pointer;">${I.alert} 仅 ${expFmt} ${unitAcct} ${esc(exp.text)}</span>`;
+  }
   const nextPickTag = a.is_next
     ? `<span class="tag next-pick" title="本渠道第一顺位：下一次请求将优先调用此账号（zcode 按桥接轮转顺序，其余渠道按快到期/低余额优先）">${I.target} 优先调度</span>`
     : "";
@@ -3184,9 +3266,8 @@ function renderTopModels(models, topModels) {
 
   rows.sort((a, b) => b.usd - a.usd);
   const top5 = rows.slice(0, 5);
-  const maxUsd = top5[0].usd || 1;
   const badges = ["top1", "top2", "top3", "", ""];
-  const medals = ["🥇", "🥈", "🥉"];
+  const maxUsd = (top5[0] && top5[0].usd) ? top5[0].usd : 1;
 
   box.innerHTML = top5.map((m, idx) => {
     const pct = Math.max(8, Math.round((m.usd / maxUsd) * 100));
@@ -3199,7 +3280,7 @@ function renderTopModels(models, topModels) {
       : "";
     return `
       <div class="rank-item">
-        <span class="rank-num ${badges[idx]}">${idx < 3 ? medals[idx] : idx + 1}</span>
+        <span class="rank-num ${badges[idx] || ""}">${idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name" title="${esc(m.model)}">${esc(m.model)}</span>
@@ -3214,7 +3295,7 @@ function renderTopModels(models, topModels) {
   }).join("");
 }
 
-// 5. 账号余额与到期榜（按渠道真实计量单位标注 token / 积分，条形=剩余占自身额度比，按到期紧迫度排序）
+// 5. 账号余额与到期榜（按渠道真实计量单位标注 token / 积分，明确区分全额到期与部分临期套餐，避免过期恐慌）
 function renderLowBalanceAccounts(accounts) {
   const box = $("lowBalanceList");
   if (!box) return;
@@ -3225,6 +3306,19 @@ function renderLowBalanceAccounts(accounts) {
   }
 
   const now = Math.floor(Date.now() / 1000);
+
+  // 预处理每个账号的临期详情：从后端字段或本地套餐明细缓存提取
+  const enriched = all.map(a => {
+    const detail = getExpiringDetail(a);
+    const expireAt = detail.expireAt || Number(a.expire_at || 0);
+    return {
+      ...a,
+      expire_at: expireAt,
+      expiring_remain: detail.expRemain,
+      expiring_name: detail.expName,
+    };
+  });
+
   // 排序：最快到期的优先（长期有效视为最不紧迫）；同日到期则余额少者优先
   const rank = a => (a.expire_at && a.expire_at > 0 && a.expire_at < 4102444800) ? a.expire_at : Infinity;
   const sortFn = (a, b) => {
@@ -3233,8 +3327,7 @@ function renderLowBalanceAccounts(accounts) {
     return Number(a.remain || 0) - Number(b.remain || 0);
   };
 
-  // 单一列表（不分组）；每行按渠道真实计量单位标注：token 族 → token，积分族 → 积分
-  const list = [...all].sort(sortFn);
+  const list = enriched.sort(sortFn);
   const badges = ["top1", "top2", "top3", "", ""];
 
   box.innerHTML = list.slice(0, 8).map((a, idx) => {
@@ -3242,25 +3335,68 @@ function renderLowBalanceAccounts(accounts) {
     const exp = formatExpire(a.expire_at);
     const remain = Math.max(0, Number(a.remain || 0));
     const total = Number(a.total || 0);
-    // 条形=剩余占自身额度比例（与单位无关，不做跨族池内比大小）；无 total 视为满额
+    const isTok = isTokenUnit(a.kind);
+    const unitName = isTok ? "token" : "积分";
+
+    // 判断是否为「部分临期」：临期额度 > 0 且严格小于总剩余
+    const expRemain = Number(a.expiring_remain || 0);
+    const hasExp = a.expire_at > 0 && a.expire_at < 4102444800;
+    const isPartial = hasExp && expRemain > 0 && expRemain < remain;
+    const safeRemain = isPartial ? Math.max(0, remain - expRemain) : (hasExp ? 0 : remain);
+
+    // 格式化输出字符串
+    const totalVal = isTok ? `${fmtTokens(remain)} token` : `${fmtTotal(remain)} 积分`;
+    const expVal = isTok ? fmtTokens(expRemain) : fmtTotal(expRemain);
+    const safeVal = isTok ? fmtTokens(safeRemain) : fmtTotal(safeRemain);
+
+    // 进度条百分比（按总剩余占自身总额）
     const pct = Math.max(3, Math.min(100, Math.round(total > 0 ? (remain / total) * 100 : 100)));
-    const urgent = a.expire_at && a.expire_at > 0 && (a.expire_at - now) <= 7 * 86400;
+
+    // 警示样式判定：若只是少量积分临期（<30%），进度条不报警（避免误导恐慌），仅当大部分临期或全额到期且<=7天时标红
+    const expRatio = (remain > 0 && expRemain > 0) ? (expRemain / remain) : (hasExp ? 1 : 0);
+    const urgent = hasExp && (a.expire_at - now) <= 7 * 86400 && (!isPartial || expRatio >= 0.3);
     const fillCls = urgent ? "background:linear-gradient(90deg, var(--danger), var(--warn))" : "";
-    const val = isTokenUnit(a.kind) ? `${fmtTokens(remain)} token` : `${fmtTotal(remain)} 积分`;
+
+    // 临期状态标贴与元信息
+    let metaTagsHtml = "";
+    if (isPartial) {
+      metaTagsHtml = `
+        <span class="tag ${exp.cls} exp-part-badge" onclick="showCreditDetail(event, '${esc(a.uid)}')" title="${esc(exp.full)} · 仅此套餐临期（${expRemain} ${unitName}），其余 ${safeVal} ${unitName} 仍有效；点击查看全部套餐明细" style="cursor:pointer;">
+          ${I.alert} 仅 <b>${expVal}</b> ${unitName} ${esc(exp.text)} <span class="exp-subname">(${esc(shortPkgName(a.expiring_name))})</span>
+        </span>
+        <span class="tag expire-perm" title="其余套餐长期有效或更晚到期">${I.check} ${safeVal} 有效</span>
+      `;
+    } else if (hasExp) {
+      metaTagsHtml = `
+        <span class="tag ${exp.cls}" onclick="showCreditDetail(event, '${esc(a.uid)}')" title="${esc(exp.full)} · 点击查看套餐明细" style="cursor:pointer;">
+          ${I.clock} 全部 ${esc(exp.text)}
+        </span>
+      `;
+    } else {
+      metaTagsHtml = `
+        <span class="tag expire-perm" onclick="showCreditDetail(event, '${esc(a.uid)}')" title="长期有效 · 点击查看套餐明细" style="cursor:pointer;">
+          ${I.check} 长期有效
+        </span>
+      `;
+    }
+
     return `
       <div class="rank-item" title="${esc(a.uid)}">
         <span class="rank-num ${badges[idx] || ""}">${idx + 1}</span>
         <div class="rank-info">
           <div class="rank-header">
             <span class="rank-name"><span class="badge ${gm.cls}">${gm.name}</span> ${esc(a.nickname || shortUid(a.uid))}</span>
-            <span class="rank-val">${val}</span>
+            <span class="rank-val" style="display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px;">
+              <span>${totalVal}</span>
+              ${isPartial ? `<span style="font-size:11px;font-weight:400;color:var(--text-muted);">${safeVal} 长期有效</span>` : ""}
+            </span>
           </div>
           <div class="rank-bar-bg">
             <div class="rank-bar-fill" style="width:${pct}%; ${fillCls}"></div>
           </div>
           <div class="rank-meta">
-            <span class="tag ${exp.cls}" title="${esc(exp.full)}">${I.clock} ${esc(exp.text)}</span>
-            <code class="prod-uid">${esc(shortUid(a.uid))}</code>
+            ${metaTagsHtml}
+            <code class="prod-uid" style="cursor:pointer;" onclick="showCreditDetail(event, '${esc(a.uid)}')" title="点击查看套餐明细">${esc(shortUid(a.uid))}</code>
           </div>
         </div>
       </div>`;

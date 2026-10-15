@@ -230,16 +230,26 @@ type ResourceItem struct {
 // 只会让面板恒显示一个"最早但已用光"的过期时间（如 Trae 串行签到包）。
 // 路由"快到期优先"依赖此值：0 视为长期（最后使用），>0 越早越优先。
 func EarliestExpire(items []ResourceItem) int64 {
-	var e int64
+	e, _, _ := EarliestExpireDetail(items)
+	return e
+}
+
+// EarliestExpireDetail 返回 items 中最早到期的套餐时间、该时间点到期的总剩余额度及套餐代表名称。
+// 遇同秒到期的多个子包时自动累加剩余额度；全部长期有效或无有效套餐时返回 0, 0, ""。
+func EarliestExpireDetail(items []ResourceItem) (expireAt, remain int64, name string) {
 	for _, it := range items {
-		if it.Remain <= 0 {
+		if it.Remain <= 0 || it.ExpireAt <= 0 {
 			continue
 		}
-		if it.ExpireAt > 0 && (e == 0 || it.ExpireAt < e) {
-			e = it.ExpireAt
+		if expireAt == 0 || it.ExpireAt < expireAt {
+			expireAt = it.ExpireAt
+			remain = it.Remain
+			name = it.Name
+		} else if it.ExpireAt == expireAt {
+			remain += it.Remain
 		}
 	}
-	return e
+	return expireAt, remain, name
 }
 
 // GrowthTasksResult 成长中心任务领取结果。
